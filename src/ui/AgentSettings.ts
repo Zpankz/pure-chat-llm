@@ -2,7 +2,7 @@ import { Notice, Setting } from 'obsidian';
 import { layerProblem, resolveLayer } from '../agents/layers';
 import type { LayerId } from '../agents/layers';
 import { ChatGPTAuth } from '../auth/ChatGPTAuth';
-import { persistentSecrets } from '../auth/secrets';
+import { persistentSecrets, secretStorageSlow } from '../auth/secrets';
 import type PureChatLLM from '../main';
 import { DEFAULT_MCP_SERVER } from '../mcp/McpManager';
 import { signIn } from '../mcp/McpOAuth';
@@ -568,7 +568,9 @@ function renderChatGPTSignIn(el: HTMLElement, plugin: PureChatLLM, redraw: () =>
   }
   const where = persistentSecrets(plugin.app)
     ? 'Tokens are kept in Obsidian’s secret storage, not in the vault.'
-    : 'This Obsidian version has no secret storage, so the sign-in lasts until Obsidian closes.';
+    : secretStorageSlow()
+      ? 'Obsidian’s secret storage did not answer in time (no system keyring?), so the sign-in lasts until Obsidian closes.'
+      : 'This Obsidian version has no secret storage, so the sign-in lasts until Obsidian closes.';
   if (auth.signedIn) {
     setting.setDesc(`Signed in${auth.email ? ` as ${auth.email}` : ''}. ${where}`).addButton(b =>
       b.setButtonText('Sign out').onClick(async () => {

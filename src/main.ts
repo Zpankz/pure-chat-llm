@@ -142,6 +142,13 @@ export default class PureChatLLM extends Plugin {
     this.calls = new CallRecorder(this);
     this.chatgpt = new ChatGPTAuth(this.app);
     this.google = new GoogleAuth(this.app);
+    // Read the sign-ins once, after startup, so the settings tab and the first request answer
+    // from memory and never wait on the system keyring (see auth/secrets.ts).
+    this.app.workspace.onLayoutReady(() => {
+      void this.chatgpt.email;
+      void this.google.projectId;
+      void this.google.signedIn;
+    });
     // OAuth sign-in for remote MCP servers returns to obsidian://pure-chat-llm-oauth.
     this.registerObsidianProtocolHandler(OAUTH_ACTION, params => handleOAuthCallback(params));
     this.app.workspace.onLayoutReady(() => void this.mcp.refreshAll(false));

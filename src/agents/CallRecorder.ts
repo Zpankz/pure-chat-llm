@@ -9,7 +9,7 @@ import type { SubAgentTask } from './types';
  * - **Folder notes.** Every node that has children is a folder whose root note has the same
  *   name (`Name/Name.md`, the convention the Folder Notes community plugin uses); a node with no
  *   children is a plain note in its parent's folder. A node that gains its first child is moved
- *   into a folder of its own, with `fileManager.renameFile` so links elsewhere follow it.
+ *   into a folder of its own with `vault.rename`, which never asks anything (see `move`).
  * - **The tree.** The call is the root (its folder note holds the voice transcript). In the
  *   layered setup the orchestrator is its child, and each worker thread is a child of the
  *   orchestrator; with the voice delegating directly, threads hang off the call.
@@ -513,7 +513,14 @@ export class CallRecorder {
   }
 
   /**
-   * Moves a node's note (it gained children, or was renamed), keeping links elsewhere working.
+   * Moves a node's note (it gained children, or was renamed).
+   *
+   * Uses `vault.rename`, not `fileManager.renameFile`: with Obsidian's "Automatically update
+   * internal links" off, the latter opens an "Update links?" prompt and waits for an answer, and
+   * every later save of the call would wait behind it (validation run 2). Nothing is lost: the
+   * call's own notes are rewritten from the recorded paths on every save, an orchestrator note
+   * keeps its name when it moves into its folder (so links by name still resolve), and a topic is
+   * only renamed while nothing has been said under it yet.
    * @param from - Old path.
    * @param to - New path.
    * @param apply - Records the new path at once, so later writes go there.
@@ -521,11 +528,12 @@ export class CallRecorder {
   private move(from: string, to: string, apply: (path: string) => void): void {
     apply(to);
     void this.enqueue(async () => {
-      const file = this.plugin.app.vault.getAbstractFileByPath(from);
+      const vault = this.plugin.app.vault;
+      const file = vault.getAbstractFileByPath(from);
       if (!(file instanceof TFile)) return;
       await this.ensureFolder(dirOf(to));
-      if (this.plugin.app.vault.getAbstractFileByPath(to)) return;
-      await this.plugin.app.fileManager.renameFile(file, to);
+      if (vault.getAbstractFileByPath(to)) return;
+      await vault.rename(file, to);
     });
   }
 
