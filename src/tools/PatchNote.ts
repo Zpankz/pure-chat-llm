@@ -115,6 +115,7 @@ export class PatchNoteTool extends Tool<PatchNoteArgs> {
         undefined, // properties
         true, // overwrite/modify
         heading ? `Append to section "${heading}"` : 'Append to end of note',
+        this.chat,
       );
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);

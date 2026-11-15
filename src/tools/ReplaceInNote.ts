@@ -118,6 +118,7 @@ export class ReplaceInNoteTool extends Tool<ReplaceInNoteArgs> {
         undefined, // properties
         true, // overwrite/modify
         `Replace "${search}" with "${replace}"`,
+        this.chat,
       );
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);

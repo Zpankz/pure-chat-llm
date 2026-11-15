@@ -68,6 +68,7 @@ export class CreateNoteTool extends Tool<CreateNoteArgs> {
       properties as Record<string, unknown> | undefined,
       overwrite ?? false,
       'Create/Update Note via Tool',
+      this.chat,
     );
   }
 }

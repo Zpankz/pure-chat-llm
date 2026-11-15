@@ -168,6 +168,7 @@ export class WriteNoteSectionTool extends Tool<WriteNoteSectionArgs> {
         undefined, // properties
         true, // overwrite/modify
         instruction,
+        this.chat,
       );
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);

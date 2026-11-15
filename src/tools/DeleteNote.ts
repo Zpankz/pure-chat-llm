@@ -1,6 +1,8 @@
 import { App, Modal, normalizePath, Notice, Setting, TFile } from 'obsidian';
 import { defineToolParameters, InferArgs, Tool } from '../tools';
 import { ToolOutputBuilder } from './ToolOutputBuilder';
+import { logReview } from './EditReview';
+import { buildProposal, peerReview, writePolicy } from '../agents/peerReview';
 
 const deleteNoteParameters = defineToolParameters({
   type: 'object',
@@ -51,6 +53,33 @@ export class DeleteNoteTool extends Tool<DeleteNoteArgs> {
           `glob_vault_files("${similarGlob}") - Search for similar files`,
           `list_vault_folders("${listFolderPath}") - Explore directory`,
         ])
+        .build();
+    }
+
+    const plugin = this.chat.plugin;
+    const policy = writePolicy(plugin, this.chat, 'delete');
+    if (policy === 'deny') {
+      return `Not done: sub-agents can't delete notes (plugin setting). Report what should be removed instead.`;
+    }
+    if (policy === 'allow' || policy === 'peer') {
+      if (policy === 'peer') {
+        void this.status(`Asking two reviewers about deleting "${normalizedPath}"...`);
+        const proposal = await buildProposal(plugin, normalizedPath, '', undefined, 'delete');
+        const verdict = await peerReview(plugin, proposal);
+        logReview(this.chat, `delete ${normalizedPath}`, verdict.approved, verdict.verdicts);
+        if (!verdict.approved) {
+          return `Not deleted: "${normalizedPath}" needs both independent reviewers to approve, and they didn't.\n${verdict.verdicts.join('\n')}`;
+        }
+      }
+      // Trash (system or vault .trash, per the user's Obsidian setting) keeps it recoverable.
+      await app.fileManager.trashFile(file);
+      return new ToolOutputBuilder()
+        .addHeader('FILE DELETED')
+        .addKeyValue('Deleted file', normalizedPath)
+        .addKeyValue(
+          'Status',
+          policy === 'peer' ? 'Moved to trash (both reviewers approved)' : 'Moved to trash',
+        )
         .build();
     }
 
