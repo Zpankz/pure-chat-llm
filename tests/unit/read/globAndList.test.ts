@@ -200,3 +200,22 @@ test('list_vault_folders failures are tool errors', async () => {
   const missing = await h.run(ListFoldersTool, { path: 'Uni/Nope' });
   assert.match(toolErrorMessage(missing), /^FolderNotFound:/);
 });
+
+test('a bare folder name prefers the same case, then a top-level folder, before calling it ambiguous', async () => {
+  const h = toolHarness({
+    'Medicine/ANZCA/LO/LO.md': '# LO',
+    'Medicine/ANZCA/LO/AP11.md': 'a',
+    'src/lo/index.md': 'code',
+    'Notes/Projects/x.md': 'x',
+    'Projects/p.md': 'p',
+  });
+  // "LO" is Medicine/ANZCA/LO, not src/lo (the 8:20 PM case in validation run 2).
+  const lo = JSON.parse(await h.run(ListFoldersTool, { path: 'LO', format: 'json' }));
+  assert.equal(lo.folder, 'Medicine/ANZCA/LO');
+  // Asked in lower case, the lower-case folder wins.
+  const code = JSON.parse(await h.run(ListFoldersTool, { path: 'lo', format: 'json' }));
+  assert.equal(code.folder, 'src/lo');
+  // Two folders of the same name: the top-level one.
+  const projects = JSON.parse(await h.run(ListFoldersTool, { path: 'Projects', format: 'json' }));
+  assert.equal(projects.folder, 'Projects');
+});

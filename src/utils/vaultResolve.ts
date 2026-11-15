@@ -133,7 +133,11 @@ export function resolveNote(app: App, ref: string): { file: TFile | null; candid
 
 /**
  * Finds folders from an exact path or a bare folder name anywhere in the vault ("LO" matches
- * "Medicine/ANZCA/LO").
+ * "Medicine/ANZCA/LO"). A bare name is matched in tiers, and the first tier with a match wins:
+ * the same name with the same case, then the same name in any case, then a path ending. Within a
+ * tier one match is the answer, and so is the only top-level one among several; anything else is
+ * a true tie and every match comes back (callers that need one folder say it is ambiguous). So
+ * "LO" picks `Medicine/ANZCA/LO` over `src/lo` (validation run 2).
  * @param app - Obsidian app.
  * @param ref - Folder path or name.
  */
@@ -143,10 +147,21 @@ export function resolveFolders(app: App, ref: string): TFolder[] {
   const direct = app.vault.getAbstractFileByPath(normalizePath(raw));
   if (direct instanceof TFolder) return [direct];
   const key = raw.toLowerCase();
-  const all = app.vault.getAllLoadedFiles().filter((f): f is TFolder => f instanceof TFolder);
-  const byName = all.filter(f => f.name.toLowerCase() === key);
-  if (byName.length) return byName;
-  return all.filter(f => f.path.toLowerCase().endsWith(`/${key}`) || f.path.toLowerCase() === key);
+  const all = app.vault
+    .getAllLoadedFiles()
+    .filter((f): f is TFolder => f instanceof TFolder && !f.isRoot());
+  const pick = (matches: TFolder[]): TFolder[] => {
+    if (matches.length <= 1) return matches;
+    const top = matches.filter(f => !f.path.includes('/'));
+    return top.length === 1 ? top : matches;
+  };
+  const tiers = [
+    all.filter(f => f.name === raw),
+    all.filter(f => f.name.toLowerCase() === key),
+    all.filter(f => f.path.toLowerCase().endsWith(`/${key}`) || f.path.toLowerCase() === key),
+  ];
+  for (const tier of tiers) if (tier.length) return pick(tier);
+  return [];
 }
 
 /**
