@@ -48,6 +48,101 @@ function record(entry: Record<string, unknown>) {
   fs.appendFileSync(RESULTS, `${JSON.stringify({ at: new Date().toISOString(), ...entry })}\n`);
 }
 
+/** Rejects when the promise takes longer than `ms` (a frozen Obsidian window never answers). */
+export function withTimeout<T>(promise: Promise<T>, ms: number, what: string): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  return Promise.race([
+    promise.finally(() => clearTimeout(timer)),
+    new Promise<T>((_, reject) => {
+      timer = setTimeout(() => reject(new Error(`${what} got no answer from Obsidian in ${ms / 1000} s (the window looks frozen)`)), ms);
+    }),
+  ]);
+}
+
+/** Whether the Obsidian window still answers a trivial script within `ms`. */
+export async function windowResponds(ms = 10_000): Promise<boolean> {
+  try {
+    await withTimeout(browser.execute(() => 1), ms, 'A responsiveness probe');
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Captures the page's console (errors, warnings, the plugin's debug log and its `[timing]` lines)
+ * so a failing check can print what happened inside Obsidian.
+ */
+export async function installConsoleCapture() {
+  await browser.execute(() => {
+    const w = window as unknown as { __e2eConsole?: string[]; __e2eConsolePatched?: boolean };
+    if (w.__e2eConsolePatched) return;
+    w.__e2eConsolePatched = true;
+    w.__e2eConsole = [];
+    const keep = (level: string, args: unknown[]) => {
+      const text = args
+        .map(a => {
+          if (a instanceof Error) return `${a.name}: ${a.message}`;
+          if (typeof a === 'string') return a;
+          try {
+            return JSON.stringify(a)?.slice(0, 400) ?? String(a);
+          } catch {
+            return String(a);
+          }
+        })
+        .join(' ');
+      const list = w.__e2eConsole as string[];
+      list.push(`${new Date().toISOString().slice(11, 23)} ${level} ${text.slice(0, 1200)}`);
+      if (list.length > 800) list.splice(0, list.length - 800);
+    };
+    for (const level of ['log', 'info', 'warn', 'error', 'debug'] as const) {
+      const original = console[level].bind(console);
+      console[level] = (...args: unknown[]) => {
+        keep(level, args);
+        original(...args);
+      };
+    }
+    window.addEventListener('error', e => keep('uncaught', [e.message]));
+    window.addEventListener('unhandledrejection', e => keep('unhandled-rejection', [String((e as PromiseRejectionEvent).reason)]));
+  });
+}
+
+/** Console lines captured since the page loaded, optionally filtered. */
+export async function consoleLines(pattern?: RegExp): Promise<string[]> {
+  const lines = await withTimeout(
+    browser.execute(() => (window as unknown as { __e2eConsole?: string[] }).__e2eConsole ?? []),
+    10_000,
+    'Reading the console',
+  );
+  return pattern ? lines.filter(l => pattern.test(l)) : lines;
+}
+
+/** What Obsidian shows and does right now: open modals, notices, the plugin's state, the console tail. */
+export async function diagnose(): Promise<Record<string, unknown>> {
+  if (!(await windowResponds(8_000))) return { frozen: true, note: 'The Obsidian window did not answer a trivial script within 8 s.' };
+  try {
+    return await withTimeout(
+      browser.executeObsidian(({ app, plugins }) => {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const p = plugins.voiceAgent as any;
+        const text = (sel: string) => [...document.querySelectorAll(sel)].map(n => (n.textContent ?? '').replace(/\s+/g, ' ').trim().slice(0, 600));
+        return {
+          modals: text('.modal-container .modal'),
+          notices: text('.notice'),
+          activeFile: app.workspace.getActiveFile()?.path ?? null,
+          responding: !!p?.isresponding,
+          tasks: (p?.agents?.list?.() ?? []).map((t: { id: string; title: string; status: string; error?: string }) => ({ id: t.id, title: t.title, status: t.status, error: t.error })),
+          console: ((window as unknown as { __e2eConsole?: string[] }).__e2eConsole ?? []).slice(-60),
+        };
+      }),
+      15_000,
+      'Diagnosis',
+    );
+  } catch (error) {
+    return { error: error instanceof Error ? error.message : String(error) };
+  }
+}
+
 function obsidianVersions() {
   try {
     return { app: browser.getObsidianVersion(), installer: browser.getObsidianInstallerVersion() };
@@ -130,21 +225,30 @@ export function check(id: string, scenario: string, fn: (ev: Evidence) => Promis
         notes.push(text);
       },
     };
+    const started = Date.now();
     try {
       await fn(ev);
       // Every check keeps the fake-service traffic it caused.
       const traffic = traceSince(ev.mark);
       if (traffic.length) ev.save('fake-service-traffic', traffic);
-      record({ id, scenario, status: 'pass', evidence, notes, obsidian: obsidianVersions() });
+      record({ id, scenario, status: 'pass', evidence, notes, obsidian: obsidianVersions(), ms: Date.now() - started });
+      console.log(`[e2e-result] ${id} PASS (${Date.now() - started} ms) ${notes.join(' ').slice(0, 300)}`);
     } catch (error) {
-      try {
-        await ev.shot('at-failure');
-      } catch {
-        // Obsidian may be gone; keep the error.
+      const message = error instanceof Error ? error.message : String(error);
+      const diagnosis = await diagnose();
+      ev.save('diagnosis', diagnosis);
+      if (!diagnosis.frozen) {
+        try {
+          await withTimeout(ev.shot('at-failure'), 15_000, 'The failure screenshot');
+        } catch {
+          // Obsidian may be gone; keep the error.
+        }
       }
       const traffic = traceSince(ev.mark);
       if (traffic.length) ev.save('fake-service-traffic', traffic);
-      record({ id, scenario, status: 'fail', evidence, notes, obsidian: obsidianVersions(), error: error instanceof Error ? error.message : String(error) });
+      record({ id, scenario, status: 'fail', evidence, notes, obsidian: obsidianVersions(), error: message, ms: Date.now() - started });
+      console.log(`[e2e-result] ${id} FAIL (${Date.now() - started} ms) ${message.replace(/\s+/g, ' ').slice(0, 400)}`);
+      console.log(`[e2e-diagnose] ${id} ${JSON.stringify(diagnosis).slice(0, 6000)}`);
       throw error;
     }
   });
@@ -178,11 +282,15 @@ export async function useFakeServices() {
         { ...base, name: 'fake-modern', url: `${url}/mcp` },
         { ...base, name: 'fake-legacy', url: `${url}/mcp-legacy` },
       ];
+      // The plugin's debug log carries the [timing] lines (system review, latency).
+      s.debug = true;
+      if (p.console) p.console.enabled = true;
       await p.saveSettings();
       await p.mcp.refreshAll(false);
     },
     FAKE_URL,
   );
+  await installConsoleCapture();
 }
 
 /** Runs a chat note through the plugin's "Complete chat response" command. */
@@ -213,8 +321,8 @@ export async function runChat(
     async () => {
       const title = await openModalTitle();
       if (title && opts.onModal && !seen.has(title)) {
-        seen.add(title);
         await opts.onModal(title);
+        seen.add(title);
       }
       const state = await browser.executeObsidian(async ({ app, plugins }, file: string) => {
         // Read the chat's own editor (a tool may have opened another note), else the file on disk.
@@ -232,7 +340,7 @@ export async function runChat(
       last = state.text;
       return !state.responding && state.text.includes(final);
     },
-    { timeout: opts.timeout ?? 90_000, interval: 500, timeoutMsg: `Chat ${id} did not finish with ${final}` },
+    { timeout: opts.timeout ?? 60_000, interval: 500, timeoutMsg: `Chat ${id} did not finish with ${final} within ${(opts.timeout ?? 60_000) / 1000} s` },
   );
   return { file, final, text: last };
 }
@@ -244,13 +352,74 @@ export async function openModalTitle(): Promise<string> {
 
 /** Clicks a button with this label in the open modal. */
 export async function clickModalButton(label: string) {
-  const button = await browser.$(`.modal-container button=${label}`);
+  // WebdriverIO's `tag=text` selector only works on its own, not after a CSS ancestor, so find the
+  // modal first and the button inside it. (The first CI run used `.modal-container button=…`,
+  // which matched nothing, so every modal stayed open until the chat timed out.)
+  const modal = await browser.$('.modal-container');
+  await modal.waitForExist({ timeout: 10_000 });
+  const button = await modal.$(`button=${label}`);
   await button.waitForClickable({ timeout: 10_000 });
   await button.click();
 }
 
+type WorkerScript = { rounds: Array<Array<{ name: string; args?: unknown }>>; final?: string; delays?: number[]; finalDelayMs?: number; drop?: boolean };
+
+/** Starts a background sub-agent (worker layer) with a scripted brief; returns at once. */
+export async function startWorker(title: string, brief: string, script: WorkerScript, origin = 'test') {
+  const id = slug(title);
+  const prompt = `${brief}\n\n${encodeScript({ id, ...script, final: script.final ?? `FINAL-${id}` })}`;
+  const taskId = await browser.executeObsidian(
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    ({ plugins }, title: string, prompt: string, origin: string) => (plugins.voiceAgent as any).agents.spawn(title, prompt, origin).id as string,
+    title,
+    prompt,
+    origin,
+  );
+  return { scriptId: id, taskId };
+}
+
+/** Reads a task's state. */
+export async function readTask(taskId: string): Promise<Record<string, unknown>> {
+  return browser.executeObsidian(({ plugins }, taskId: string) => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const t = (plugins.voiceAgent as any).agents.find(taskId);
+    return t
+      ? JSON.parse(JSON.stringify({ id: t.id, status: t.status, result: t.result, error: t.error, steps: t.steps, notePath: t.notePath, parentNote: t.parentNote, topicNote: t.topicNote, callNote: t.callNote }))
+      : {};
+  }, taskId);
+}
+
+/** Waits for a task to end. */
+export async function waitTask(taskId: string, timeout = 120_000): Promise<Record<string, unknown>> {
+  let task: Record<string, unknown> = {};
+  await browser.waitUntil(
+    async () => {
+      task = await readTask(taskId);
+      return ['done', 'failed', 'cancelled'].includes(String(task.status));
+    },
+    { timeout, interval: 500, timeoutMsg: `Task ${taskId} did not end within ${timeout / 1000} s` },
+  );
+  return task;
+}
+
+/** Sets plugin settings by dotted path (null deletes the key) and saves them. */
+export async function setSettings(values: Record<string, unknown>) {
+  await browser.executeObsidian(async ({ plugins }, values: Record<string, unknown>) => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const p = plugins.voiceAgent as any;
+    for (const [key, value] of Object.entries(values)) {
+      const parts = key.split('.');
+      let o = p.settings;
+      for (const k of parts.slice(0, -1)) o = o[k] ??= {};
+      if (value === null) delete o[parts[parts.length - 1]];
+      else o[parts[parts.length - 1]] = value;
+    }
+    await p.saveSettings();
+  }, values);
+}
+
 /** Starts a background sub-agent (worker layer) with a scripted brief and waits for it to end. */
-export async function runWorker(title: string, brief: string, script: { rounds: Array<Array<{ name: string; args?: unknown }>>; final?: string }, timeout = 120_000) {
+export async function runWorker(title: string, brief: string, script: WorkerScript, timeout = 120_000) {
   const id = slug(title);
   const prompt = `${brief}\n\n${encodeScript({ id, ...script, final: script.final ?? `FINAL-${id}` })}`;
   const taskId = await browser.executeObsidian(

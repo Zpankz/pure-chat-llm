@@ -130,6 +130,23 @@ Node types for the validation vault.
     {},
     'A model answer about oxygen delivery. Links: [[oxygen-cascade]].',
   ),
+  // Navigation (validation-scenarios.md section 2): inline typed links, an alias, folder notes
+  // and a bare name shared by two notes.
+  'src/ontology/concepts/dead-space.md': note(
+    { type: 'concept', aliases: ['Bohr dead space'] },
+    [
+      'Ventilation that takes no part in gas exchange.',
+      '',
+      'part-of:: [[respiratory-physiology]]',
+      '- contrasts:: [[shunt]]',
+      'It is estimated with the [measured-by:: [[bohr-equation]]].',
+    ].join('\n'),
+  ),
+  'src/ontology/principles/bohr-equation.md': note({ type: 'principle' }, 'Gives the dead space fraction of a breath.'),
+  'src/ontology/principles/principles.md': note({ type: 'folder' }, 'Folder note for the principles: laws the concepts rest on.'),
+  'src/lo/anzca/LO/LO.md': note({ type: 'folder' }, 'Folder note for the ANZCA learning objectives.'),
+  'src/note/overview.md': note({}, 'Overview of the model answers (one of two notes named overview).'),
+  'src/qs/overview.md': note({}, 'Overview of the question bank (one of two notes named overview).'),
   // Write targets for the review tests (each test uses its own note).
   'Notes/edit-approve.md': '# Edit target\n\nLine A\nLine B\n',
   'Notes/edit-reject.md': '# Edit target\n\nLine A\nLine B\n',
@@ -140,6 +157,14 @@ Node types for the validation vault.
   'Notes/scratch.md': '# Scratch\n\nalpha beta gamma\n',
   'Notes/chat-delete.md': '# Delete me from a chat\n',
   'Notes/sections.md': '# Sections\n\n## Alpha\n\nalpha body\n\n## Beta\n\nbeta body\n',
+  // Writes and reliability (validation-scenarios.md sections 3 and 4).
+  'Notes/big-note.md': `# Big note\n\n${Array.from({ length: 12 }, (_, i) => `Paragraph ${i + 1}: notes worth keeping about the oxygen cascade.`).join('\n\n')}\n`,
+  'Notes/proposal-target.md': '# Proposal target\n\nStatus: draft\n',
+  'Notes/stale-merge.md': '# Stale merge\n\n## Agent part\n\nAgent line\n\n## Spacer\n\nOne\nTwo\nThree\nFour\nFive\n\n## User part\n\nUser line\n',
+  'Notes/stale-conflict.md': '# Stale conflict\n\nShared line\n',
+  'Notes/cancel-review.md': '# Cancel during review\n\nOriginal text\n',
+  'Notes/cancel-request.md': '# Cancel during a request\n\nOriginal text\n',
+  'Notes/workspace-pinned.md': '# Pinned tab\n\nKeep me open.\n',
   // Agent Skills: main file named after the folder (decision 13), plus SKILL.md accepted.
   'Skills/vault-search/vault-search.md': `---
 name: vault-search

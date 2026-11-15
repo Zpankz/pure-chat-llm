@@ -83,7 +83,7 @@ return JSON.stringify(out);`;
   check('REV-1', 'Worker replaces a line in Notes/edit-approve.md; both fake reviewers approve', async ev => {
     ev.save('worker', writes);
     const call = writes.calls[0];
-    expect(call?.result).toContain('Approved by both reviewers');
+    expect(call?.result).toContain('Approved by both independent reviewers');
     expect(await readNote('Notes/edit-approve.md')).toContain('Line B, edited by a worker');
     const backups = await listFiles('Agent tasks/Backups');
     ev.save('backups', backups);
@@ -98,14 +98,15 @@ return JSON.stringify(out);`;
   check('REV-2', 'Worker edit carrying the REVIEW-REJECT marker; the fake reviewers reject it', async ev => {
     const call = writes.calls[1];
     ev.save('tool-call', call);
-    expect(call?.result).toMatch(/Not done/);
+    expect(call?.result).toMatch(/ReviewRejected|did not both approve/);
     expect(await readNote('Notes/edit-reject.md')).not.toContain('REVIEW-REJECT');
   });
 
   check('REV-3', 'Worker deletes Notes/delete-approve.md; both approve; it lands in the vault trash', async ev => {
     const call = writes.calls[2];
     ev.save('tool-call', call);
-    expect(call?.result).toContain('both reviewers approved');
+    expect(call?.result).toContain('Approved by both independent reviewers');
+    expect(call?.result).toContain('Moved to the trash');
     expect(await readNote('Notes/delete-approve.md')).toBeNull();
     const trash = await listFiles('.trash');
     ev.save('trash', trash);
@@ -115,7 +116,7 @@ return JSON.stringify(out);`;
   check('REV-4', 'Worker tries to delete Notes/delete-reject.md (content carries REVIEW-REJECT)', async ev => {
     const call = writes.calls[3];
     ev.save('tool-call', call);
-    expect(call?.result).toMatch(/Not deleted/);
+    expect(call?.result).toMatch(/ReviewRejected|did not both approve/);
     expect(await readNote('Notes/delete-reject.md')).toContain('must survive');
   });
 
@@ -142,7 +143,7 @@ return JSON.stringify(out);`;
   check('CM-2', 'The same script edits Notes/codemode-edit.md; the edit goes to the two reviewers', async ev => {
     const reviews = reviewerRequests(code.traffic).filter(r => r.question.includes('codemode-edit'));
     ev.save('codemode-reviews', reviews);
-    expect(String(code.output.edited)).toContain('Approved by both reviewers');
+    expect(String(code.output.edited)).toContain('Approved by both independent reviewers');
     expect(reviews.length).toBe(2);
     expect(await readNote('Notes/codemode-edit.md')).toContain('EDITED-BY-CODEMODE');
   });
@@ -154,5 +155,13 @@ return JSON.stringify(out);`;
     expect(code.traffic.filter(e => e.service === 'llm-models').length).toBe(0);
     expect(String(code.output.mcp)).toContain('FAKE-MCP-RESULT');
     ev.note('All four network routes were blocked and no request reached the fake server; the MCP call went through.');
+  });
+
+  check('CM-4', 'In a plain build (no djs module embedded) the code mode result says it ran in the Web Worker fallback', async ev => {
+    const raw = code.calls.find(x => x.name === 'codemode')?.result ?? '';
+    ev.save('codemode-result', raw.slice(0, 1500));
+    expect(raw).toMatch(/Web Worker fallback/);
+    expect(raw).toMatch(/djs not used/);
+    ev.note(`The result names its engine: ${(raw.match(/Web Worker fallback[^\n]*/)?.[0] ?? '').slice(0, 200)}`);
   });
 });

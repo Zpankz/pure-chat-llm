@@ -13,14 +13,20 @@
 // contains `<<FAKE:base64url(json)>>` where json is
 //   { "id": "scenario-id", "rounds": [[{ "name": "tool", "args": {...} }, ...], ...], "final": "text" }
 // Round N is returned after N earlier assistant tool-call turns since that message. When the rounds
-// are used up the fake model answers with `final`.
-// Reviewer requests (system prompt "You review one proposed change") get APPROVE, or REJECT when
-// the change contains the marker REVIEW-REJECT.
+// are used up the fake model answers with `final`. Optional: `delays` (ms before answering each
+// round), `finalDelayMs`, and `drop: true` (every request is cut off with no answer, to simulate a
+// network failure).
+// Reviewer requests (the write reviewers' system prompts) get a JSON approve verdict, or reject
+// when the change contains the marker REVIEW-REJECT. REVIEW-SLOW-<ms> in the change delays the
+// verdict, so a test can act while a review is pending.
 import fs from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
 
 export const FAKE_MARKER = /<<FAKE:([A-Za-z0-9_-]+=*)>>/g;
+
+// The write reviewers' system prompts (old and reworked wording).
+const REVIEWER = /You review one proposed change|You check (?:one|whether one) proposed change/;
 
 export function encodeScript(script) {
   return `<<FAKE:${Buffer.from(JSON.stringify(script)).toString('base64url')}>>`;
@@ -44,16 +50,20 @@ function textOf(content) {
 export function planReply(body) {
   const messages = Array.isArray(body.messages) ? body.messages : [];
   const system = messages.filter(m => m.role === 'system' || m.role === 'developer').map(m => textOf(m.content)).join('\n');
-  if (/You review one proposed change/.test(system)) {
+  if (REVIEWER.test(system)) {
     const change = messages.filter(m => m.role === 'user').map(m => textOf(m.content)).join('\n');
     const reject = change.includes('REVIEW-REJECT');
+    const slow = /REVIEW-SLOW-(\d+)/.exec(change);
     return {
       kind: 'reviewer',
+      delayMs: slow ? Number(slow[1]) : 0,
       message: {
         role: 'assistant',
-        content: reject
-          ? 'REJECT\nFake reviewer: the change carries the REVIEW-REJECT test marker.'
-          : 'APPROVE\nFake reviewer: no reject marker in the change.',
+        content: JSON.stringify(
+          reject
+            ? { verdict: 'reject', reason: 'Fake reviewer: the change carries the REVIEW-REJECT test marker.' }
+            : { verdict: 'approve', reason: 'Fake reviewer: no reject marker in the change.' },
+        ),
       },
     };
   }
@@ -83,11 +93,20 @@ export function planReply(body) {
       type: 'function',
       function: { name: c.name, arguments: JSON.stringify(c.args ?? {}) },
     }));
-    return { kind: 'tool_calls', script: script.id, round: done, message: { role: 'assistant', content: null, tool_calls: calls } };
+    return {
+      kind: 'tool_calls',
+      script: script.id,
+      round: done,
+      delayMs: script.delays?.[done] ?? 0,
+      drop: !!script.drop,
+      message: { role: 'assistant', content: null, tool_calls: calls },
+    };
   }
   return {
     kind: 'final',
     script: script.id,
+    delayMs: script.finalDelayMs ?? 0,
+    drop: !!script.drop,
     message: { role: 'assistant', content: script.final ?? `FAKE MODEL: scenario ${script.id} finished.` },
   };
 }
@@ -159,6 +178,8 @@ export function startFakeServices({ port = 8787, traceDir }) {
       }
       if (url.pathname.endsWith('/chat/completions')) {
         const plan = planReply(body);
+        let closed = false;
+        res.on('close', () => (closed = !res.writableFinished));
         trace({
           service: 'llm',
           kind: plan.kind,
@@ -169,26 +190,46 @@ export function startFakeServices({ port = 8787, traceDir }) {
           tools_offered: (body.tools ?? []).map(t => t.function?.name ?? t.name),
           messages: body.messages,
           reply: plan.message,
+          delay_ms: plan.delayMs || undefined,
+          dropped: plan.drop || undefined,
         });
-        if (body.stream) {
-          res.writeHead(200, { ...cors, 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache' });
-          const chunk = delta => res.write(`data: ${JSON.stringify({ id: 'fake', object: 'chat.completion.chunk', model: body.model, choices: [{ index: 0, delta, finish_reason: null }] })}\n\n`);
-          if (plan.message.tool_calls) {
-            chunk({ role: 'assistant', tool_calls: plan.message.tool_calls.map((c, index) => ({ index, ...c })) });
-          } else {
-            chunk({ role: 'assistant', content: plan.message.content });
+        const answer = () => {
+          if (body.stream) {
+            res.writeHead(200, { ...cors, 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache' });
+            const chunk = delta => res.write(`data: ${JSON.stringify({ id: 'fake', object: 'chat.completion.chunk', model: body.model, choices: [{ index: 0, delta, finish_reason: null }] })}\n\n`);
+            if (plan.message.tool_calls) {
+              chunk({ role: 'assistant', tool_calls: plan.message.tool_calls.map((c, index) => ({ index, ...c })) });
+            } else {
+              chunk({ role: 'assistant', content: plan.message.content });
+            }
+            res.write(`data: ${JSON.stringify({ id: 'fake', object: 'chat.completion.chunk', choices: [{ index: 0, delta: {}, finish_reason: plan.message.tool_calls ? 'tool_calls' : 'stop' }] })}\n\n`);
+            res.end('data: [DONE]\n\n');
+            return;
           }
-          res.write(`data: ${JSON.stringify({ id: 'fake', object: 'chat.completion.chunk', choices: [{ index: 0, delta: {}, finish_reason: plan.message.tool_calls ? 'tool_calls' : 'stop' }] })}\n\n`);
-          res.end('data: [DONE]\n\n');
+          json(200, {
+            id: 'fake',
+            object: 'chat.completion',
+            model: body.model,
+            choices: [{ index: 0, message: plan.message, finish_reason: plan.message.tool_calls ? 'tool_calls' : 'stop' }],
+            usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+          });
+        };
+        if (plan.drop) {
+          // Simulated network failure: cut the connection without an answer.
+          req.socket.destroy();
           return;
         }
-        json(200, {
-          id: 'fake',
-          object: 'chat.completion',
-          model: body.model,
-          choices: [{ index: 0, message: plan.message, finish_reason: plan.message.tool_calls ? 'tool_calls' : 'stop' }],
-          usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
-        });
+        if (plan.delayMs) {
+          setTimeout(() => {
+            if (closed || res.destroyed) {
+              trace({ service: 'llm-aborted', kind: plan.kind, script: plan.script, round: plan.round, after_ms: plan.delayMs });
+              return;
+            }
+            answer();
+          }, plan.delayMs);
+          return;
+        }
+        answer();
         return;
       }
       if (url.pathname === '/mcp' || url.pathname === '/mcp-legacy') {

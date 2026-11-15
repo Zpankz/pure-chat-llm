@@ -68,7 +68,8 @@ describe('Original tools, skills and MCP from a chat note', () => {
 
   check('TOOL-07', 'Chat calls list_vault_folders on src/lo', async ev => {
     const c = await callTool(ev, 'TOOL-07', 'list_vault_folders', { path: 'src/lo' });
-    expect(c.result).toContain('LO');
+    // src/lo holds the anzca and cicm folders; the nested LO folder is one level further down (BUG-1).
+    expect(c.result).toContain('anzca');
   });
 
   check('TOOL-08', 'Chat calls manage_workspace to open AP11AO401 in a new tab', async ev => {
@@ -132,7 +133,7 @@ describe('Original tools, skills and MCP from a chat note', () => {
     expect(text).toContain('beta body');
   });
 
-  check('SKL-1', 'Refresh the skills catalogue and screenshot the Agent skills settings', async ev => {
+  check('SKL-1', 'Refresh the skills catalogue and check which skills load', async ev => {
     const skills = await browser.executeObsidian(async ({ plugins }) => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const list = await (plugins.voiceAgent as any).skills.refresh();
@@ -143,23 +144,8 @@ describe('Original tools, skills and MCP from a chat note', () => {
     expect(byName['vault-search']?.mainFile).toBe('vault-search.md');
     expect(byName['legacy-format']?.mainFile).toBe('SKILL.md');
     expect(byName['no-description']).toBeUndefined();
-    await browser.executeObsidian(({ app }) => {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const setting = (app as any).setting;
-      setting.open();
-      setting.openTabById('voice-agent');
-    });
-    await browser.execute(() => {
-      [...document.querySelectorAll('.vertical-tab-content .setting-item-heading')]
-        .find(el => el.textContent?.includes('Agent skills'))
-        ?.scrollIntoView({ block: 'start' });
-    });
-    await browser.pause(300);
-    await ev.shot('agent-skills-settings');
-    await browser.executeObsidian(({ app }) => {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      (app as any).setting.close();
-    });
+    // The settings screenshot for this requirement is taken in 02-settings, which opens the tab
+    // with a time limit.
     ev.note('vault-search loads from vault-search.md, legacy-format from SKILL.md, and the skill without a description is skipped.');
   });
 
@@ -191,23 +177,8 @@ describe('Original tools, skills and MCP from a chat note', () => {
     ev.save('tool-calls', calls);
     expect(calls[0]?.result).toContain('FAKE-MCP-RESULT');
     expect(calls[1]?.result).toContain('FAKE-MCP-RESULT');
-    await browser.executeObsidian(({ app }) => {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const setting = (app as any).setting;
-      setting.open();
-      setting.openTabById('voice-agent');
-    });
-    await browser.execute(() => {
-      [...document.querySelectorAll('.vertical-tab-content .setting-item-heading')]
-        .find(el => el.textContent?.includes('Remote MCP servers'))
-        ?.scrollIntoView({ block: 'start' });
-    });
-    await browser.pause(300);
-    await ev.shot('mcp-settings');
-    await browser.executeObsidian(({ app }) => {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      (app as any).setting.close();
-    });
+    // The settings screenshot for this requirement is taken in 02-settings, which opens the tab
+    // with a time limit.
     ev.note(`Bridged ${bridged.length} MCP tools; both fake servers answered (the session-based one after initialize).`);
   });
 });

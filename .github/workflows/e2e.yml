@@ -1,19 +1,28 @@
 name: End-to-end validation (real Obsidian)
 
 on:
+  # Pushes to claude/** branches cover the pull request's head too, so pull_request is not
+  # listed (it would run the same commit twice).
   push:
     branches: ['claude/**']
-  pull_request:
   workflow_dispatch:
     inputs:
       obsidian_version:
         description: 'Obsidian app version (latest, earliest or e.g. 1.11.4)'
         default: 'latest'
+      spec:
+        description: 'Run only spec files whose name contains this text (empty: all)'
+        default: ''
+
+# A newer push replaces a run still in progress on the same branch.
+concurrency:
+  group: e2e-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   e2e:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 50
     steps:
       - uses: actions/checkout@v4
 
@@ -40,8 +49,10 @@ jobs:
       - name: Run the suite in real Obsidian (headless, xvfb)
         id: e2e
         continue-on-error: true
+        timeout-minutes: 35
         env:
           OBSIDIAN_VERSION: ${{ inputs.obsidian_version || 'latest' }}
+          E2E_SPEC: ${{ inputs.spec || '' }}
         run: xvfb-run -a --server-args="-screen 0 1920x1080x24" npm run e2e
 
       - name: Validation report
@@ -60,6 +71,7 @@ jobs:
         with:
           name: validation-evidence
           path: e2e/.out
+          include-hidden-files: true
           retention-days: 30
 
       - name: Fail when the suite failed
