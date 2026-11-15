@@ -43,10 +43,27 @@ async function openTab(ev: Evidence) {
     if (!(await windowResponds(15_000))) {
       throw new Error(`Opening Settings > Voice Agent froze the Obsidian window: no answer for 15 s (${Math.round((Date.now() - before) / 1000)} s after opening)`);
     }
-    const count = await browser.execute(() => document.querySelectorAll('.vertical-tab-content .setting-item').length);
+    const count = await browser.execute(() => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const root: HTMLElement | undefined = (window as any).app?.setting?.activeTab?.containerEl;
+      return root?.querySelectorAll('.setting-item').length ?? 0;
+    });
     if (count > 0) break;
     await browser.pause(500);
   }
+  // What actually rendered: the active tab and the outline of its first elements. Also printed to
+  // the job log, which can be read without downloading the evidence.
+  const rendered = await browser.execute(() => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const tab = (window as any).app?.setting?.activeTab;
+      const root: HTMLElement | undefined = tab?.containerEl;
+      const outline = root
+        ? [...root.querySelectorAll('*')].slice(0, 80).map(e => `${e.tagName.toLowerCase()}.${[...e.classList].join('.')} ${(e.childElementCount ? '' : e.textContent ?? '').trim().slice(0, 40)}`)
+        : [];
+      return { id: tab?.id ?? null, rootClass: root?.className ?? null, items: root?.querySelectorAll('.setting-item').length ?? 0, outline };
+  });
+  ev.save('rendered-tab', rendered);
+  console.log(`[e2e-settings] rendered ${JSON.stringify(rendered).slice(0, 4000)}`);
   ev.save('render-log', await consoleLines(/settings tab rendered|error|uncaught/i));
 }
 
@@ -67,10 +84,10 @@ async function sections(): Promise<Record<string, string[]>> {
     browser.execute(() => {
       const out: Record<string, string[]> = {};
       let current = '(top)';
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const root: HTMLElement = (window as any).app?.setting?.activeTab?.containerEl ?? document.body;
       // Plain settings, Setting(...).setHeading() rows, and SettingGroup headings, in page order.
-      const items = document.querySelectorAll(
-        '.vertical-tab-content .setting-item, .vertical-tab-content [class*="heading"]:not(.setting-item):not(.setting-item *)',
-      );
+      const items = root.querySelectorAll('.setting-item, [class*="heading"]:not(.setting-item):not(.setting-item *)');
       items.forEach(item => {
         const isHeading = !item.classList.contains('setting-item') || item.classList.contains('setting-item-heading');
         const name = (isHeading && !item.classList.contains('setting-item')
@@ -94,7 +111,9 @@ async function sections(): Promise<Record<string, string[]>> {
 async function scrollTo(heading: string) {
   await withTimeout(
     browser.execute((heading: string) => {
-      const h = [...document.querySelectorAll('.vertical-tab-content .setting-item-heading .setting-item-name, .vertical-tab-content [class*="heading"]:not(.setting-item):not(.setting-item *)')].find(el =>
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const root: HTMLElement = (window as any).app?.setting?.activeTab?.containerEl ?? document.body;
+      const h = [...root.querySelectorAll('.setting-item-heading .setting-item-name, [class*="heading"]:not(.setting-item):not(.setting-item *)')].find(el =>
         (el.textContent?.trim() ?? '').startsWith(heading),
       );
       h?.scrollIntoView({ block: 'start' });
@@ -114,6 +133,7 @@ describe('Settings tab', () => {
     await openTab(ev);
     const s = await sections();
     ev.save('settings-sections', s);
+    console.log(`[e2e-settings] sections ${JSON.stringify(s).slice(0, 4000)}`);
     await ev.shot('tab-top');
     const headings = Object.keys(s);
     for (const g of GROUPS) {
