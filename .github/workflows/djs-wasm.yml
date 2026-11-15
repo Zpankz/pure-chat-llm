@@ -1,0 +1,134 @@
+name: Build djs.wasm from source
+
+# djs (https://github.com/earendil-works/djs) publishes source only, no prebuilt module. This
+# builds its shipped WebAssembly module at a pinned commit with a pinned Rust toolchain, the way
+# its own scripts/build-wasm.sh does, records the module's SHA-256, checks that the host code
+# vendored in src/vendor/djs (from the same commit) runs it, and uploads it as an artifact. The
+# release workflow embeds that artifact in main.js. On pull requests it runs as a check, so a
+# change to the pins is proven before any release.
+#
+# To move to a newer djs: update DJS_COMMIT here, copy js/src from that commit into
+# src/vendor/djs (see its README), and let this workflow prove the pair works together.
+
+on:
+  workflow_call:
+    outputs:
+      sha256:
+        description: SHA-256 of the built djs.wasm
+        value: ${{ jobs.build.outputs.sha256 }}
+      commit:
+        description: The djs commit it was built from
+        value: ${{ jobs.build.outputs.commit }}
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - '.github/workflows/djs-wasm.yml'
+      - 'src/vendor/djs/**'
+      - 'src/tools/codemode/**'
+      - 'tests/unit/codemode/**'
+      - 'esbuild.config.mjs'
+
+permissions:
+  contents: read
+
+env:
+  # djs at 8 November 2026, the commit src/vendor/djs was copied from.
+  DJS_COMMIT: 0e58f62c80252fc3f4156ab7a3744746434ed860
+  # djs builds with edition 2024; the shipped module also builds core and alloc from source.
+  RUST_TOOLCHAIN: 1.97.0
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    outputs:
+      sha256: ${{ steps.hash.outputs.sha256 }}
+      commit: ${{ steps.hash.outputs.commit }}
+    steps:
+      - name: Check out the plugin
+        uses: actions/checkout@v4
+        with:
+          path: plugin
+
+      - name: Check out djs at the pinned commit
+        uses: actions/checkout@v4
+        with:
+          repository: earendil-works/djs
+          ref: ${{ env.DJS_COMMIT }}
+          path: djs
+          persist-credentials: false
+
+      - name: Confirm the commit
+        working-directory: djs
+        run: |
+          actual=$(git rev-parse HEAD)
+          if [ "$actual" != "$DJS_COMMIT" ]; then
+            echo "::error::Checked out $actual, expected $DJS_COMMIT."
+            exit 1
+          fi
+
+      - name: Install Rust ${{ env.RUST_TOOLCHAIN }}
+        run: |
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal \
+            --component rust-src --target wasm32-unknown-unknown
+          rustup default "$RUST_TOOLCHAIN"
+          rustc -vV
+
+      - name: Cache cargo downloads
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+          key: djs-cargo-${{ env.DJS_COMMIT }}-${{ env.RUST_TOOLCHAIN }}
+
+      - name: Build the shipped module (djs's own scripts/build-wasm.sh)
+        working-directory: djs
+        run: |
+          scripts/build-wasm.sh
+          cp target/wasm32-unknown-unknown/wasm/djs_wasm.wasm "$GITHUB_WORKSPACE/djs.wasm"
+
+      - name: Record its SHA-256
+        id: hash
+        run: |
+          sha=$(sha256sum djs.wasm | cut -d' ' -f1)
+          size=$(stat -c %s djs.wasm)
+          echo "sha256=$sha" >> "$GITHUB_OUTPUT"
+          echo "commit=$DJS_COMMIT" >> "$GITHUB_OUTPUT"
+          echo "$sha  djs.wasm" > djs.wasm.sha256
+          {
+            echo "### djs.wasm"
+            echo ""
+            echo "- Source: earendil-works/djs at \`$DJS_COMMIT\`"
+            echo "- Toolchain: Rust $RUST_TOOLCHAIN, \`scripts/build-wasm.sh\`"
+            echo "- Size: $size bytes"
+            echo "- SHA-256: \`$sha\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "djs.wasm: $size bytes, sha256 $sha"
+
+      - name: Use Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22.x'
+          cache: npm
+          cache-dependency-path: plugin/package-lock.json
+
+      - name: Run code mode on the built module
+        working-directory: plugin
+        env:
+          DJS_WASM_FILE: ${{ github.workspace }}/djs.wasm
+        run: |
+          npm ci
+          npm test -- codemode
+          # The release build embeds it; prove that works too.
+          DJS_WASM_SHA256=${{ steps.hash.outputs.sha256 }} DJS_COMMIT=$DJS_COMMIT npm run build
+          grep -q "${{ steps.hash.outputs.sha256 }}" main.js
+
+      - name: Upload the module
+        uses: actions/upload-artifact@v4
+        with:
+          name: djs-wasm
+          path: |
+            djs.wasm
+            djs.wasm.sha256
+          if-no-files-found: error

@@ -9,6 +9,7 @@ import { signIn } from '../mcp/McpOAuth';
 import {
   djsModulePath,
   djsProblem,
+  embeddedDjs,
   loadDjsModule,
   resetDjsModule,
 } from '../tools/codemode/djsEngine';
@@ -1649,9 +1650,16 @@ export function renderSkillsAndCodeMode(
             redraw();
           }),
       );
+    const builtIn = embeddedDjs();
+    const own = !!(c.djsModulePath?.trim() || c.djsModuleUrl?.trim());
+    const pathHint =
+      builtIn && !own
+        ? `Leave empty to use the built-in module (djs ${builtIn.commit.slice(0, 7) || 'source build'}, sha256 ${builtIn.sha256.slice(0, 12)}…).`
+        : `Leave empty to use ${builtIn ? 'the built-in module' : djsModulePath(plugin)}.`;
+    pathSetting.setDesc(`Vault path of your own djs.wasm. ${pathHint} Checking…`);
     void loadDjsModule(plugin).then(module =>
       pathSetting.setDesc(
-        `Vault path of djs.wasm. Leave empty to use ${djsModulePath(plugin)}. ${
+        `Vault path of your own djs.wasm. ${pathHint} ${
           module
             ? 'Module loaded: scripts run in djs.'
             : `${djsProblem() ?? 'Module not found.'} Scripts run in the Web Worker, a weaker sandbox.`
@@ -1661,7 +1669,7 @@ export function renderSkillsAndCodeMode(
     new Setting(el)
       .setName('djs download address')
       .setDesc(
-        'Where to fetch djs.wasm when it is missing. Used only with a pinned checksum below, over https.',
+        'Where to fetch your own djs.wasm instead of the built-in one. Used only with a pinned checksum below, over https.',
       )
       .addText(t =>
         t.setValue(c.djsModuleUrl ?? '').onChange(async x => {

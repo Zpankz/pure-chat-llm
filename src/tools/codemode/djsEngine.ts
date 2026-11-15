@@ -32,6 +32,53 @@ export interface CodeModeHost {
 export const DJS_WASM_URL = '';
 export const DJS_WASM_SHA256 = '';
 
+// Set by esbuild.config.mjs when the release build embeds djs.wasm (built from source in CI).
+declare const __DJS_WASM_BASE64__: string | undefined;
+declare const __DJS_WASM_SHA256__: string | undefined;
+declare const __DJS_WASM_COMMIT__: string | undefined;
+
+/** The djs module built into main.js, if this build has one. */
+let embedded = {
+  base64: typeof __DJS_WASM_BASE64__ === 'string' ? __DJS_WASM_BASE64__ : '',
+  sha256: typeof __DJS_WASM_SHA256__ === 'string' ? __DJS_WASM_SHA256__ : '',
+  commit: typeof __DJS_WASM_COMMIT__ === 'string' ? __DJS_WASM_COMMIT__ : '',
+};
+
+/** The built-in djs module's checksum and source commit, or null when this build has none. */
+export function embeddedDjs(): { sha256: string; commit: string } | null {
+  return embedded.base64 ? { sha256: embedded.sha256, commit: embedded.commit } : null;
+}
+
+/**
+ * Replaces the built-in module (tests only).
+ * @param next - Base64 bytes, sha256 and commit; empty base64 for none.
+ */
+export function setEmbeddedDjsForTests(next: { base64: string; sha256: string; commit?: string }) {
+  embedded = { commit: '', ...next };
+  resetDjsModule();
+}
+
+/**
+ * Decodes base64 to bytes.
+ * @param base64 - Base64 text.
+ */
+function fromBase64(base64: string): ArrayBuffer {
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return bytes.buffer;
+}
+
+/**
+ * Whether the user pointed code mode at a djs module of their own (a path or a download), which
+ * then takes the place of the built-in one.
+ * @param plugin - Plugin.
+ */
+function hasOwnDjsSource(plugin: PureChatLLM): boolean {
+  const s = plugin.settings.codeMode as { djsModulePath?: string; djsModuleUrl?: string };
+  return !!(s.djsModulePath?.trim() || s.djsModuleUrl?.trim());
+}
+
 /** Fetches bytes from a URL (tests pass a fake). */
 export type BytesFetcher = (url: string) => Promise<ArrayBuffer>;
 
@@ -89,9 +136,11 @@ export async function verifyDjsBytes(
 }
 
 /**
- * Finds the djs module bytes: the cached file in the plugin folder, or a download from the
- * configured URL, which must match the pinned sha256 before it is kept or used. A cached file is
- * checked against the pin too when one is set.
+ * Finds the djs module bytes. Unless the user set a module path or download of their own, the
+ * module built into main.js is used, after its bytes match the checksum recorded when it was
+ * built. Otherwise: the file at the module path, or a download from the configured URL, which
+ * must match the pinned sha256 before it is kept or used. A file is checked against the pin too
+ * when one is set.
  * @param plugin - Plugin.
  * @param fetchBytes - Downloader.
  */
@@ -99,6 +148,14 @@ export async function obtainDjsBytes(
   plugin: PureChatLLM,
   fetchBytes: BytesFetcher = defaultFetcher,
 ): Promise<{ bytes?: ArrayBuffer; problem?: string }> {
+  if (embedded.base64 && !hasOwnDjsSource(plugin)) {
+    const bytes = fromBase64(embedded.base64);
+    const check = await verifyDjsBytes(bytes, embedded.sha256);
+    if (check.ok) return { bytes };
+    return {
+      problem: `the built-in djs module does not match its recorded sha256 (it has ${check.actual}); it was not loaded.`,
+    };
+  }
   const path = djsModulePath(plugin);
   const { url, sha256 } = djsSource(plugin);
   const adapter = plugin.app.vault.adapter;
@@ -152,7 +209,7 @@ export function loadDjsModule(
   fetchBytes?: BytesFetcher,
 ): Promise<WebAssembly.Module | null> {
   const { url, sha256 } = djsSource(plugin);
-  const key = `${djsModulePath(plugin)}|${url}|${sha256}`;
+  const key = `${djsModulePath(plugin)}|${url}|${sha256}|${embedded.sha256}`;
   if (cached?.key === key) return cached.module;
   const module = (async () => {
     try {
