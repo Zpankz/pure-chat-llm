@@ -11,7 +11,10 @@
     "release": "bash Release.sh",
     "lint": "eslint \"src/**/*.ts\"",
     "lint:fix": "eslint \"src/**/*.ts\" --fix",
-    "copy-to-mobile-vault": "kioclient5 --overwrite copy styles.css manifest.json main.js \"mtp:/Armor X31 Pro/Internal shared storage/Documents/Obsidian/.obsidian/plugins/pure-chat-llm/\""
+    "copy-to-mobile-vault": "kioclient5 --overwrite copy styles.css manifest.json main.js \"mtp:/Armor X31 Pro/Internal shared storage/Documents/Obsidian/.obsidian/plugins/pure-chat-llm/\"",
+    "e2e": "wdio run ./e2e/wdio.conf.mts",
+    "e2e:typecheck": "tsc -p e2e/tsconfig.json",
+    "e2e:report": "node e2e/report.mjs"
   },
   "keywords": [
     "obsidian",
@@ -28,19 +31,29 @@
     "@codemirror/view": "^6.38.3",
     "@eslint/js": "^9.39.2",
     "@types/glob-to-regexp": "^0.4.4",
+    "@types/mocha": "^10.0.10",
     "@types/node": "^25.0.2",
+    "@wdio/cli": "^9.33.1",
+    "@wdio/globals": "^9.33.1",
+    "@wdio/local-runner": "^9.33.1",
+    "@wdio/mocha-framework": "^9.33.1",
     "builtin-modules": "5.0.0",
     "esbuild": "^0.27.2",
     "eslint": "^9.39.2",
-    "eslint-plugin-obsidianmd": "^0.1.9",
     "eslint-plugin-jsdoc": "^62.5.4",
+    "eslint-plugin-obsidianmd": "^0.1.9",
+    "expect-webdriverio": "^7.0.1",
     "globals": "^16.5.0",
+    "mocha": "^12.0.3",
     "obsidian": "latest",
     "prettier": "^3.7.4",
     "prettier-plugin-sh": "^0.18.0",
     "tslib": "^2.8.1",
     "typescript": "^5.9.3",
-    "typescript-eslint": "^8.50.1"
+    "typescript-eslint": "^8.50.1",
+    "wdio-obsidian-reporter": "^3.5.0",
+    "wdio-obsidian-service": "^3.5.0",
+    "webdriverio": "^9.33.1"
   },
   "dependencies": {
     "diff": "^8.0.3",
