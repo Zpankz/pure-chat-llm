@@ -220,3 +220,23 @@ test('moving call notes never waits on an "Update links?" prompt', async () => {
   assert.ok(app.vault.contents.has(`${folder}/${stamp} 01 Sleep notes.md`));
   assert.ok(app.vault.contents.has(`${folder}/${stamp} orchestrator/${stamp} orchestrator.md`));
 });
+
+test('a thread the voice starts from a topic lands on its own line there', async () => {
+  const { app, recorder, task } = setup('direct', 'topics');
+  const lines: CallLine[] = [];
+  const record = recorder.start('GPT Live', () => lines);
+  assert.ok(record);
+  recorder.newTopic('Bohr equation', 'concept');
+  lines.push({ role: 'user', text: 'Who uses the Bohr equation?', at: Date.now() + 10 });
+  const t = task('t2', 'Bohr equation users');
+  recorder.attachTask(t);
+  await recorder.finish();
+  await recorder.flush();
+  const topic = record.topics[0];
+  assert.equal(t.parentNote, topic.path);
+  assert.equal(t.parentAnchor, 'spawn-t2');
+  const note = app.vault.contents.get(topic.path) ?? '';
+  // The thread links back at #^spawn-t2, so the topic must define that block on its own line.
+  assert.match(note, /^.*→ Started \[\[.*t2 Bohr equation users.*\]\] \^spawn-t2$/m);
+  assert.doesNotMatch(note, /^> .*\^spawn-t2/m);
+});

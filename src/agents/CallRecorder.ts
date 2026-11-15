@@ -738,7 +738,10 @@ export class CallRecorder {
       return `> ${time} → Passed to the ${linkTo(record.orchestratorPath, 'orchestrator', handOff.anchor ? `#^${handOff.anchor}` : '')}`;
     }
     const task = this.plugin.agents?.find(handOff.target);
-    return `> ${time} → Started ${task ? this.taskLink(task) : handOff.target}`;
+    const started = `${time} → Started ${task ? this.taskLink(task) : handOff.target}`;
+    // The thread note links back here at #^spawn-<id>, so this line carries that block id. A plain
+    // paragraph, because a block id on a quote line is not picked up (validation run 4, CALL-7).
+    return handOff.anchor ? `${started} ^${handOff.anchor}` : `> ${started}`;
   }
 
   private renderTimings(record: CallRecord): string[] {
