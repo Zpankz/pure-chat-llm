@@ -123,21 +123,60 @@ export async function consoleLines(pattern?: RegExp): Promise<string[]> {
  * it is stuck: the top call frames, and the code around the top one (the bundle is minified, so the
  * string literals near it are what point back to the source). Resumes it afterwards.
  */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type Cdp = any;
+let armed: { cdp: Cdp; scripts: Map<string, string> } | null = null;
+
+async function openCdp(): Promise<{ cdp: Cdp; scripts: Map<string, string> }> {
+  const pptr = await withTimeout(browser.getPuppeteer(), 20_000, 'Connecting to DevTools');
+  // Attach to the page's target directly: Page objects initialise over the page's own thread,
+  // which is the one that is stuck.
+  const targets = pptr.targets().filter(t => t.type() === 'page');
+  const target = targets.find(t => /obsidian\.md|app:\/\/|index\.html/.test(t.url())) ?? targets[0];
+  const cdp = await withTimeout(target.createCDPSession(), 15_000, 'Opening a DevTools session');
+  const scripts = new Map<string, string>();
+  cdp.on('Debugger.scriptParsed', (e: { scriptId: string; url: string }) => scripts.set(e.scriptId, e.url));
+  return { cdp, scripts };
+}
+
+/**
+ * Enables the debugger while the window still answers. Chromium handles Debugger.enable on the
+ * page's own thread, so it cannot be sent once that thread is stuck; Debugger.pause interrupts a
+ * running script, so with the debugger already on, a later freeze can still be paused and read.
+ */
+export async function armFreezeProbe(): Promise<string> {
+  try {
+    if (!armed) {
+      const s = await openCdp();
+      await withTimeout(s.cdp.send('Debugger.enable'), 15_000, 'Debugger.enable');
+      armed = s;
+    }
+    return 'armed';
+  } catch (e) {
+    return `not armed: ${String(e)}`;
+  }
+}
+
+export async function disarmFreezeProbe(): Promise<void> {
+  if (!armed) return;
+  await armed.cdp.send('Debugger.disable').catch(() => undefined);
+  await armed.cdp.detach().catch(() => undefined);
+  armed = null;
+}
+
 export async function freezeStack(): Promise<Record<string, unknown>> {
   try {
-    const pptr = await withTimeout(browser.getPuppeteer(), 20_000, 'Connecting to DevTools');
-    // Attach to the page's target directly: Page objects initialise over the page's own thread,
-    // which is the one that is stuck.
-    const targets = pptr.targets().filter(t => t.type() === 'page');
-    const target = targets.find(t => /obsidian\.md|app:\/\/|index\.html/.test(t.url())) ?? targets[0];
-    const cdp = await withTimeout(target.createCDPSession(), 15_000, 'Opening a DevTools session');
-    const scripts = new Map<string, string>();
-    cdp.on('Debugger.scriptParsed', (e: { scriptId: string; url: string }) => scripts.set(e.scriptId, e.url));
+    const wasArmed = !!armed;
+    const { cdp, scripts } = armed ?? (await openCdp());
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const paused = new Promise<any>(resolve => cdp.once('Debugger.paused', resolve));
-    await withTimeout(cdp.send('Debugger.enable'), 15_000, 'Debugger.enable');
+    if (!wasArmed) await withTimeout(cdp.send('Debugger.enable'), 15_000, 'Debugger.enable (the probe was not armed before the freeze)');
     await withTimeout(cdp.send('Debugger.pause'), 15_000, 'Debugger.pause');
-    const event = await withTimeout(paused, 15_000, 'Waiting for the pause');
+    const event = await withTimeout(
+      paused,
+      15_000,
+      'Waiting for the pause (no script was running to pause: the window may be stuck in layout or rendering rather than in a script)',
+    );
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const frames = (event.callFrames as any[]).slice(0, 12).map(f => ({
       fn: f.functionName || '(anonymous)',
@@ -149,7 +188,7 @@ export async function freezeStack(): Promise<Record<string, unknown>> {
     const near: Array<{ frame: number; code: string; strings: string[] }> = [];
     for (const [i, f] of frames.slice(0, 6).entries()) {
       try {
-        const { scriptSource } = await cdp.send('Debugger.getScriptSource', { scriptId: f.scriptId });
+        const { scriptSource } = (await withTimeout(cdp.send('Debugger.getScriptSource', { scriptId: f.scriptId }), 10_000, 'getScriptSource')) as { scriptSource: string };
         const lines = String(scriptSource).split('\n');
         const line = lines[f.line - 1] ?? '';
         const code = line.slice(Math.max(0, f.column - 600), f.column + 300);
@@ -158,11 +197,24 @@ export async function freezeStack(): Promise<Record<string, unknown>> {
         // A frame without source (native code).
       }
     }
+    // Pause a second time a moment later: the same frames twice point at a loop, not a slow step.
     await cdp.send('Debugger.resume').catch(() => undefined);
-    await cdp.send('Debugger.disable').catch(() => undefined);
-    return { frames, near, reason: event.reason };
+    await browser.pause(1500);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const again = new Promise<any>(resolve => cdp.once('Debugger.paused', resolve));
+    let second: unknown = null;
+    try {
+      await withTimeout(cdp.send('Debugger.pause'), 10_000, 'Second pause');
+      const e2 = await withTimeout(again, 10_000, 'Second pause event');
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      second = (e2.callFrames as any[]).slice(0, 12).map(f => `${f.functionName || '(anonymous)'}@${f.location.lineNumber + 1}:${(f.location.columnNumber ?? 0) + 1}`);
+    } catch (e) {
+      second = String(e);
+    }
+    await cdp.send('Debugger.resume').catch(() => undefined);
+    return { armed: wasArmed, frames, near, second, reason: event.reason };
   } catch (e) {
-    return { failed: String(e) };
+    return { armed: !!armed, failed: String(e) };
   }
 }
 

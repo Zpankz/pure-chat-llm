@@ -5,12 +5,24 @@
 // without an answer for three minutes. The tab is now opened from a timer inside the page and
 // every step is time-limited, so a frozen window is reported as a finding, not a hung suite.
 import { browser } from '@wdio/globals';
-import { check, consoleLines, expect, useFakeServices, windowResponds, withTimeout, type Evidence } from '../support/harness.mts';
+import {
+  armFreezeProbe,
+  check,
+  consoleLines,
+  disarmFreezeProbe,
+  expect,
+  useFakeServices,
+  windowResponds,
+  withTimeout,
+  type Evidence,
+} from '../support/harness.mts';
 
 const GROUPS = ['Voice', 'Orchestrator', 'Workers', 'Evaluator', 'Interruptions', 'Check-ins'];
 
 /** Opens Settings > Voice Agent without waiting on the call itself, then waits for it to render. */
 async function openTab(ev: Evidence) {
+  // With the debugger on before the tab opens, a freeze can still be paused and its stack read.
+  ev.save('freeze-probe', await armFreezeProbe());
   const before = Date.now();
   await withTimeout(
     browser.executeObsidian(({ app }) => {
@@ -140,5 +152,8 @@ describe('Settings tab', () => {
     ev.note('Each layer has Provider, Model and Reasoning effort in the tab.');
   });
 
-  after(closeTab);
+  after(async () => {
+    await closeTab();
+    await disarmFreezeProbe();
+  });
 });
