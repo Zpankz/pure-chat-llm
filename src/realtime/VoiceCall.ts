@@ -1,6 +1,6 @@
 import { Notice } from 'obsidian';
 import { CallState } from '../types';
-import { IVoiceCallProvider, VoiceCallConfig } from './providers/IVoiceCallProvider';
+import { IVoiceCallProvider, VoiceCallConfig, VoiceEvent } from './providers/IVoiceCallProvider';
 
 /**
  * Manages voice call sessions using a provider pattern.
@@ -27,7 +27,7 @@ export class VoiceCall {
     private provider: IVoiceCallProvider,
     private config: VoiceCallConfig,
     private onStateChange: (state: CallState) => void,
-    private onServerEvent?: (event: unknown) => void,
+    private onServerEvent?: (event: VoiceEvent) => void,
     private onRemoteTrack?: (stream: MediaStream) => void,
   ) {
     // Wire up provider callbacks
@@ -112,6 +112,7 @@ export class VoiceCall {
         track.enabled = !track.enabled;
       });
       this.state.isMuted = !this.state.isMuted;
+      this.provider.setMuted?.(this.state.isMuted);
       this.onStateChange({ ...this.state });
       new Notice(this.state.isMuted ? 'Microphone muted' : 'Microphone unmuted');
     }

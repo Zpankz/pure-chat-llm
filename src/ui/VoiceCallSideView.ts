@@ -1,15 +1,36 @@
 import { ItemView, WorkspaceLeaf, Setting, Notice, TFile } from 'obsidian';
 import { VoiceCall } from '../realtime/VoiceCall';
-import { OpenAIRealtimeProvider } from '../realtime/providers/OpenAIRealtimeProvider';
-import { GeminiLiveProvider } from '../realtime/providers/GeminiLiveProvider';
+import {
+  GeminiLiveProvider,
+  OpenAILiveProvider,
+  OpenAIRealtimeProvider,
+  XaiVoiceProvider,
+} from '../realtime/providers';
 import { PureChatLLMChat } from '../core/Chat';
-import { CallState, VOICE_CALL_VIEW_TYPE, ToolDefinition, PURE_CHAT_LLM_ICON_NAME } from '../types';
-import { VoiceCallConfig } from '../realtime/providers/IVoiceCallProvider';
+import {
+  CallState,
+  ChatRequestOptions,
+  PURE_CHAT_LLM_ICON_NAME,
+  ToolDefinition,
+  VOICE_CALL_VIEW_TYPE,
+  VoiceProviderId,
+} from '../types';
+import type {
+  IVoiceCallProvider,
+  VoiceCallConfig,
+  VoiceEvent,
+} from '../realtime/providers/IVoiceCallProvider';
 import PureChatLLM from '../main';
 import { EmptyApiKey } from 'src/assets/constants';
 import { ChatToolExecutor } from '../realtime/ChatToolExecutor';
+import { VOICE_PROVIDERS } from '../realtime/voiceCatalog';
+import { selectVoiceTools, VOICE_TOOL_GUIDANCE } from '../realtime/toolAdapters';
 
-type VoiceProvider = 'openai' | 'gemini';
+interface TranscriptLine {
+  role: 'user' | 'assistant' | 'tool';
+  text: string;
+  final: boolean;
+}
 
 /**
  * Side panel view for managing voice calls in Obsidian.
@@ -18,7 +39,8 @@ export class VoiceCallSideView extends ItemView {
   private voiceCall: VoiceCall | null = null;
   private chat: PureChatLLMChat | null = null;
   private toolExecutor: ChatToolExecutor | null = null;
-  private selectedProvider: VoiceProvider = 'openai';
+  private transcript: TranscriptLine[] = [];
+  private transcriptEl: HTMLElement | null = null;
   private callState: CallState = {
     status: 'idle',
     isMuted: false,
@@ -74,6 +96,8 @@ export class VoiceCallSideView extends ItemView {
     this.renderStatus(contentEl);
     this.renderControls(contentEl);
     this.createRemoteAudioElement(contentEl);
+    this.transcriptEl = contentEl.createDiv({ cls: 'voice-call-transcript' });
+    this.renderTranscript();
 
     if (this.callState.status === 'idle') {
       this.renderInstructions(contentEl);
@@ -147,15 +171,15 @@ export class VoiceCallSideView extends ItemView {
 
     if (this.callState.status === 'idle' || this.callState.status === 'disconnected') {
       new Setting(controlsContainer)
-        .addDropdown(dropdown =>
-          dropdown
-            .addOption('openai', 'OpenAI realtime')
-            .addOption('gemini', 'Gemini live')
-            .setValue(this.selectedProvider)
-            .onChange(value => {
-              this.selectedProvider = value as VoiceProvider;
-            }),
-        )
+        .addDropdown(dropdown => {
+          for (const info of Object.values(VOICE_PROVIDERS))
+            dropdown.addOption(info.id, info.label);
+          dropdown.setValue(this.plugin.settings.voice.provider).onChange(async value => {
+            this.plugin.settings.voice.provider = value as VoiceProviderId;
+            await this.plugin.saveSettings();
+            this.renderView();
+          });
+        })
         .addButton(btn =>
           btn
             .setButtonText('Start call')
@@ -250,7 +274,7 @@ export class VoiceCallSideView extends ItemView {
    */
   private async getRealtimeSystemPrompt(): Promise<string> {
     const filePath = this.plugin.settings.realtimeSystemPromptFile;
-    
+
     // If no file path configured, use default based on agent mode
     if (!filePath || filePath.trim() === '') {
       return this.getDefaultSystemPrompt();
@@ -266,7 +290,7 @@ export class VoiceCallSideView extends ItemView {
       }
 
       const content = await this.plugin.app.vault.cachedRead(file);
-      
+
       // If file is empty, use default
       if (!content || content.trim() === '') {
         new Notice(`Realtime prompt file is empty: ${filePath}. Using default.`);
@@ -283,6 +307,53 @@ export class VoiceCallSideView extends ItemView {
   }
 
   /**
+   * Creates the provider object for the selected provider.
+   * @param id - Provider id.
+   */
+  private createProvider(id: VoiceProviderId): IVoiceCallProvider {
+    const executor = this.toolExecutor ?? undefined;
+    switch (id) {
+      case 'openai-live':
+        return new OpenAILiveProvider(executor);
+      case 'gemini-live':
+        return new GeminiLiveProvider(executor);
+      case 'xai-voice':
+        return new XaiVoiceProvider(executor);
+      default:
+        return new OpenAIRealtimeProvider(executor);
+    }
+  }
+
+  /**
+   * Runs one backend turn for GPT-Live client delegation with the default chat provider.
+   * @param transcript - Recent conversation.
+   */
+  private async runClientBackend(transcript: string): Promise<string> {
+    const chat = this.chat ?? new PureChatLLMChat(this.plugin);
+    const tools: ToolDefinition[] = this.plugin.settings.agentMode
+      ? chat.toolregistry.getEnabledDefinitions()
+      : [];
+    const options: ChatRequestOptions = {
+      model: chat.endpoint.defaultmodel,
+      max_completion_tokens: this.plugin.settings.defaultmaxTokens,
+      stream: false,
+      messages: [
+        { role: 'system', content: this.plugin.settings.voice.live.backendInstructions },
+        {
+          role: 'user',
+          content:
+            `Conversation so far (speech transcript):\n${transcript || '(empty)'}\n\n` +
+            'The voice assistant handed the latest request to you. Do the work, using tools if needed, ' +
+            'then reply with what the assistant should tell the user, in plain spoken language and under 120 words.',
+        },
+      ],
+      ...(tools.length ? { tools } : {}),
+    };
+    const response = await chat.sendChatRequest(options);
+    return response.content ?? '';
+  }
+
+  /**
    *
    */
   private async startCall(): Promise<void> {
@@ -290,58 +361,56 @@ export class VoiceCallSideView extends ItemView {
       if (!this.remoteAudioElement) {
         this.createRemoteAudioElement(this.contentEl);
       }
+      const voice = this.plugin.settings.voice;
+      const info = VOICE_PROVIDERS[voice.provider] ?? VOICE_PROVIDERS['openai-realtime'];
 
-      // 1. Get API Key
-      let providerEndpoint = this.plugin.settings.endpoints.find(
-        ep => ep.name === (this.selectedProvider === 'openai' ? 'OpenAI' : 'Gemini'),
+      // 1. API key from the matching endpoint
+      const providerEndpoint = this.plugin.settings.endpoints.find(
+        ep => ep.name === info.keyEndpoint,
       );
-      if (!providerEndpoint) {
-        providerEndpoint = this.plugin.settings.endpoints[this.plugin.settings.endpoint];
-      }
-
       if (!providerEndpoint?.apiKey || providerEndpoint.apiKey === EmptyApiKey) {
-        throw new Error(`No API key for ${this.selectedProvider}. Check settings.`);
+        throw new Error(`No API key for ${info.keyEndpoint}. Add one in settings.`);
       }
 
-      // 2. Setup Tool Executor if Agent Mode
+      // 2. Tools (agent mode)
       let tools: ToolDefinition[] = [];
+      let nativeMcp = this.plugin.mcp?.nativeServers() ?? [];
       if (this.plugin.settings.agentMode) {
         this.chat = new PureChatLLMChat(this.plugin);
         this.toolExecutor = new ChatToolExecutor(this.chat);
-        tools = this.toolExecutor.getToolDefinitions();
-        new Notice('Initializing with tool access');
+        const selected = selectVoiceTools(
+          this.chat.toolregistry,
+          voice,
+          info.id,
+          this.plugin.mcp?.servers ?? [],
+        );
+        tools = selected.tools;
+        nativeMcp = selected.nativeMcp;
       } else {
         this.chat = null;
         this.toolExecutor = null;
-        new Notice('Initializing voice call');
+        nativeMcp = [];
       }
 
-      // 3. Configure Provider - Read system prompt from file
-      const instructions = await this.getRealtimeSystemPrompt();
+      // 3. Instructions
+      let instructions = await this.getRealtimeSystemPrompt();
+      if (tools.length || nativeMcp.length) instructions += `\n\n${VOICE_TOOL_GUIDANCE}`;
 
-      let provider;
       const config: VoiceCallConfig = {
         apiKey: providerEndpoint.apiKey,
         instructions,
-        tools: tools,
+        tools,
+        settings: voice,
+        nativeMcp,
+        runBackend: transcript => this.runClientBackend(transcript),
       };
 
-      if (this.selectedProvider === 'openai') {
-        provider = new OpenAIRealtimeProvider(this.toolExecutor || undefined);
-        config.endpoint = 'https://api.openai.com/v1/realtime/calls';
-        config.model = 'gpt-realtime';
-      } else {
-        provider = new GeminiLiveProvider(this.toolExecutor || undefined);
-        config.model = 'models/gemini-2.0-flash-exp';
-        config.voice = 'Puck';
-      }
-
-      // 4. Create Voice Call
+      this.transcript = [];
       this.voiceCall = new VoiceCall(
-        provider,
+        this.createProvider(info.id),
         config,
         state => this.onCallStateChange(state),
-        undefined,
+        event => this.onVoiceEvent(event),
         stream => this.handleRemoteStream(stream),
       );
 
@@ -353,6 +422,54 @@ export class VoiceCallSideView extends ItemView {
       this.callState.error = msg;
       this.renderView();
     }
+  }
+
+  /**
+   * Updates the live transcript from provider events.
+   * @param event - Normalised voice event.
+   */
+  private onVoiceEvent(event: VoiceEvent): void {
+    if (event.type === 'transcript') {
+      const last = this.transcript[this.transcript.length - 1];
+      if (last && last.role === event.role && !last.final) {
+        last.text = event.text;
+        last.final = event.final;
+      } else if (event.text.trim()) {
+        this.transcript.push({ role: event.role, text: event.text, final: event.final });
+      }
+    } else if (event.type === 'tool') {
+      this.transcript.push({
+        role: 'tool',
+        text:
+          event.phase === 'start'
+            ? `Running ${event.name}…`
+            : event.error
+              ? `${event.name} failed: ${event.error}`
+              : `${event.name} finished`,
+        final: true,
+      });
+    } else if (event.type === 'status') {
+      this.transcript.push({ role: 'tool', text: event.text, final: true });
+    } else {
+      return;
+    }
+    if (this.transcript.length > 200) this.transcript.splice(0, this.transcript.length - 200);
+    this.renderTranscript();
+  }
+
+  /** Renders the transcript pane. */
+  private renderTranscript(): void {
+    const el = this.transcriptEl;
+    if (!el) return;
+    el.empty();
+    for (const line of this.transcript.slice(-60)) {
+      el.createDiv({
+        cls: `voice-call-line voice-call-line-${line.role}`,
+        text:
+          line.role === 'tool' ? line.text : `${line.role === 'user' ? 'You' : 'AI'}: ${line.text}`,
+      });
+    }
+    el.scrollTop = el.scrollHeight;
   }
 
   /**
