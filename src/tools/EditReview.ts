@@ -36,6 +36,8 @@ export interface WriteRequest {
   reason?: string;
   /** The text the change was computed from. Read now when not given. */
   original?: string | null;
+  /** The caller's signal (the chat's `abortSignal` is used too): once aborted, nothing is written. */
+  signal?: AbortSignal;
 }
 
 /** What became of a write. */
@@ -83,18 +85,64 @@ export async function submitWrite(
   chat: PureChatLLMChat,
   request: WriteRequest,
 ): Promise<WriteOutcome> {
-  return withNoteLock(normalizePath(request.path), () => decideAndWrite(chat, request));
+  // A run that stops (code mode timing out, a worker cancelled) must not leave a write to land
+  // later: the run's signal is checked while waiting, after review and right before writing.
+  const signal = anySignal(
+    request.signal,
+    (chat as { abortSignal?: AbortSignal } | undefined)?.abortSignal,
+  );
+  return withNoteLock(normalizePath(request.path), signal, () =>
+    decideAndWrite(chat, { ...request, signal }),
+  );
 }
+
+/**
+ * One signal that aborts when any of the given ones does.
+ * @param signals - Signals, some possibly missing.
+ */
+function anySignal(...signals: (AbortSignal | undefined)[]): AbortSignal | undefined {
+  const list = signals.filter((s): s is AbortSignal => !!s);
+  if (list.length < 2) return list[0];
+  if (typeof AbortSignal.any === 'function') return AbortSignal.any(list);
+  const controller = new AbortController();
+  for (const s of list) {
+    if (s.aborted) controller.abort();
+    else s.addEventListener('abort', () => controller.abort(), { once: true });
+  }
+  return controller.signal;
+}
+
+/**
+ * Resolves when the signal aborts (never, without one).
+ * @param signal - Signal.
+ */
+function whenAborted(signal: AbortSignal | undefined): Promise<void> {
+  return new Promise(resolve => {
+    if (!signal) return;
+    if (signal.aborted) resolve();
+    else signal.addEventListener('abort', () => resolve(), { once: true });
+  });
+}
+
+/** The tool error for a write whose run stopped first. */
+const cancelledError = (path: string) =>
+  toolError('Cancelled', `The run stopped before "${path}" was written. Nothing changed.`);
 
 /** Per-note queue of writes in review. */
 const noteLocks = new Map<string, Promise<void>>();
 
 /**
- * Runs `fn` once earlier writes to the same note have finished.
+ * Runs `fn` once earlier writes to the same note have finished, or as soon as the signal
+ * aborts (`fn` then sees the aborted signal and writes nothing).
  * @param path - Note path.
+ * @param signal - The run's signal.
  * @param fn - The write.
  */
-async function withNoteLock<T>(path: string, fn: () => Promise<T>): Promise<T> {
+async function withNoteLock<T>(
+  path: string,
+  signal: AbortSignal | undefined,
+  fn: () => Promise<T>,
+): Promise<T> {
   const key = path.toLowerCase();
   const before = noteLocks.get(key) ?? Promise.resolve();
   let release = () => {};
@@ -102,7 +150,7 @@ async function withNoteLock<T>(path: string, fn: () => Promise<T>): Promise<T> {
   const chain = before.then(() => mine);
   noteLocks.set(key, chain);
   try {
-    await before;
+    await Promise.race([before, whenAborted(signal)]);
     return await fn();
   } finally {
     release();
@@ -124,6 +172,8 @@ async function decideAndWrite(chat: PureChatLLMChat, request: WriteRequest): Pro
   const fail = (review: WriteReview, error: string, extra: Partial<WriteOutcome> = {}) =>
     ({ ok: false, applied: false, action, path, review, error, ...extra }) as WriteOutcome;
 
+  const signal = request.signal;
+  if (signal?.aborted) return fail('denied', cancelledError(path));
   if (existing && !(existing instanceof TFile)) {
     return fail('denied', toolError('InvalidPath', `"${path}" is a folder, not a note.`));
   }
@@ -148,13 +198,14 @@ async function decideAndWrite(chat: PureChatLLMChat, request: WriteRequest): Pro
   const content = request.content ?? '';
   const apply = (text: string) =>
     action === 'delete'
-      ? applyNoteDelete(app, path)
+      ? applyNoteDelete(app, path, signal)
       : applyNoteWrite(app, {
           path,
           content: text,
           properties: request.properties,
           overwrite: !!request.overwrite,
           original,
+          signal,
         });
 
   const route = writeRoute(plugin, chat, action);
@@ -171,6 +222,7 @@ async function decideAndWrite(chat: PureChatLLMChat, request: WriteRequest): Pro
   }
 
   if (route === 'queue') {
+    if (signal?.aborted) return fail('policy:window', cancelledError(path));
     const proposal = await queueProposal(chat, { ...request, path }, action, original);
     logReview(chat, `Saved the ${action} of ${path} as a proposal for the user: ${proposal}`);
     return { ok: true, applied: false, action, path, review: 'policy:window', proposal };
@@ -183,7 +235,10 @@ async function decideAndWrite(chat: PureChatLLMChat, request: WriteRequest): Pro
           ? new DeleteReviewModal(app, path, request.instruction, resolve)
           : new EditReviewModal(app, path, original, content, request, resolve);
       modal.open();
+      // If the run stops while the window is open, close it unanswered.
+      void whenAborted(signal).then(() => modal.cancel());
     });
+    if (signal?.aborted) return fail('user', cancelledError(path));
     if (decision.cancelled) {
       return fail(
         'user',
@@ -237,6 +292,7 @@ async function decideAndWrite(chat: PureChatLLMChat, request: WriteRequest): Pro
         { verdicts },
       );
     }
+    if (signal?.aborted) return fail('policy:reviewers', cancelledError(path), { verdicts });
     if (action === 'edit') backup = (await backupNote(plugin, path).catch(() => null)) ?? undefined;
   }
   const review: WriteReview = route === 'peer' ? 'policy:reviewers' : 'policy:allow';
@@ -388,10 +444,13 @@ export interface NoteWrite {
   overwrite: boolean;
   /** The text the change was computed from (null for a new note). */
   original?: string | null;
+  /** The run's signal: once aborted, nothing is written (Cancelled). */
+  signal?: AbortSignal;
 }
 
 /**
- * Writes a note, creating folders as needed, and merges frontmatter properties.
+ * Writes a note, creating folders as needed, and merges frontmatter properties. Checks the
+ * run's signal right before writing, so a run that stopped during review leaves no write.
  * @param app - Obsidian app.
  * @param write - The write.
  */
@@ -399,6 +458,7 @@ export async function applyNoteWrite(app: App, write: NoteWrite): Promise<ApplyR
   const path = normalizePath(write.path);
   let written = write.content;
   let merged = false;
+  if (write.signal?.aborted) return { ok: false, error: cancelledError(path) };
   try {
     const folders = path.split('/').slice(0, -1);
     let current = '';
@@ -433,7 +493,12 @@ export async function applyNoteWrite(app: App, write: NoteWrite): Promise<ApplyR
       // tool). Apply the edit as a patch against the text it was made from; if that patch no
       // longer applies cleanly, refuse rather than overwrite the newer text.
       let conflict = false;
+      let stopped = false;
       await app.vault.process(existing, current => {
+        if (write.signal?.aborted) {
+          stopped = true;
+          return current;
+        }
         const next = rebase(path, write.original, write.content, current);
         if (next === null) {
           conflict = true;
@@ -443,6 +508,7 @@ export async function applyNoteWrite(app: App, write: NoteWrite): Promise<ApplyR
         written = next;
         return next;
       });
+      if (stopped) return { ok: false, error: cancelledError(path) };
       if (conflict) {
         return {
           ok: false,
@@ -455,6 +521,7 @@ export async function applyNoteWrite(app: App, write: NoteWrite): Promise<ApplyR
       }
       file = existing;
     } else {
+      if (write.signal?.aborted) return { ok: false, error: cancelledError(path) };
       file = await app.vault.create(path, write.content);
     }
     if (write.properties && Object.keys(write.properties).length) {
@@ -478,8 +545,14 @@ export async function applyNoteWrite(app: App, write: NoteWrite): Promise<ApplyR
  * Moves a note to the trash (system or vault `.trash`, per the user's Obsidian setting).
  * @param app - Obsidian app.
  * @param path - Note path.
+ * @param signal - The run's signal; once aborted, nothing is deleted.
  */
-export async function applyNoteDelete(app: App, path: string): Promise<ApplyResult> {
+export async function applyNoteDelete(
+  app: App,
+  path: string,
+  signal?: AbortSignal,
+): Promise<ApplyResult> {
+  if (signal?.aborted) return { ok: false, error: cancelledError(path) };
   const file = app.vault.getAbstractFileByPath(normalizePath(path));
   if (!(file instanceof TFile)) {
     return { ok: false, error: toolError('NotFound', `No note at "${path}" any more.`) };
@@ -678,10 +751,15 @@ abstract class ReviewModal extends Modal {
     this.settle({ approved: false });
   }
 
+  /** Closes the window without an answer. */
+  cancel(): void {
+    this.settle({ approved: false, cancelled: true });
+  }
+
   /** Closing the window without an answer cancels. */
   onClose(): void {
     this.contentEl?.empty();
-    this.settle({ approved: false, cancelled: true });
+    this.cancel();
   }
 }
 
