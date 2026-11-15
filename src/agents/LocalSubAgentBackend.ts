@@ -81,7 +81,7 @@ export class LocalSubAgentBackend implements SubAgentBackend {
    * Sub-agent instructions, plus the write rules in force and a short map of the vault's typed
    * ontology so traversals use the vault's own relation names.
    */
-  private systemPrompt(): string {
+  systemPrompt(): string {
     const { orchestrator, graph } = this.plugin.settings;
     const w = orchestrator.writes;
     const say = (p: string) =>

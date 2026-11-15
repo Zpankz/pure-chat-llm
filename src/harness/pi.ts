@@ -33,7 +33,10 @@ export type {
 
 export {
   AssistantEntry,
+  configure,
   createRegistry,
+  defineDoc,
+  defineTask,
   defineExtension,
   defineTool,
   Harness,
@@ -43,12 +46,17 @@ export {
   ToolTask,
 } from '@earendil-works/pi-durable';
 export type {
+  AgentChange,
   Conversation,
+  ConversationId,
+  EntryRecord,
   Extension,
   HarnessSettings,
   Registry,
   Report,
   Storage,
+  TaskId,
+  ToolExecutionApi,
   ToolExecutionResult,
   ToolHookCall,
   ToolRegistration,

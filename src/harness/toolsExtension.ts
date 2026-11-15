@@ -7,8 +7,10 @@ import type { ToolDefinition } from '../types';
 import { defineExtension, defineTool, hook, text, ToolTask } from './pi';
 import type { Extension, ToolExecutionResult, ToolHookCall, ToolRegistration } from './pi';
 
-/** Name of the extension durable conversations select. */
+/** Name of the orchestrator's tools extension. */
 export const VAULT_TOOLS_EXTENSION = 'voice-agent-tools';
+/** Name of a worker's tools extension. */
+export const WORKER_TOOLS_EXTENSION = 'voice-agent-worker-tools';
 
 /** Where the extension reads tool definitions and runs calls. */
 export interface ToolSource {
@@ -65,10 +67,11 @@ export function toDurableTool(definition: ToolDefinition, source: ToolSource): T
 /**
  * The extension: the source's tools, and a `beforeTool` hook that asks the source's gate.
  * @param source - Tool definitions, runner and gate.
+ * @param name - Extension name, one per role.
  */
-export function createToolsExtension(source: ToolSource): Extension {
+export function createToolsExtension(source: ToolSource, name = VAULT_TOOLS_EXTENSION): Extension {
   return defineExtension({
-    name: VAULT_TOOLS_EXTENSION,
+    name,
     tools: source.definitions().map(d => toDurableTool(d, source)),
     hooks: source.gate
       ? [

@@ -4,10 +4,19 @@
 // for Pi Durable 1.5.2 (one `Report` argument to `onReport`).
 import { createLayerProvider, LAYER_PROVIDER_ID } from './layerProvider';
 import type { LayerName, LayerSend } from './layerProvider';
-import { createToolsExtension } from './toolsExtension';
+import { createToolsExtension, WORKER_TOOLS_EXTENSION } from './toolsExtension';
 import type { ToolSource } from './toolsExtension';
 import { createModels, createRegistry, CTX, Harness, IndexedDbStorage } from './pi';
-import type { Extension, HarnessSettings, Models, Report, Storage } from './pi';
+import type {
+  AgentChange,
+  Conversation,
+  Extension,
+  HarnessSettings,
+  Models,
+  Report,
+  Storage,
+} from './pi';
+import { createWorkers } from './workers';
 
 /** IndexedDB database of one vault's durable conversations. */
 export const durableDbName = (vaultKey: string) => `voice-agent:${vaultKey}`;
@@ -41,8 +50,15 @@ export interface DurableHost {
   vaultKey: string;
   /** Sends one layer request (a wrapper around `layerFetch`). */
   send: LayerSend;
-  /** The plugin's tools. */
+  /** The orchestrator's tools. */
   tools: ToolSource;
+  /** A worker's tools; the orchestrator's when left out. */
+  workerTools?: ToolSource;
+  /** Instructions of the orchestrator (read when its conversation is created) and of each worker. */
+  orchestratorInstructions?: () => string;
+  workerInstructions?: () => string;
+  /** Longest task result `get_task_result` returns. */
+  maxResultChars?: number;
   /** Mobile device (fewer progress commits). */
   mobile?: boolean;
 }
@@ -60,6 +76,10 @@ export interface OpenDurableOptions {
 
 export interface DurableSession {
   readonly harness: Harness;
+  /** The orchestrator's agent: its layer, its tools and the orchestration tools. */
+  orchestratorAgent(): AgentChange;
+  /** The root conversation, set up as the orchestrator. */
+  root(): Promise<Conversation>;
   /** Closes the Harness, then releases the Web Lock. */
   close(): Promise<void>;
 }
@@ -117,7 +137,35 @@ export async function openDurable(
       models = mutable;
     }
     const registry = createRegistry();
-    registry.install(createToolsExtension(host.tools));
+    const tools = createToolsExtension(host.tools);
+    const workerTools = createToolsExtension(
+      host.workerTools ?? host.tools,
+      WORKER_TOOLS_EXTENSION,
+    );
+    // The Harness, once open: `cancel_task` aborts a worker's task through it.
+    const live: { harness?: Harness } = {};
+    const workers = createWorkers(
+      {
+        workerAgent: own => ({
+          model: layerRef('worker'),
+          extensions: [workerTools, own],
+          ...(host.workerInstructions ? { instructions: host.workerInstructions() } : {}),
+        }),
+        maxResultChars: host.maxResultChars,
+      },
+      taskId =>
+        live.harness
+          ? live.harness.abortTask(taskId, CTX)
+          : Promise.reject(new Error('Not open yet.')),
+    );
+    for (const extension of [tools, workerTools, workers.orchestration, workers.workerAgent]) {
+      registry.install(extension);
+    }
+    const orchestratorAgent = (): AgentChange => ({
+      model: layerRef('orchestrator'),
+      extensions: [tools, workers.orchestration],
+      ...(host.orchestratorInstructions ? { instructions: host.orchestratorInstructions() } : {}),
+    });
     for (const extension of options.extensions ?? []) registry.install(extension);
     const harness = await Harness.open(
       storage,
@@ -136,10 +184,13 @@ export async function openDurable(
       },
       CTX,
     );
+    live.harness = harness;
     harness.resume();
     let closed = false;
     return {
       harness,
+      orchestratorAgent,
+      root: () => harness.root(CTX, { agent: orchestratorAgent() }),
       async close() {
         if (closed) return;
         closed = true;

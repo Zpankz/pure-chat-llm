@@ -4,7 +4,8 @@ import { Notice, Platform } from 'obsidian';
 import { PureChatLLMChat } from '../core/Chat';
 import type PureChatLLM from '../main';
 import { layerFetch, resolveLayer } from '../agents/layers';
-import { ORCHESTRATOR_TOOL_NAMES } from '../tools/Orchestrator';
+import { LocalSubAgentBackend } from '../agents/LocalSubAgentBackend';
+import { ORCHESTRATOR_TOOL_NAMES, SUBAGENT_TOOL_NAMES } from '../tools/Orchestrator';
 import {
   AbortHost,
   callWithSignal,
@@ -13,6 +14,7 @@ import {
   withToolTimeout,
 } from '../tools/toolContract';
 import { openDurable } from './durable';
+import { DURABLE_ORCHESTRATOR_GUIDANCE } from './workers';
 import type { DurableSession } from './durable';
 import type { LayerSend } from './layerProvider';
 import type { ToolSource } from './toolsExtension';
@@ -31,8 +33,9 @@ export function pluginLayerSend(plugin: PureChatLLM): LayerSend {
 
 /**
  * The plugin's tools for one role. A worker gets a chat with role `subagent`, so the write
- * policy, the two reviewers and proposals apply inside the write tools as on the Classic engine,
- * and it is not offered the orchestrator's own tools.
+ * policy, the two reviewers and proposals apply inside the write tools as on the Classic engine.
+ * The Classic engine's task tools are left out for both roles: the durable engine has its own
+ * (`workers.ts`).
  * @param plugin - Plugin.
  * @param role - Whose tools.
  */
@@ -40,12 +43,10 @@ export function pluginToolSource(plugin: PureChatLLM, role: 'orchestrator' | 'wo
   const chat = new PureChatLLMChat(plugin);
   if (role === 'worker') chat.role = 'subagent';
   chat.registerAvailableTools();
-  const orchestratorOnly = new Set<string>(ORCHESTRATOR_TOOL_NAMES);
+  const classicTaskTools = new Set<string>([...ORCHESTRATOR_TOOL_NAMES, ...SUBAGENT_TOOL_NAMES]);
   return {
     definitions: () =>
-      chat.toolregistry
-        .getEnabledDefinitions()
-        .filter(d => role === 'orchestrator' || !orchestratorOnly.has(d.function.name)),
+      chat.toolregistry.getEnabledDefinitions().filter(d => !classicTaskTools.has(d.function.name)),
     readOnly: isReadOnlyTool,
     run: (name, args, signal) =>
       withToolTimeout(
@@ -93,6 +94,10 @@ export class DurableEngine {
         vaultKey: vaultKey(this.plugin),
         send: pluginLayerSend(this.plugin),
         tools: pluginToolSource(this.plugin, 'orchestrator'),
+        workerTools: pluginToolSource(this.plugin, 'worker'),
+        orchestratorInstructions: () => DURABLE_ORCHESTRATOR_GUIDANCE,
+        workerInstructions: () => new LocalSubAgentBackend(this.plugin).systemPrompt(),
+        maxResultChars: this.plugin.settings.voice.maxToolOutputChars || 6000,
         mobile: Platform.isMobile,
       },
       {
