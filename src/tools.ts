@@ -6,6 +6,7 @@ import type {
   ToolParameter,
   ToolParameters,
 } from './types';
+import { allowedIn, layerForRole, toolError } from './tools/toolContract';
 
 // Abstract base class for all tools
 /**
@@ -174,7 +175,8 @@ export class ToolRegistry {
         (tool): tool is Tool<Record<string, unknown>> =>
           tool !== undefined &&
           tool.isAvailable() &&
-          this.isClassificationEnabled(tool.classification),
+          this.isClassificationEnabled(tool.classification) &&
+          allowedIn(tool.name, layerForRole(this.chat.role)),
       );
   }
 
@@ -285,7 +287,14 @@ export class ToolRegistry {
   async executeTool(name: string, args: Record<string, unknown>): Promise<string> {
     const tool = this.getTool(name);
     if (!tool) {
-      return `Error: Unknown tool '${name}' `;
+      return toolError('UnknownTool', `There is no tool named "${name}".`);
+    }
+    const layer = layerForRole(this.chat.role);
+    if (!allowedIn(name, layer)) {
+      return toolError(
+        'NotAllowed',
+        `${name} is not available to ${layer === 'worker' ? 'background workers' : `the ${layer} layer`}.`,
+      );
     }
 
     try {

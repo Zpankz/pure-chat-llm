@@ -1,3 +1,5 @@
+import { toolError } from './toolContract';
+
 /**
  * ToolOutputBuilder provides a consistent, structured format for tool outputs
  * to enhance LLM understanding and decision-making capabilities.
@@ -84,10 +86,9 @@ export class ToolOutputBuilder {
    * @param recovery - Array of recovery suggestions
    */
   addError(type: string, message: string, recovery: string[]): this {
-    this.addHeader(`ERROR: ${type}`, 'Recoverable');
-    this.sections.push(`Reason: ${message}\n`);
-    this.sections.push('RECOVERY OPTIONS:');
-    recovery.forEach((opt, i) => this.sections.push(`${i + 1}. ${opt}`));
+    // One error format for every tool (see toolContract): the error goes first, whatever was
+    // added before, so `isToolError` and code mode see it.
+    this.sections = [toolError(type, message, recovery)];
     return this;
   }
 

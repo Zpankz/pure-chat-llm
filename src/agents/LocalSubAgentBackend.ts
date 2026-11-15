@@ -6,6 +6,7 @@ import type { SubAgentBackend, SubAgentRunContext, SubAgentTask } from './types'
 import { VaultGraph } from '../graph/VaultGraph';
 import { ontologySummary } from '../graph/ontology';
 import { layerFetch, resolveLayer } from './layers';
+import { isToolError } from '../tools/toolContract';
 
 /** Tools a sub-agent may not use (orchestration belongs to the orchestrator). */
 const ORCHESTRATOR_ONLY = new Set(ORCHESTRATOR_TOOL_NAMES);
@@ -129,7 +130,7 @@ export class LocalSubAgentBackend implements SubAgentBackend {
         const signature = `${call.function.name}:${call.function.arguments}`;
         repeats = signature === lastSignature ? repeats + 1 : 1;
         lastSignature = signature;
-        failures = /^Error:/.test(output) ? failures + 1 : 0;
+        failures = isToolError(output) ? failures + 1 : 0;
         if (!stuckReported && (repeats >= threshold || failures >= threshold)) {
           stuckReported = true;
           ctx.emit(

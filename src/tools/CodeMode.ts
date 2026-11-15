@@ -1,6 +1,7 @@
 import { defineToolParameters, InferArgs, Tool } from '../tools';
 import { CODEMODE_WORKER_SOURCE } from './codemode/sandboxSource';
 import { CodeModeHost, CodeModeRunResult, loadDjsModule, runWithDjs } from './codemode/djsEngine';
+import { allowedIn, isToolError, offersJson, toolErrorMessage } from './toolContract';
 
 const codeModeParameters = defineToolParameters({
   type: 'object',
@@ -104,8 +105,6 @@ export function parseInlineOptions(code: string): {
  * replace QuickJS in pi's code mode, when its module is available, and otherwise in a locked-down
  * Web Worker. With djs, scripts may also be TypeScript.
  */
-/** Tools scripts can't call. */
-const CODE_MODE_EXCLUDED = new Set(['generate_image', 'suno_music_gen', 'manage_plugin_settings']);
 
 export class CodeModeTool extends Tool<CodeModeArgs> {
   readonly name = 'codemode';
@@ -120,7 +119,7 @@ export class CodeModeTool extends Tool<CodeModeArgs> {
    * no network beyond MCP). The sandboxes themselves have no fetch or sockets.
    */
   private callable() {
-    return this.registry.tools.filter(t => t.name !== this.name && !CODE_MODE_EXCLUDED.has(t.name));
+    return this.registry.tools.filter(t => t.name !== this.name && allowedIn(t.name, 'codemode'));
   }
 
   /** Description lists the callable tools within an inline budget. */
@@ -290,8 +289,11 @@ export class CodeModeTool extends Tool<CodeModeArgs> {
   private async callTool(name: string, args: Record<string, unknown>): Promise<unknown> {
     const tool = this.callable().find(t => t.name === name || toIdentifier(t.name) === name);
     if (!tool) throw new Error(`Unknown tool "${name}". Use searchTools() to find tools.`);
-    const output = await this.registry.executeTool(tool.name, args ?? {});
-    if (/^Error:/.test(output)) throw new Error(output.replace(/^Error:\s*/, ''));
+    const callArgs = { ...(args ?? {}) };
+    // Scripts get data, not prose: ask for JSON when the tool offers it and the script didn't say.
+    if (callArgs.format === undefined && offersJson(tool.parameters)) callArgs.format = 'json';
+    const output = await this.registry.executeTool(tool.name, callArgs);
+    if (isToolError(output)) throw new Error(toolErrorMessage(output));
     const trimmed = output.trim();
     if (/^[[{]/.test(trimmed)) {
       try {

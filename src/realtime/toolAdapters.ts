@@ -1,5 +1,6 @@
 import type { ToolRegistry } from '../tools';
 import type { McpServerConfig, ToolDefinition, VoiceProviderId, VoiceSettings } from '../types';
+import { allowedIn } from '../tools/toolContract';
 
 /** Providers that accept remote MCP servers natively (`type: "mcp"`). */
 export const NATIVE_MCP_PROVIDERS: VoiceProviderId[] = [
@@ -37,7 +38,11 @@ export function selectVoiceTools(
   const nativePrefixes = nativeMcp.map(s => `mcp__${s.name.replace(/[^A-Za-z0-9_-]/g, '_')}__`);
 
   let tools = registry.getEnabledDefinitions();
-  tools = tools.filter(t => !nativePrefixes.some(p => t.function.name.startsWith(p)));
+  tools = tools.filter(
+    t =>
+      !nativePrefixes.some(p => t.function.name.startsWith(p)) &&
+      allowedIn(t.function.name, 'voice'),
+  );
 
   if (settings.toolExposure === 'codemode') {
     const core = tools.filter(t => CODEMODE_CORE.includes(t.function.name));
