@@ -52,20 +52,14 @@ const ROUTE_LABELS: Record<SubAgentEventRoute, string> = {
 };
 
 /**
- * Orchestrator and sub-agent settings.
+ * The voice model's role, part of the duplex agent's voice group.
  * @param el - Container.
  * @param plugin - Plugin.
  * @param redraw - Re-renders the settings tab.
  */
-export function renderOrchestratorSettings(
-  el: HTMLElement,
-  plugin: PureChatLLM,
-  redraw: () => void,
-): void {
+function renderVoiceRole(el: HTMLElement, plugin: PureChatLLM, redraw: () => void): void {
   const o = plugin.settings.orchestrator;
   const save: Save = () => plugin.saveSettings();
-  new Setting(el).setName('Voice orchestrator and sub-agents').setHeading();
-
   choose(
     new Setting(el)
       .setName('Voice model role')
@@ -83,6 +77,24 @@ export function renderOrchestratorSettings(
       redraw();
     },
   );
+}
+
+/**
+ * Orchestrator and sub-agent settings.
+ * @param el - Container.
+ * @param plugin - Plugin.
+ * @param redraw - Re-renders the settings tab.
+ */
+export function renderOrchestratorSettings(
+  el: HTMLElement,
+  plugin: PureChatLLM,
+  redraw: () => void,
+): void {
+  const o = plugin.settings.orchestrator;
+  const save: Save = () => plugin.saveSettings();
+  // Decision 15: the duplex agent's settings in six groups. Voice (with the voice model's role)
+  // is rendered by renderVoiceSettings; orchestrator, workers, evaluator, interruptions and
+  // check-ins follow here.
   if (o.voiceRole === 'direct') return;
 
   if (o.voiceRole === 'layered') {
@@ -161,26 +173,6 @@ export function renderOrchestratorSettings(
       );
   }
   renderLayer(el, plugin, 'worker', redraw);
-  if (o.voiceRole === 'layered') renderLayer(el, plugin, 'evaluator', redraw);
-  renderChatGPTSignIn(el, plugin, redraw);
-  new Setting(el)
-    .setName('Sub-agent instructions')
-    .setDesc('System prompt every background agent starts with.')
-    .addTextArea(t =>
-      t.setValue(o.subAgentInstructions).onChange(async value => {
-        o.subAgentInstructions = value;
-        await save();
-      }),
-    );
-  numberInput(
-    new Setting(el).setName('Steps per task').setDesc('Model responses before a task stops.'),
-    o.maxSteps,
-    async n => {
-      o.maxSteps = n;
-      await save();
-    },
-    { min: 1, max: 500, fallback: 40 },
-  );
   numberInput(
     new Setting(el).setName('Tasks at once').setDesc('The rest wait in a queue.'),
     o.maxConcurrent,
@@ -190,6 +182,92 @@ export function renderOrchestratorSettings(
     },
     { min: 1, max: 10, fallback: 3 },
   );
+  numberInput(
+    new Setting(el).setName('Steps per task').setDesc('Model responses before a task stops.'),
+    o.maxSteps,
+    async n => {
+      o.maxSteps = n;
+      await save();
+    },
+    { min: 1, max: 500, fallback: 40 },
+  );
+  new Setting(el)
+    .setName('Sub-agent instructions')
+    .setDesc('System prompt every background agent starts with.')
+    .addTextArea(t =>
+      t.setValue(o.subAgentInstructions).onChange(async value => {
+        o.subAgentInstructions = value;
+        await save();
+      }),
+    );
+  new Setting(el)
+    .setName('Task notes folder')
+    .setDesc('Each task’s brief, steps and result are saved here. Empty saves nothing.')
+    .addText(t =>
+      t.setValue(o.taskFolder).onChange(async value => {
+        o.taskFolder = value.trim();
+        await save();
+      }),
+    );
+
+  if (o.voiceRole === 'layered') renderLayer(el, plugin, 'evaluator', redraw);
+
+  new Setting(el)
+    .setName('Interruptions')
+    .setDesc('How readily the voice cuts in with what the workers find.')
+    .setHeading();
+  choose(
+    new Setting(el)
+      .setName('Cut in when it matters')
+      .setDesc(
+        'A result or question that arrives while you are talking waits until you finish your thought, unless it would overrule or change what you are saying. Model asks the sub-agent model to judge that; keywords compares words; off always waits.',
+      ),
+    { model: 'Model', keywords: 'Keywords', off: 'Off' } as Record<
+      'model' | 'keywords' | 'off',
+      string
+    >,
+    o.relevanceCheck,
+    async value => {
+      o.relevanceCheck = value;
+      await save();
+    },
+  );
+  numberInput(
+    new Setting(el)
+      .setName('Spoken progress every (seconds)')
+      .setDesc(
+        'From the start of each call. 0 keeps the voice model quiet until something happens; you can still say "keep me posted".',
+      ),
+    o.progressUpdateSeconds,
+    async n => {
+      o.progressUpdateSeconds = n;
+      await save();
+    },
+    { min: 0, max: 3600, fallback: 0 },
+  );
+  new Setting(el)
+    .setName('When the voice model hears about tasks')
+    .setDesc(
+      'Automatic follows GPT-Live’s pattern: results, questions and stuck tasks are said at the next pause; check-ins and progress are told quietly. Override any event below.',
+    );
+  for (const kind of SUB_AGENT_EVENT_KINDS) {
+    choose(
+      new Setting(el)
+        .setName(EVENT_LABELS[kind])
+        .setDesc(`Automatic here means: ${ROUTE_LABELS[AUTO_ROUTES[kind]].toLowerCase()}.`),
+      ROUTE_LABELS,
+      o.routes[kind] ?? 'auto',
+      async value => {
+        o.routes[kind] = value;
+        await save();
+      },
+    );
+  }
+
+  new Setting(el)
+    .setName('Check-ins')
+    .setDesc('How the orchestrator keeps an eye on quiet or stuck workers.')
+    .setHeading();
   numberInput(
     new Setting(el)
       .setName('Check-in every (minutes)')
@@ -227,63 +305,7 @@ export function renderOrchestratorSettings(
     },
     { min: 10, max: 3600, fallback: 300 },
   );
-  numberInput(
-    new Setting(el)
-      .setName('Spoken progress every (seconds)')
-      .setDesc(
-        'From the start of each call. 0 keeps the voice model quiet until something happens; you can still say "keep me posted".',
-      ),
-    o.progressUpdateSeconds,
-    async n => {
-      o.progressUpdateSeconds = n;
-      await save();
-    },
-    { min: 0, max: 3600, fallback: 0 },
-  );
-  choose(
-    new Setting(el)
-      .setName('Cut in when it matters')
-      .setDesc(
-        'A result or question that arrives while you are talking waits until you finish your thought, unless it would overrule or change what you are saying. Model asks the sub-agent model to judge that; keywords compares words; off always waits.',
-      ),
-    { model: 'Model', keywords: 'Keywords', off: 'Off' } as Record<
-      'model' | 'keywords' | 'off',
-      string
-    >,
-    o.relevanceCheck,
-    async value => {
-      o.relevanceCheck = value;
-      await save();
-    },
-  );
-  new Setting(el)
-    .setName('Task notes folder')
-    .setDesc('Each task’s brief, steps and result are saved here. Empty saves nothing.')
-    .addText(t =>
-      t.setValue(o.taskFolder).onChange(async value => {
-        o.taskFolder = value.trim();
-        await save();
-      }),
-    );
-
-  new Setting(el)
-    .setName('When the voice model hears about tasks')
-    .setDesc(
-      'Automatic follows GPT-Live’s pattern: results, questions and stuck tasks are said at the next pause; check-ins and progress are told quietly. Override any event below.',
-    );
-  for (const kind of SUB_AGENT_EVENT_KINDS) {
-    choose(
-      new Setting(el)
-        .setName(EVENT_LABELS[kind])
-        .setDesc(`Automatic here means: ${ROUTE_LABELS[AUTO_ROUTES[kind]].toLowerCase()}.`),
-      ROUTE_LABELS,
-      o.routes[kind] ?? 'auto',
-      async value => {
-        o.routes[kind] = value;
-        await save();
-      },
-    );
-  }
+  renderChatGPTSignIn(el, plugin, redraw);
 
   new Setting(el)
     .setName('Sub-agent vault writes')
@@ -390,15 +412,15 @@ type Save = () => Promise<void>;
 
 const LAYER_TEXT: Record<LayerId, { name: string; desc: string }> = {
   orchestrator: {
-    name: 'Orchestrator layer',
+    name: 'Orchestrator',
     desc: 'Plans, writes briefs for workers and decides what you hear. Needs strong reasoning and tool calls.',
   },
   worker: {
-    name: 'Worker layer',
+    name: 'Workers',
     desc: 'Background sub-agents, and the two write reviewers unless reviewer models are set. A cheap, efficient model fits.',
   },
   evaluator: {
-    name: 'Evaluator layer',
+    name: 'Evaluator',
     desc: 'Optional advisor the orchestrator asks to check plans and results. It sees only what it is sent.',
   },
 };
@@ -645,7 +667,13 @@ export function renderVoiceSettings(
   const v = plugin.settings.voice;
   const save: Save = () => plugin.saveSettings();
 
-  new Setting(el).setName('Voice agents').setHeading();
+  new Setting(el)
+    .setName('Duplex agent')
+    .setDesc(
+      'Six groups: voice, orchestrator, workers, evaluator, interruptions and check-ins. The voice talks with you; the orchestrator plans and runs workers in the background.',
+    )
+    .setHeading();
+  new Setting(el).setName('Voice').setHeading();
 
   choose(
     new Setting(el)
@@ -662,6 +690,7 @@ export function renderVoiceSettings(
       redraw();
     },
   );
+  renderVoiceRole(el, plugin, redraw);
 
   new Setting(el)
     .setName('Full duplex')
@@ -702,6 +731,33 @@ export function renderVoiceSettings(
     },
     { min: 500, max: 100000, fallback: 6000 },
   );
+
+  new Setting(el)
+    .setName('Save calls as notes')
+    .setDesc(
+      'When a call ends, its transcript, the orchestrator’s conversation and every background task are saved as linked notes, one folder per call.',
+    )
+    .addToggle(t =>
+      t.setValue(v.saveCalls).onChange(async value => {
+        v.saveCalls = value;
+        await save();
+        redraw();
+      }),
+    );
+  if (v.saveCalls) {
+    new Setting(el)
+      .setName('Calls folder')
+      .setDesc('Each call gets its own folder in here.')
+      .addText(t =>
+        t
+          .setPlaceholder('Voice Agent')
+          .setValue(v.callsFolder)
+          .onChange(async value => {
+            v.callsFolder = value.trim() || 'Voice Agent';
+            await save();
+          }),
+      );
+  }
 
   switch (v.provider) {
     case 'openai-realtime':

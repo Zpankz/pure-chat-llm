@@ -112,6 +112,10 @@ export interface SubAgentTask {
   question?: string;
   /** Vault path of the task's transcript note, when saved. */
   notePath?: string;
+  /** Note of the thread that started this one (the orchestrator's, or the call's), when saved. */
+  parentNote?: string;
+  /** Note of the voice call this task belongs to. */
+  callNote?: string;
   /** Who started it (for example "voice" or "chat"). */
   origin: string;
 }

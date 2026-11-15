@@ -1,5 +1,6 @@
 import { normalizePath, TFile } from 'obsidian';
 import type PureChatLLM from '../main';
+import { linkTo } from './CallRecorder';
 import { LocalSubAgentBackend } from './LocalSubAgentBackend';
 import { resolveLayer } from './layers';
 import { AUTO_ROUTES } from './types';
@@ -127,6 +128,8 @@ export class SubAgentManager {
       messages: [],
       origin,
     };
+    // Tasks started during a voice call are saved with the call's notes, linked to their parent.
+    this.plugin.calls?.attachTask(task);
     this.tasks.set(id, task);
     this.runtime.set(id, { inbox: [], cancelled: false, advice: null, checkIn: null });
     this.queue.push(id);
@@ -407,10 +410,10 @@ export class SubAgentManager {
   /** Writes the task's transcript note when a task folder is set. */
   private async saveNote(task: SubAgentTask): Promise<void> {
     const folder = this.settings.taskFolder.trim();
-    if (!folder) return;
+    if (!folder && !task.notePath) return;
     try {
       const vault = this.plugin.app.vault;
-      const dir = normalizePath(folder);
+      const dir = normalizePath(task.notePath ? task.notePath.replace(/\/[^/]*$/, '') : folder);
       if (!vault.getAbstractFileByPath(dir)) await vault.createFolder(dir);
       if (!task.notePath) {
         const date = new Date(task.createdAt).toISOString().slice(0, 10);
@@ -440,10 +443,22 @@ export class SubAgentManager {
       `origin: ${task.origin}`,
       `created: ${time(task.createdAt)}`,
       ...(task.finishedAt ? [`finished: ${time(task.finishedAt)}`] : []),
+      ...(task.parentNote ? [`parent: ${JSON.stringify(linkTo(task.parentNote))}`] : []),
+      ...(task.callNote ? [`call: ${JSON.stringify(linkTo(task.callNote))}`] : []),
       '---',
       '',
       `# ${task.title}`,
       '',
+      ...(task.parentNote
+        ? [
+            `Started by ${linkTo(task.parentNote, task.parentNote === task.callNote ? 'the voice call' : 'the orchestrator')}${
+              task.callNote && task.callNote !== task.parentNote
+                ? ` during ${linkTo(task.callNote, 'the voice call')}`
+                : ''
+            }.`,
+            '',
+          ]
+        : []),
       '## Brief',
       '',
       task.prompt,

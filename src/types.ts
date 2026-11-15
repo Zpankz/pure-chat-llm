@@ -122,6 +122,10 @@ export interface VoiceSettings {
    * GPT-Live is always full duplex.
    */
   fullDuplex: boolean;
+  /** Save each call, with the orchestrator's conversation and every sub-thread, as linked notes. */
+  saveCalls: boolean;
+  /** Vault folder for saved calls; each call gets its own folder inside. */
+  callsFolder: string;
   openai: OpenAIRealtimeVoiceSettings;
   live: OpenAILiveVoiceSettings;
   gemini: GeminiLiveVoiceSettings;

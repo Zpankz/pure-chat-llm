@@ -92,6 +92,8 @@ export const DEFAULT_VOICE_SETTINGS: VoiceSettings = {
   toolExposure: 'all',
   maxToolOutputChars: 6000,
   fullDuplex: true,
+  saveCalls: true,
+  callsFolder: 'Voice Agent',
   openai: {
     model: 'gpt-realtime-2.1',
     voice: 'marin',

@@ -268,6 +268,8 @@ export class OrchestratorAgent {
 
     this.trim();
     this.messages.push({ role: 'user', content });
+    const calls = this.plugin.calls;
+    calls?.logOrchestrator('input', content);
     this.state = 'thinking';
     this.spokeThisTurn = false;
     this.turnActivity = [];
@@ -281,8 +283,9 @@ export class OrchestratorAgent {
           max_completion_tokens: this.plugin.settings.defaultmaxTokens,
           ...(tools.length ? { tools } : {}),
         });
-        const calls = (response.tool_calls ?? []).filter(c => c.function?.name);
-        if (!calls.length) {
+        const toolCalls = (response.tool_calls ?? []).filter(c => c.function?.name);
+        if (response.content?.trim()) calls?.logOrchestrator('reply', response.content.trim());
+        if (!toolCalls.length) {
           finalText = (response.content ?? '').trim();
           this.messages.push({ role: 'assistant', content: finalText });
           break;
@@ -290,10 +293,15 @@ export class OrchestratorAgent {
         this.messages.push({
           role: 'assistant',
           content: response.content ?? null,
-          tool_calls: calls,
+          tool_calls: toolCalls,
         });
-        for (const call of calls) {
+        for (const call of toolCalls) {
+          calls?.logOrchestrator(
+            'tool',
+            `${call.function.name} ${call.function.arguments || '{}'}`,
+          );
           const output = await this.runCall(chat, call, allowed);
+          calls?.logOrchestrator('result', output);
           this.record(call, output);
           this.messages.push({ role: 'tool', content: output, tool_call_id: call.id });
         }
@@ -302,12 +310,15 @@ export class OrchestratorAgent {
     } catch (error) {
       this.lastError = error instanceof Error ? error.message : String(error);
       this.plugin.console?.error('Orchestrator turn failed', error);
+      calls?.logOrchestrator('error', this.lastError);
+      calls?.scheduleOrchestratorSave();
       if (fromUser) this.say(`I couldn't work on that: ${this.lastError.slice(0, 200)}`, 'pause');
       return;
     }
     // A relayed request must never go unanswered.
     if (fromUser && !this.spokeThisTurn && finalText) this.say(finalText, 'pause');
     this.shareActivity();
+    calls?.scheduleOrchestratorSave();
   }
 
   private async runCall(

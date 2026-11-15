@@ -652,6 +652,7 @@ export class VoiceCallSideView extends ItemView {
       );
 
       await this.voiceCall.startCall();
+      this.plugin.calls?.start(info.label, () => this.transcript);
       if (layered || orchestrator) this.watchAgents(layered);
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
@@ -691,13 +692,15 @@ export class VoiceCallSideView extends ItemView {
               ? `${event.name} failed: ${event.error}`
               : `${event.name} finished`,
         final: true,
+        at: Date.now(),
       });
     } else if (event.type === 'status') {
-      this.transcript.push({ role: 'tool', text: event.text, final: true });
+      this.transcript.push({ role: 'tool', text: event.text, final: true, at: Date.now() });
     } else {
       return;
     }
-    if (this.transcript.length > 200) this.transcript.splice(0, this.transcript.length - 200);
+    // The whole call is kept for the saved call note; the pane shows the last lines.
+    if (this.transcript.length > 5000) this.transcript.splice(0, this.transcript.length - 5000);
     this.renderTranscript();
   }
 
@@ -746,6 +749,15 @@ export class VoiceCallSideView extends ItemView {
       await this.voiceCall.endCall();
       this.voiceCall = null;
     }
+    await this.saveCallNotes();
+  }
+
+  /** Writes the call's notes (transcript, orchestrator and sub-threads) once the call ends. */
+  private async saveCallNotes(): Promise<void> {
+    const calls = this.plugin.calls;
+    if (!calls?.isLive) return;
+    await calls.finish();
+    if (calls.current) new Notice(`Call saved to ${calls.current.callPath}`);
   }
 
   /**
@@ -754,6 +766,8 @@ export class VoiceCallSideView extends ItemView {
    */
   private onCallStateChange(state: CallState): void {
     this.callState = state;
+    // A call that drops on its own is saved too.
+    if (state.status === 'disconnected' || state.status === 'error') void this.saveCallNotes();
     this.renderView();
   }
 
