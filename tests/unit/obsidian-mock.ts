@@ -146,6 +146,23 @@ export function buildCache(text: string): Record<string, unknown> {
       cache.frontmatter = parseFrontmatter(lines.slice(1, end).join('\n'));
       cache.frontmatterPosition = { start: pos(0, 0), end: pos(end, 3) };
       body = end + 1;
+      // Links in properties, keyed like Obsidian: `up`, or `related.0` for list items.
+      const fmLinks: { key: string; link: string; original: string; displayText: string }[] = [];
+      for (const [key, value] of Object.entries(cache.frontmatter as Record<string, unknown>)) {
+        (Array.isArray(value) ? value : [value]).forEach((v, i) => {
+          const m =
+            typeof v === 'string' ? /^\[\[([^\]|]+)(?:\|([^\]]+))?\]\]$/.exec(v.trim()) : null;
+          if (!m) return;
+          const k = Array.isArray(value) ? `${key}.${i}` : key;
+          fmLinks.push({
+            key: k,
+            link: m[1].trim(),
+            original: v,
+            displayText: (m[2] ?? m[1]).trim(),
+          });
+        });
+      }
+      if (fmLinks.length) cache.frontmatterLinks = fmLinks;
     }
   }
   const headings: (CacheItem & { heading: string; level: number })[] = [];
@@ -460,6 +477,7 @@ export function createApp(): MockApp {
       getActiveViewOfType: () => null,
       getLeavesOfType: () => [],
       getMostRecentLeaf: () => null,
+      iterateAllLeaves: () => {},
       getLeaf: () => ({ openFile: async () => undefined }),
       on: () => ({}),
     },

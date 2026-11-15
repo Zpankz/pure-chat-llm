@@ -31,18 +31,22 @@ export const ORCHESTRATOR_AGENT_GUIDANCE = [
   'You never write to the vault yourself; workers do, under the vault write rules. If a relayed request is unclear, ask through tell_user rather than guess.',
 ].join('\n');
 
-/** Read-only tools the orchestrator may use itself (directly or from code mode). */
-const ORCHESTRATOR_READ_TOOLS = [
+/**
+ * Read-only tools the orchestrator may use itself (directly or from code mode). Graph questions
+ * go to traverse_graph (which covers backlinks) and vault_ontology; graph_cli stays with workers
+ * because its run and save commands execute and write scripts.
+ */
+export const ORCHESTRATOR_READ_TOOLS = [
   'codemode',
   'read_file',
   'read_note_section',
   'search_vault',
   'glob_vault_files',
   'list_vault_folders',
-  'get_backlinks',
   'traverse_graph',
   'vault_ontology',
   'smart_connections_rag',
+  'get_active_context',
   'activate_skill',
   'read_skill_file',
 ];

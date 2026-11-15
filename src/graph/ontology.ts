@@ -1,7 +1,140 @@
 import type { App } from 'obsidian';
-import { TFile } from 'obsidian';
-import { inFolders, resolveFolders } from '../utils/vaultResolve';
+import { normalizePath, TFile, TFolder } from 'obsidian';
+import { activeNote, inFolders, resolveFolders } from '../utils/vaultResolve';
 import type { VaultGraph } from './VaultGraph';
+
+/** A note found from what a model or a transcript said, or why none was. */
+export interface NoteLookup {
+  file: TFile | null;
+  /** Several notes fit equally well: ask which one. */
+  candidates: TFile[];
+  /** Nothing fit; these come close. */
+  near: TFile[];
+}
+
+/**
+ * Lower-case letters and digits only, so "AP 11-AO402" and "ap11ao402" compare equal.
+ * @param s - Text.
+ */
+function squash(s: string): string {
+  return s.toLowerCase().replace(/[^\p{L}\p{N}]/gu, '');
+}
+
+const byPath = (a: TFile, b: TFile) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0);
+
+/**
+ * A note's aliases from frontmatter (`aliases` or `alias`, a list or a comma-separated string).
+ * @param app - Obsidian app.
+ * @param file - Note.
+ */
+export function noteAliases(app: App, file: TFile): string[] {
+  const fm = app.metadataCache.getFileCache(file)?.frontmatter;
+  const raw: unknown = fm?.aliases ?? fm?.alias;
+  const list = Array.isArray(raw) ? raw : typeof raw === 'string' ? raw.split(',') : [];
+  return list.map(a => String(a).trim()).filter(Boolean);
+}
+
+/**
+ * True for a folder note: `X/X.md`.
+ * @param file - Note.
+ */
+function isFolderNote(file: TFile): boolean {
+  return !!file.parent && file.parent.name.toLowerCase() === file.basename.toLowerCase();
+}
+
+/**
+ * Finds the note a graph tool should start from, for vaults with many similar names: an exact
+ * path (with or without `.md`), a [[link]] (alias and heading dropped), "active", a
+ * folder-qualified name ("LO/AP11AO402"), a folder whose folder note (`X/X.md`) stands for it,
+ * a basename in any case, a frontmatter alias, then the same with spaces and punctuation
+ * ignored. Equal matches are returned as candidates instead of a guess (a folder note wins over
+ * other notes of the same name, as folder-note vaults link it); when nothing fits, close names
+ * are returned as `near`.
+ * @param app - Obsidian app.
+ * @param ref - What was said.
+ */
+export function resolveGraphNote(app: App, ref: string | undefined): NoteLookup {
+  const none: NoteLookup = { file: null, candidates: [], near: [] };
+  const raw = (ref ?? '').trim();
+  if (!raw || /^(active|current|this)( note)?$/i.test(raw)) {
+    return { ...none, file: activeNote(app) };
+  }
+  const cleaned = raw
+    .replace(/^!?\[\[|\]\]$/g, '')
+    .split('|')[0]
+    .split('#')[0]
+    .trim()
+    .replace(/^\.\/+/, '')
+    .replace(/\/+$/, '');
+  if (!cleaned) return none;
+  const one = (list: TFile[]): NoteLookup | null => {
+    if (list.length === 1) return { ...none, file: list[0] };
+    if (list.length > 1) {
+      const folderNotes = list.filter(isFolderNote);
+      if (folderNotes.length === 1) return { ...none, file: folderNotes[0] };
+      return { ...none, candidates: [...list].sort(byPath).slice(0, 10) };
+    }
+    return null;
+  };
+
+  const path = normalizePath(cleaned);
+  for (const candidate of [path, `${path}.md`]) {
+    const f = app.vault.getAbstractFileByPath(candidate);
+    if (f instanceof TFile && f.extension === 'md') return { ...none, file: f };
+    if (f instanceof TFolder) {
+      const note = app.vault.getAbstractFileByPath(`${f.path}/${f.name}.md`);
+      if (note instanceof TFile) return { ...none, file: note };
+    }
+  }
+
+  const files = app.vault.getMarkdownFiles();
+  const key = cleaned.replace(/\.md$/i, '').toLowerCase();
+  const last = key.split('/').pop() ?? key;
+  if (key.includes('/')) {
+    const suffix = files.filter(f => {
+      const p = f.path.toLowerCase();
+      return (
+        p === `${key}.md` ||
+        p.endsWith(`/${key}.md`) ||
+        p === `${key}/${last}.md` ||
+        p.endsWith(`/${key}/${last}.md`)
+      );
+    });
+    const found = one(suffix);
+    if (found) return found;
+  }
+  const found =
+    one(files.filter(f => f.basename.toLowerCase() === last)) ??
+    one(files.filter(f => noteAliases(app, f).some(a => a.toLowerCase() === last)));
+  if (found) return found;
+
+  const sq = squash(last);
+  if (!sq) return none;
+  const loose = files.filter(
+    f => squash(f.basename) === sq || noteAliases(app, f).some(a => squash(a) === sq),
+  );
+  const looseFound = one(loose);
+  if (looseFound) return looseFound;
+  const partial = files.filter(f => squash(f.basename).includes(sq));
+  if (partial.length === 1) return { ...none, file: partial[0] };
+  if (partial.length > 1) return { ...none, candidates: [...partial].sort(byPath).slice(0, 10) };
+
+  // Nothing fits: offer names that share a word or contain each other.
+  const words = last.split(/[^\p{L}\p{N}]+/u).filter(w => w.length >= 3);
+  const near = files
+    .map(f => {
+      const name = f.basename.toLowerCase();
+      const score =
+        (sq.includes(squash(name)) && squash(name).length >= 3 ? 2 : 0) +
+        words.filter(w => name.includes(w)).length;
+      return { f, score };
+    })
+    .filter(x => x.score > 0)
+    .sort((a, b) => b.score - a.score || byPath(a.f, b.f))
+    .slice(0, 6)
+    .map(x => x.f);
+  return { ...none, near };
+}
 
 /** Filters shared by graph tools. */
 export interface GraphScope {
@@ -21,13 +154,18 @@ export function scopeFilter(
   app: App,
   graph: VaultGraph,
   scope: GraphScope,
-): { keep: (path: string) => boolean; label: string; error?: string } {
+): { keep: (path: string) => boolean; label: string; active: boolean; error?: string } {
   const parts: string[] = [];
   let folders: ReturnType<typeof resolveFolders> | null = null;
   if (scope.folder?.trim()) {
     folders = resolveFolders(app, scope.folder);
     if (!folders.length) {
-      return { keep: () => false, label: '', error: `No folder named or at "${scope.folder}".` };
+      return {
+        keep: () => false,
+        label: '',
+        active: true,
+        error: `No folder named or at "${scope.folder}".`,
+      };
     }
     parts.push(`in ${folders.map(f => f.path || '/').join(', ')}`);
   }
@@ -43,7 +181,23 @@ export function scopeFilter(
     if (types.length && !graph.hasType(path, types)) return false;
     return true;
   };
-  return { keep, label: parts.join(', ') };
+  return { keep, label: parts.join(', '), active: parts.length > 0 };
+}
+
+/**
+ * One spoken-friendly sentence about the vault's graph, for the first line of tool output.
+ * @param graph - Vault graph.
+ */
+export function ontologyHeadline(graph: VaultGraph): string {
+  const used = graph.edgeTypes();
+  const links = used.reduce((n, u) => n + u.count, 0);
+  const nodeTypes = new Set([
+    ...graph.schema.nodeTypes.keys(),
+    ...graph.typeCounts().map(t => t.type),
+  ]).size;
+  const tags = graph.tagCounts().length;
+  const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? '' : 's'}`;
+  return `This vault has ${plural(graph.paths.length, 'note')} and ${plural(links, 'link')} of ${plural(used.length, 'relation type')}, with ${plural(nodeTypes, 'note type')} and ${plural(tags, 'tag')}.`;
 }
 
 /**
@@ -61,9 +215,7 @@ export function ontologySummary(graph: VaultGraph, compact = false): string {
   const nodeCounts = graph.typeCounts();
   const nodeCount = new Map(nodeCounts.map(n => [n.type, n.notes]));
 
-  lines.push(
-    `VAULT ONTOLOGY: ${graph.paths.length} notes, ${used.reduce((n, u) => n + u.count, 0)} typed links.`,
-  );
+  lines.push(ontologyHeadline(graph), '', 'VAULT ONTOLOGY');
   if (graph.schema.sources.length) {
     lines.push(`Schema notes (Typed Graph): ${graph.schema.sources.join(', ')}`);
   }
@@ -106,7 +258,9 @@ export function ontologySummary(graph: VaultGraph, compact = false): string {
           .join(', '),
       );
     } else {
-      for (const n of sorted) {
+      if (sorted.length > 150)
+        lines.push(`(${sorted.length} node types; the 150 most used are listed.)`);
+      for (const n of sorted.slice(0, 150)) {
         const d = graph.schema.nodeTypes.get(n);
         const edges = d?.edges.length ? ` Edges: ${d.edges.join(', ')}.` : '';
         lines.push(
@@ -139,8 +293,8 @@ export function ontologySummary(graph: VaultGraph, compact = false): string {
   lines.push(
     '',
     compact
-      ? 'Follow typed edges with traverse_graph (edge_types, node_types, folder, tag) or graph_cli; call vault_ontology for the full schema.'
-      : 'Use edge type names in traverse_graph `edge_types` or graph_cli commands to follow only those relations; filter notes with `node_types`, `folder` and `tag`.',
+      ? 'Follow typed edges with traverse_graph (edge_types, node_types, folder, tag); graph_cli has path, hubs and related; call vault_ontology for the full schema.'
+      : 'Use edge type names in traverse_graph `edge_types` (or graph_cli path) to follow only those relations; filter notes with `node_types`, `folder` and `tag`.',
   );
   return lines.join('\n');
 }
