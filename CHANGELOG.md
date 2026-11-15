@@ -24,9 +24,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **djs engine** for code mode, with the Web Worker as fallback.
 - **OAuth sign-in for remote MCP servers**, with tokens in secret storage.
 - **Voice settings** for every provider, a live transcript in the voice call panel, and a choice to expose all tools or only code mode to voice models.
+- **Calls saved as linked notes**: each voice call saves its transcript, the orchestrator's conversation and every worker thread as notes in a folder you choose (default `Voice Agent`). The call note links to the orchestrator note, which links to each thread, and each thread links back.
+- **Duplex agent settings in six groups**: Voice, Orchestrator, Workers, Evaluator, Interruptions and Check-ins.
+- **Sign in with Google** (desktop) for Gemini layers, using an OAuth client in your own Google Cloud project. Tokens are kept in Obsidian's secret storage.
+- **Install with BRAT**: a release workflow attaches `main.js`, `manifest.json` and `styles.css` to a GitHub release for each version tag, after checking the tag matches the manifest and running the tests.
+- **Unit tests**: `npm test` runs tools against an in-memory vault with Node's built-in test runner.
 
 ### Changed
 
+- **Renamed to Voice Agent**, with the new plugin id `voice-agent`. Your Pure Chat LLM settings are copied on first load and sign-ins carry over. Hotkeys need binding again, and Pure Chat LLM should be turned off if it is still on.
+- **One tool contract**: every tool reports failures in one format (`Error: Type: reason` with what to try), data tools can return compact JSON (code mode asks for it by default), and each tool lists the layers it may run in. Background workers no longer get tools that open dialogs, change your tabs or flash notices.
+- **Voice calls fail gracefully** on phones and other devices without microphone access, WebRTC or audio worklets: the call button explains why and what still works, and a call that fails to connect no longer leaves a call note.
 - Skills can name their main file after the skill folder instead of `SKILL.md`.
 - Code mode scripts can't call image or music generation or change plugin settings, so they have no network beyond MCP servers.
 - Folder lookups and search accept folder names in any case; search can be limited to a folder.
