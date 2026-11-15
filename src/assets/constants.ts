@@ -233,6 +233,7 @@ export const DEFAULT_SETTINGS: PureChatLLMSettings = {
   },
   orchestrator: {
     voiceRole: 'layered',
+    advancedVoiceRoles: false,
     layers: {
       // GPT-6.1 Sol on medium effort; with ChatGPT sign-in it runs on the user's ChatGPT plan.
       orchestrator: { endpoint: 'OpenAI', model: 'gpt-6.1-sol', effort: 'medium', api: 'auto' },

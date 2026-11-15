@@ -66,11 +66,27 @@ const ROUTE_LABELS: Record<SubAgentEventRoute, string> = {
 function renderVoiceRole(el: HTMLElement, plugin: PureChatLLM, redraw: () => void): void {
   const o = plugin.settings.orchestrator;
   const save: Save = () => plugin.saveSettings();
+  // Layered is the default; the other two roles sit behind an advanced switch.
+  const advanced = !!o.advancedVoiceRoles || o.voiceRole !== 'layered';
+  new Setting(el)
+    .setName('Other voice roles')
+    .setDesc(
+      'Advanced. The voice model normally passes requests to a separate orchestrator agent, which runs background workers. Turn this on to let the voice model delegate or call tools itself instead. Turning it off goes back to the default.',
+    )
+    .addToggle(t =>
+      t.setValue(advanced).onChange(async value => {
+        o.advancedVoiceRoles = value;
+        if (!value) o.voiceRole = 'layered';
+        await save();
+        redraw();
+      }),
+    );
+  if (!advanced) return;
   choose(
     new Setting(el)
       .setName('Voice model role')
       .setDesc(
-        'Layered: the voice model translates and filters, and passes requests to a separate orchestrator agent that plans and runs background workers (each layer keeps its own context). Orchestrator: the voice model hands work to background agents itself. Direct: the voice model calls tools itself.',
+        'Layered (default): the voice model translates and filters, and passes requests to a separate orchestrator agent that plans and runs background workers (each layer keeps its own context). Orchestrator: the voice model hands work to background agents itself. Direct: the voice model calls tools itself.',
       ),
     { layered: 'Layered', orchestrator: 'Orchestrator', direct: 'Direct' } as Record<
       OrchestratorSettings['voiceRole'],
