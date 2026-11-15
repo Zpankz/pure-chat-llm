@@ -80,3 +80,30 @@ export function takeModals(): Modal[] {
   const opened = (Modal as unknown as { opened: Modal[] }).opened;
   return opened.splice(0, opened.length);
 }
+
+/** A review window as tests drive it. */
+export interface ReviewWindow {
+  approve(): void;
+  reject(): void;
+  /** Edit window: the content shown, which the user may change. */
+  content?: string;
+}
+
+/**
+ * Waits until a tool opens a review window and returns it.
+ * @param tries - Event-loop turns to wait.
+ */
+export async function nextModal(tries = 200): Promise<ReviewWindow> {
+  for (let i = 0; i < tries; i++) {
+    const [modal] = takeModals();
+    if (modal) return modal as unknown as ReviewWindow;
+    await new Promise(resolve => setImmediate(resolve));
+  }
+  throw new Error('No review window opened.');
+}
+
+/** Parses the JSON object on the last line of a tool output. */
+export function lastJson(output: string): Record<string, unknown> {
+  const line = output.trim().split('\n').pop() ?? '';
+  return JSON.parse(line) as Record<string, unknown>;
+}

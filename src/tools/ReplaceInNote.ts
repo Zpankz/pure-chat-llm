@@ -1,134 +1,125 @@
+import { normalizePath, TFile } from 'obsidian';
 import { defineToolParameters, InferArgs, Tool } from '../tools';
-import { TFile, normalizePath } from 'obsidian';
-import { EditReview } from './EditReview';
-import { ToolOutputBuilder } from './ToolOutputBuilder';
+import { notePath, REASON_PARAMETER, WRITE_FORMAT } from './CreateNote';
+import { renderWrite, submitWrite } from './EditReview';
+import { jsonResult, toolError, wantsJson } from './toolContract';
 
 const replaceInNoteParameters = defineToolParameters({
   type: 'object',
   properties: {
-    path: {
-      type: 'string',
-      description: 'The path of the note to modify.',
-    },
+    path: { type: 'string', description: 'Vault path of the note.' },
     search: {
       type: 'string',
-      description: 'The text or regex pattern to search for.',
+      description: 'Text to find, or a regular expression when regex is true.',
     },
     replace: {
       type: 'string',
-      description: 'The text to replace the match with.',
-    },
-    regex: {
-      type: 'boolean',
       description:
-        'Whether to treat the search pattern as a regular expression. Defaults to false.',
-      default: false,
+        'Replacement text. Taken literally unless regex is true, where $1 and so on insert capture groups. Empty deletes the match.',
     },
-    case_sensitive: {
-      type: 'boolean',
-      description: 'Whether the search should be case sensitive. Defaults to false.',
-      default: false,
+    regex: { type: 'boolean', description: 'Treat search as a regular expression. Default false.' },
+    case_sensitive: { type: 'boolean', description: 'Match case. Default false.' },
+    expected_matches: {
+      type: 'integer',
+      description:
+        'How many matches you expect. When the note has a different number, nothing changes and the count is reported. Use 1 to make sure you change only the place you mean.',
     },
+    reason: REASON_PARAMETER,
+    format: WRITE_FORMAT,
   },
   required: ['path', 'search', 'replace'],
 } as const);
 
 export type ReplaceInNoteArgs = InferArgs<typeof replaceInNoteParameters>;
 
-/**
- *
- */
+/** Replaces text in one note. */
 export class ReplaceInNoteTool extends Tool<ReplaceInNoteArgs> {
   readonly name = 'replace_in_note';
   readonly classification = 'Vault';
   readonly description =
-    'Replaces text within a note using string or regex matching. Triggers user review.';
+    'Finds and replaces text in one note, every match, as plain text or a regular expression. Use it to correct or remove specific text; use write_note_section to add or replace a whole section. Set expected_matches to avoid changing more than you mean. In a chat the user reviews the edit first; background workers follow the write policy in settings.';
   readonly parameters = replaceInNoteParameters;
 
-  /**
-   *
-   */
+  /** Always available. */
   isAvailable(): boolean {
     return true;
   }
 
-  /**
-   *
-   * @param args
-   */
+  /** @param args - Tool arguments. */
   async execute(args: ReplaceInNoteArgs): Promise<string> {
-    const { path, search, replace, regex = false, case_sensitive = false } = args;
+    const { search, replace, regex = false, case_sensitive = false } = args;
+    if (typeof args.path !== 'string' || !args.path.trim()) {
+      return toolError('InvalidArgument', 'path is required.');
+    }
+    if (typeof search !== 'string' || !search) {
+      return toolError('InvalidArgument', 'search must be non-empty text.');
+    }
+    if (typeof replace !== 'string') {
+      return toolError('InvalidArgument', 'replace must be text (empty to delete the match).');
+    }
     const app = this.chat.plugin.app;
-    const normalizedPath = normalizePath(path);
-
-    const file = app.vault.getAbstractFileByPath(normalizedPath);
-    if (!file || !(file instanceof TFile)) {
-      const parentDir = normalizedPath.split('/').slice(0, -1).join('/');
-      const similarGlob = parentDir ? `${parentDir}/*.md` : '*.md';
-      return new ToolOutputBuilder()
-        .addError('FileNotFoundError', `No file exists at path "${normalizedPath}"`, [
-          `read_file("${normalizedPath}") - Verify the correct path`,
-          `glob_vault_files("${similarGlob}") - Find similar files`,
-          `search_vault("${search}") - Find which files contain the search text`,
-        ])
-        .build();
+    const file =
+      app.vault.getFileByPath(normalizePath(args.path)) ??
+      app.vault.getFileByPath(notePath(args.path));
+    if (!(file instanceof TFile)) {
+      return toolError('NotFound', `No note at "${args.path}".`, [
+        'glob_vault_files to find the path',
+        `search_vault("${search.slice(0, 60)}") to find notes containing the text`,
+      ]);
     }
 
-    void this.status(`Preparing replacement for "${normalizedPath}"...`);
-
+    let pattern: RegExp;
     try {
-      const content = await app.vault.cachedRead(file);
-      let newContent: string;
-
-      if (regex) {
-        const flags = case_sensitive ? 'g' : 'gi';
-        const re = new RegExp(search, flags);
-        newContent = content.replace(re, replace);
-      } else {
-        if (case_sensitive) {
-          newContent = content.split(search).join(replace);
-        } else {
-          // Case-insensitive string replacement using regex (escaped)
-          const escapedSearch = search.replace(/[.*+?^${}()|[\\]/g, '\\$&');
-          const re = new RegExp(escapedSearch, 'gi');
-          newContent = content.replace(re, replace);
-        }
-      }
-
-      if (content === newContent) {
-        return new ToolOutputBuilder()
-          .addHeader('NO MATCHES FOUND')
-          .addKeyValue('File', normalizedPath)
-          .addKeyValue('Search term', `"${search}"`)
-          .addKeyValue('Status', 'No changes made')
-          .addSeparator()
-          .addSuggestions(
-            `read_file("${normalizedPath}") - Review the file content`,
-            `search_vault("${search}") - Find which files contain this text`,
-            'Try different search term or use regex: true for pattern matching',
-          )
-          .build();
-      }
-
-      // Trigger Review Modal
-      return await EditReview.prompt(
-        app,
-        normalizedPath,
-        newContent,
-        undefined, // properties
-        true, // overwrite/modify
-        `Replace "${search}" with "${replace}"`,
-        this.chat,
-      );
+      const source = regex ? search : search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      pattern = new RegExp(source, case_sensitive ? 'g' : 'gi');
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      return new ToolOutputBuilder()
-        .addError('ReplaceError', message, [
-          `read_file("${normalizedPath}") - Check file content`,
-          'Verify search pattern syntax (especially for regex mode)',
-          'Check if replacement string contains valid characters',
-        ])
-        .build();
+      return toolError('InvalidRegex', message, ['Fix the pattern, or set regex: false.']);
     }
+
+    const text = await app.vault.read(file);
+    const matches = text.match(pattern)?.length ?? 0;
+    const expected = args.expected_matches;
+    if (typeof expected === 'number' && matches !== expected) {
+      return toolError(
+        'MatchCountMismatch',
+        `Found ${matches} match${matches === 1 ? '' : 'es'} in "${file.path}", expected ${expected}. Nothing changed.`,
+        ['Make search more specific, or read the note first.'],
+      );
+    }
+    if (matches === 0) {
+      const summary = `No matches for "${search.slice(0, 80)}" in "${file.path}"; nothing changed.`;
+      if (wantsJson(args)) {
+        return jsonResult({
+          ok: true,
+          action: 'edit',
+          path: file.path,
+          applied: false,
+          review: 'none',
+          matches: 0,
+        });
+      }
+      return `${summary}\nNext: read_file("${file.path}") to see the text, or try regex: true.`;
+    }
+    // A function keeps a literal replacement literal ($& and $1 are not expanded).
+    const next = regex ? text.replace(pattern, replace) : text.replace(pattern, () => replace);
+
+    void this.status(`Replacing ${matches} match${matches === 1 ? '' : 'es'} in "${file.path}"...`);
+    const outcome = await submitWrite(this.chat, {
+      kind: 'write',
+      path: file.path,
+      content: next,
+      overwrite: true,
+      original: text,
+      instruction: `Replace ${matches} match${matches === 1 ? '' : 'es'} of "${search.slice(0, 80)}"`,
+      reason: args.reason,
+    });
+    return renderWrite(
+      outcome,
+      args,
+      `Replaced ${matches} match${matches === 1 ? '' : 'es'} in "${file.path}"`,
+      { matches },
+      [`read_file("${file.path}") to check it`],
+    );
   }
 }

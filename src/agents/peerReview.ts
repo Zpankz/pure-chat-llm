@@ -3,10 +3,14 @@ import { normalizePath, TFile } from 'obsidian';
 import type { PureChatLLMChat } from '../core/Chat';
 import type PureChatLLM from '../main';
 import type { SubAgentWritePolicy } from '../types';
+import { layerForRole } from '../tools/toolContract';
 import { layerFetch, parseModelRef, resolveLayer } from './layers';
 import type { LayerRequest, ResolvedLayer } from './layers';
 
 export type WriteAction = 'create' | 'edit' | 'delete';
+
+/** How one write is decided; see `writeRoute`. */
+export type WriteRoute = 'user' | 'allow' | 'peer' | 'queue' | 'deny';
 
 /** A change a sub-agent wants to make, as the reviewers see it. */
 export interface WriteProposal {
@@ -44,8 +48,8 @@ export const reviewerTransport = {
 };
 
 /**
- * The policy for a write from this chat. Only background sub-agents are gated by the orchestrator
- * settings; everyone else keeps the Edit Review window.
+ * The configured policy for a background worker's write (`allow`, `peer`, `review`, `deny`).
+ * Chats with the user present don't use it; see `writeRoute`.
  * @param plugin - Plugin.
  * @param chat - Chat the tool runs in.
  * @param action - Create, edit or delete.
@@ -56,7 +60,38 @@ export function writePolicy(
   action: WriteAction,
 ): SubAgentWritePolicy {
   if (chat?.role !== 'subagent') return 'review';
-  return plugin.settings.orchestrator.writes?.[action] ?? (action === 'create' ? 'allow' : 'peer');
+  return plugin.settings.orchestrator?.writes?.[action] ?? (action === 'create' ? 'allow' : 'peer');
+}
+
+/**
+ * How a write is decided:
+ * - `user`: the user is present (a note chat, direct voice, code mode run from either) and
+ *   reviews it in the Edit Review window first.
+ * - `allow`, `peer`, `deny`: a background worker's configured policy.
+ * - `queue`: a background worker whose policy is "ask me". Nobody may be watching, so the
+ *   change is saved as a proposal note for the user to review later; no window is opened.
+ *
+ * The orchestrator agent runs in the background too and has no write tools, so a write from it
+ * is refused rather than shown in a window.
+ * @param plugin - Plugin.
+ * @param chat - Chat the tool runs in.
+ * @param action - Create, edit or delete.
+ */
+export function writeRoute(
+  plugin: PureChatLLM,
+  chat: PureChatLLMChat | undefined,
+  action: WriteAction,
+): WriteRoute {
+  switch (layerForRole(chat?.role)) {
+    case 'worker': {
+      const policy = writePolicy(plugin, chat, action);
+      return policy === 'review' ? 'queue' : policy;
+    }
+    case 'orchestrator':
+      return 'deny';
+    default:
+      return 'user';
+  }
 }
 
 /**
