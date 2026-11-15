@@ -158,10 +158,37 @@ describe('Settings tab', () => {
       return JSON.parse(JSON.stringify(p.constructor?.DEFAULT_SETTINGS?.orchestrator?.layers ?? p.defaultSettings?.orchestrator?.layers ?? null));
     });
     ev.save('layer-settings', { ui: { Orchestrator: s.Orchestrator, Workers: s.Workers, Evaluator: s.Evaluator }, stored: layers, defaults });
-    const groupOf = (g: string) => s[Object.keys(s).find(h => h.startsWith(g)) ?? ''] ?? [];
-    for (const g of ['Orchestrator', 'Workers', 'Evaluator']) {
-      expect(groupOf(g)).toEqual(expect.arrayContaining(['Provider', 'Model', 'Reasoning effort']));
+    const groupOf = (sec: Record<string, string[]>, g: string) => sec[Object.keys(sec).find(h => h.startsWith(g)) ?? ''] ?? [];
+    for (const g of ['Orchestrator', 'Workers']) {
+      expect(groupOf(s, g)).toEqual(expect.arrayContaining(['Provider', 'Model', 'Reasoning effort']));
     }
+    // The evaluator is off by default, and its group then shows only its switch. Turn it on, redraw
+    // the tab, check its layer settings, then put it back.
+    expect(groupOf(s, 'Evaluator')).toEqual(['Use an evaluator']);
+    const wasOn = await browser.executeObsidian(({ plugins }) => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const p = plugins.voiceAgent as any;
+      const before = !!p.settings.orchestrator.layers.evaluator.enabled;
+      p.settings.orchestrator.layers.evaluator.enabled = true;
+      return before;
+    });
+    await withTimeout(
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      browser.executeObsidian(({ app }) => (app as any).setting.activeTab.display()),
+      15_000,
+      'Redrawing the settings tab',
+    );
+    const on = await sections();
+    await scrollTo('Evaluator');
+    await ev.shot('evaluator-on');
+    await browser.executeObsidian(({ app, plugins }, wasOn: boolean) => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (plugins.voiceAgent as any).settings.orchestrator.layers.evaluator.enabled = wasOn;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (app as any).setting.activeTab.display();
+    }, wasOn);
+    ev.save('evaluator-group-when-on', groupOf(on, 'Evaluator'));
+    expect(groupOf(on, 'Evaluator')).toEqual(expect.arrayContaining(['Provider', 'Model', 'Reasoning effort']));
     await scrollTo('Workers');
     await ev.shot('workers-layer');
     // Screenshots for SKL-1 and MCP-1, which check the behaviour itself in 03-tools.
@@ -169,7 +196,7 @@ describe('Settings tab', () => {
     await ev.shot('agent-skills-settings');
     await scrollTo('Remote MCP servers');
     await ev.shot('mcp-settings');
-    ev.note('Each layer has Provider, Model and Reasoning effort in the tab.');
+    ev.note('Orchestrator and Workers show Provider, Model and Reasoning effort; the Evaluator, off by default, shows only its switch until turned on, then the same three.');
   });
 
   after(async () => {
