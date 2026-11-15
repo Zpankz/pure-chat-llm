@@ -4,7 +4,7 @@ import type { PureChatLLMChat } from '../core/Chat';
 import type PureChatLLM from '../main';
 import type { SubAgentWritePolicy } from '../types';
 import { layerFetch, parseModelRef, resolveLayer } from './layers';
-import type { ResolvedLayer } from './layers';
+import type { LayerRequest, ResolvedLayer } from './layers';
 
 export type WriteAction = 'create' | 'edit' | 'delete';
 
@@ -28,6 +28,20 @@ const REVIEWER_PROMPT =
   'You review one proposed change to a note in an Obsidian vault and decide whether it should be made. You see only the change. Approve when it is clearly correct, careful and limited to what it says it does. Reject when it loses information that looks valuable, damages structure (frontmatter, links, headings), is broader than its stated purpose, looks like a mistake, or you cannot tell. First line: APPROVE or REJECT. Second line: one short reason.';
 
 const MAX_CHANGE_CHARS = 12000;
+
+/**
+ * How a reviewer question is sent. One place, so tests can stand in a fake model.
+ */
+export const reviewerTransport = {
+  /**
+   * Sends one reviewer request and returns the answer text.
+   * @param plugin - Plugin.
+   * @param layer - Reviewer's resolved layer.
+   * @param request - The request.
+   */
+  ask: async (plugin: PureChatLLM, layer: ResolvedLayer, request: LayerRequest): Promise<string> =>
+    (await layerFetch(plugin, layer, request)).content ?? '',
+};
 
 /**
  * The policy for a write from this chat. Only background sub-agents are gated by the orchestrator
@@ -99,18 +113,21 @@ export async function peerReview(
   const question = describe(proposal);
 
   const ask = async (layer: ResolvedLayer, n: number): Promise<{ ok: boolean; line: string }> => {
+    let timer = 0;
     try {
       // A fresh request each time: the reviewer sees only its instructions and the change.
-      const answer = layerFetch(plugin, layer, {
-        max_completion_tokens: 200,
-        messages: [
-          { role: 'system', content: REVIEWER_PROMPT },
-          { role: 'user', content: question },
-        ],
-      }).then(r => (r.content ?? '').trim());
-      const timeout = new Promise<string>(resolve =>
-        window.setTimeout(() => resolve('REJECT\nNo answer in time.'), 120_000),
-      );
+      const answer = reviewerTransport
+        .ask(plugin, layer, {
+          max_completion_tokens: 200,
+          messages: [
+            { role: 'system', content: REVIEWER_PROMPT },
+            { role: 'user', content: question },
+          ],
+        })
+        .then(r => r.trim());
+      const timeout = new Promise<string>(resolve => {
+        timer = window.setTimeout(() => resolve('REJECT\nNo answer in time.'), 120_000);
+      });
       const text = await Promise.race([answer, timeout]);
       const ok = /^\W*approve\b/i.test(text);
       const reason = text.split('\n').slice(1).join(' ').trim() || text.slice(0, 200);
@@ -121,6 +138,8 @@ export async function peerReview(
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       return { ok: false, line: `Reviewer ${n}: no verdict (${message.slice(0, 160)})` };
+    } finally {
+      window.clearTimeout(timer);
     }
   };
 
