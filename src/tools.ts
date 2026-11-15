@@ -301,7 +301,7 @@ export class ToolRegistry {
       return await tool.execute(args);
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : String(error);
-      return `Error: ${message}`;
+      return toolError('ToolFailed', message);
     }
   }
 }

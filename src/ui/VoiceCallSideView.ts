@@ -760,6 +760,8 @@ export class VoiceCallSideView extends ItemView {
    */
   private async endCall(): Promise<void> {
     this.unwatchAgents();
+    // Tool calls still running for the call are stopped, so nothing lands after hang-up.
+    this.toolExecutor?.cancel();
     if (this.voiceCall) {
       await this.voiceCall.endCall();
       this.voiceCall = null;

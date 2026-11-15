@@ -226,6 +226,8 @@ export const DEFAULT_SETTINGS: PureChatLLMSettings = {
     maxOutputChars: 40000,
     engine: 'auto',
     djsModulePath: '',
+    djsModuleUrl: '',
+    djsModuleSha256: '',
     djsMaxFuel: 2_000_000_000,
     djsMemoryLimitMb: 64,
   },

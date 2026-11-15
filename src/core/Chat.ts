@@ -132,7 +132,7 @@ export class PureChatLLMChat {
       this.plugin.settings.useYAMLFrontMatter,
       this.plugin.settings.agentMode,
     );
-    this.toolExecutor = new ToolExecutor(this.toolregistry);
+    this.toolExecutor = new ToolExecutor(this.toolregistry, this);
   }
 
   // Delegate to session for backward compatibility

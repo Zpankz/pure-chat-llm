@@ -259,34 +259,26 @@ export class LocalSubAgentBackend implements SubAgentBackend {
 
   /**
    * Runs one tool with its time limit (see toolContract). The call's abort signal fires on the
-   * time limit and when the task is cancelled, which is checked every second while it runs.
+   * time limit and the moment the task is cancelled or times out (the task's own signal).
    * @param chat - Sub-agent chat.
    * @param name - Tool name.
    * @param args - Arguments.
    * @param ctx - Run context.
    */
-  private async execute(
+  private execute(
     chat: PureChatLLMChat,
     name: string,
     args: Record<string, unknown>,
     ctx: SubAgentRunContext,
   ): Promise<string> {
-    const cancel = new AbortController();
-    const poll = window.setInterval(() => {
-      if (ctx.isCancelled()) cancel.abort();
-    }, 1000);
-    try {
-      return await withToolTimeout(
-        name,
-        toolTimeoutMs(name),
-        signal =>
-          callWithSignal(chat as unknown as AbortHost, signal, () =>
-            chat.toolregistry.executeTool(name, args),
-          ),
-        cancel.signal,
-      );
-    } finally {
-      window.clearInterval(poll);
-    }
+    return withToolTimeout(
+      name,
+      toolTimeoutMs(name),
+      signal =>
+        callWithSignal(chat as unknown as AbortHost, signal, () =>
+          chat.toolregistry.executeTool(name, args),
+        ),
+      ctx.signal,
+    );
   }
 }

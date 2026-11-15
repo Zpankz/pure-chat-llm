@@ -311,6 +311,10 @@ export interface CodeModeSettings {
   engine: 'auto' | 'djs' | 'worker';
   /** Vault path of djs.wasm. Empty means djs.wasm in the plugin folder. */
   djsModulePath: string;
+  /** Where to download djs.wasm when it is missing (https; used only with a pinned hash). */
+  djsModuleUrl: string;
+  /** sha256 the downloaded or cached djs.wasm must match. */
+  djsModuleSha256: string;
   /** djs instruction budget per script. */
   djsMaxFuel: number;
   /** djs heap cap per script, in MB. */

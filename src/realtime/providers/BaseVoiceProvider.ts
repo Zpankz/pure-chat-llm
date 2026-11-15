@@ -1,6 +1,7 @@
 import { Notice } from 'obsidian';
 import { clipToolOutput } from '../toolAdapters';
 import type { NoticeMode } from '../../agents/types';
+import { toolError } from '../../tools/toolContract';
 import type {
   IToolExecutor,
   IVoiceCallProvider,
@@ -152,7 +153,7 @@ export abstract class BaseVoiceProvider implements IVoiceCallProvider {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       this.emit({ type: 'tool', name, phase: 'end', error: message });
-      return `Error: ${message}`;
+      return toolError('ToolFailed', message);
     }
   }
 
