@@ -18,6 +18,8 @@ export interface PureChatLLMSettings {
   resolveFilesForChatAnalysis: boolean;
   autoConcatMessagesFromSameRole: boolean;
   agentMode: boolean;
+  /** Obsidian command ids the agent may run with run_obsidian_command (empty turns it off). */
+  commandAllowList: string[];
   useYAMLFrontMatter: boolean;
   enabledToolClassifications: {
     Vault: boolean;
@@ -126,6 +128,11 @@ export interface VoiceSettings {
   saveCalls: boolean;
   /** Vault folder for saved calls; each call gets its own folder inside. */
   callsFolder: string;
+  /**
+   * How a saved call is laid out: `topics` (one linked note per topic the voice marks, with an
+   * index note) or `transcript` (the whole transcript in the call's folder note).
+   */
+  callNotes: 'topics' | 'transcript';
   openai: OpenAIRealtimeVoiceSettings;
   live: OpenAILiveVoiceSettings;
   gemini: GeminiLiveVoiceSettings;
@@ -208,6 +215,8 @@ export interface OrchestratorSettings {
   subAgentInstructions: string;
   /** Model responses per task before it stops. */
   maxSteps: number;
+  /** Minutes a task may run in all before it is stopped (0 = no limit). */
+  taskTimeoutMinutes: number;
   /** Tasks that run at the same time; the rest wait in a queue. */
   maxConcurrent: number;
   /** Minutes between timed check-ins on a running task. 0 turns them off. */
@@ -276,7 +285,8 @@ export interface LayerSettings {
  * - `allow`: the sub-agent writes straight away.
  * - `peer`: two independent reviewer agents see only the proposed change; it is made only if both
  *   approve.
- * - `review`: the Edit Review window asks you.
+ * - `review`: the change is saved as a proposal note for you to review later; nothing is applied
+ *   until you approve it (command "Review proposals from background tasks").
  * - `deny`: sub-agents can't do it.
  */
 export type SubAgentWritePolicy = 'allow' | 'peer' | 'review' | 'deny';
@@ -307,6 +317,10 @@ export interface CodeModeSettings {
   engine: 'auto' | 'djs' | 'worker';
   /** Vault path of djs.wasm. Empty means djs.wasm in the plugin folder. */
   djsModulePath: string;
+  /** Where to download djs.wasm when it is missing (https; used only with a pinned hash). */
+  djsModuleUrl: string;
+  /** sha256 the downloaded or cached djs.wasm must match. */
+  djsModuleSha256: string;
   /** djs instruction budget per script. */
   djsMaxFuel: number;
   /** djs heap cap per script, in MB. */

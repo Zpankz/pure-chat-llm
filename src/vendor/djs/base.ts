@@ -30,7 +30,7 @@ export function provideCodedBase(module: WebAssembly.Module, exports: BaseExport
   if (exports.djs_base_coded_ptr === undefined) return false;
   let coded = codedSections.get(module);
   if (coded === undefined) {
-    const [section] = WebAssembly.Module.customSections(module, "djs_base");
+    const [section] = WebAssembly.Module.customSections(module, 'djs_base');
     if (section === undefined) return false;
     coded = new Uint8Array(section);
     codedSections.set(module, coded);
@@ -52,7 +52,11 @@ export function provideCodedBase(module: WebAssembly.Module, exports: BaseExport
  */
 export function provideBase(module: WebAssembly.Module, exports: BaseExports): boolean {
   const bytes = bases.get(module);
-  if (bytes !== undefined && exports.djs_base_inject_ptr !== undefined && exports.djs_base_inject !== undefined) {
+  if (
+    bytes !== undefined &&
+    exports.djs_base_inject_ptr !== undefined &&
+    exports.djs_base_inject !== undefined
+  ) {
     const at = exports.djs_base_inject_ptr(bytes.length);
     if (at !== 0) {
       new Uint8Array(exports.memory.buffer, at, bytes.length).set(bytes);
@@ -74,6 +78,6 @@ export function rememberBase(module: WebAssembly.Module, exports: BaseExports): 
   // The pointer first: an instance decodes its base at the first use (D2252), which may
   // grow (and detach) its memory buffer.
   const at = exports.djs_base_ptr();
-  if (at === 0) throw new Error("djs-wasm has no base snapshot (no djs_base section?)");
+  if (at === 0) throw new Error('djs-wasm has no base snapshot (no djs_base section?)');
   bases.set(module, new Uint8Array(exports.memory.buffer, at, exports.djs_base_len()).slice());
 }

@@ -1,7 +1,7 @@
 // The inbound wire format encoder: host JS value -> bytes for djs' `wire::decode`.
 // Format specification: docs/wire.md (version 1).
 
-import { LAYOUT } from "./layout.generated";
+import { LAYOUT } from './layout.generated';
 
 export const VERSION = 1;
 
@@ -40,20 +40,20 @@ class EncodeError extends TypeError {
 }
 
 function describe(v: unknown): string {
-  if (typeof v === "function") return "a function";
-  if (typeof v === "symbol") return "a symbol";
-  if (typeof v === "bigint") return "a BigInt";
-  if (typeof v === "object" && v !== null) {
+  if (typeof v === 'function') return 'a function';
+  if (typeof v === 'symbol') return 'a symbol';
+  if (typeof v === 'bigint') return 'a BigInt';
+  if (typeof v === 'object' && v !== null) {
     const name = (v as object).constructor?.name;
-    return name ? name : "an object with a custom prototype";
+    return name ? name : 'an object with a custom prototype';
   }
   return typeof v;
 }
 
 function formatPath(segments: (string | number)[]): string {
-  let p = "$";
+  let p = '$';
   for (const s of segments) {
-    if (typeof s === "number") p += `[${s}]`;
+    if (typeof s === 'number') p += `[${s}]`;
     else if (/^[A-Za-z_$][\w$]*$/.test(s)) p += `.${s}`;
     else p += `[${JSON.stringify(s)}]`;
   }
@@ -101,19 +101,19 @@ class Encoder {
 
   value(v: unknown): void {
     switch (typeof v) {
-      case "string":
+      case 'string':
         this.string(v);
         return;
-      case "number":
+      case 'number':
         this.number(v);
         return;
-      case "boolean":
+      case 'boolean':
         this.byte(v ? Tag.TRUE : Tag.FALSE);
         return;
-      case "undefined":
+      case 'undefined':
         this.byte(Tag.UNDEFINED);
         return;
-      case "object":
+      case 'object':
         if (v === null) {
           this.byte(Tag.NULL);
         } else if (Array.isArray(v)) {
@@ -236,7 +236,7 @@ class Encoder {
   enter(v: object): void {
     if (this.depth >= CYCLE_CHECK_DEPTH) {
       for (let i = 0; i < this.depth; i++) {
-        if (this.stack[i] === v) throw new EncodeError("cannot encode a cycle");
+        if (this.stack[i] === v) throw new EncodeError('cannot encode a cycle');
       }
     }
     this.stack[this.depth++] = v;
@@ -273,7 +273,7 @@ class Encoder {
     this.buf[this.pos++] = Tag.OBJECT;
     this.varint(n);
     const table = this.keys;
-    let key = "";
+    let key = '';
     try {
       for (let i = 0; i < n; i++) {
         key = keys[i];

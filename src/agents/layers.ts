@@ -3,6 +3,7 @@ import { LLMService } from '../core/LLMService';
 import { callResponses } from '../core/ResponsesClient';
 import type PureChatLLM from '../main';
 import { callGemini } from '../core/GeminiClient';
+import { withDeadline } from '../core/requestControl';
 import { CHATGPT_SIGN_IN, GOOGLE_SIGN_IN } from '../types';
 import type {
   ChatRequestOptions,
@@ -159,20 +160,72 @@ export interface LayerRequest {
   max_completion_tokens?: number;
 }
 
+/** Default deadline for one request, per layer (system review A1). */
+export const LAYER_TIMEOUT_MS: Record<string, number> = {
+  orchestrator: 45_000,
+  worker: 120_000,
+  evaluator: 90_000,
+};
+
+/** Deadline, cancellation and timing for one layer request. */
+export interface LayerControl {
+  /** Cancels the request (a cancelled task, a stopped turn). */
+  signal?: AbortSignal;
+  /** Overrides the layer's default deadline. */
+  timeoutMs?: number;
+  /** Extra tries after a rate limit, server error or network failure (default 1). */
+  retries?: number;
+  /** Names the request in timing logs. */
+  label?: string;
+}
+
 /**
  * Sends one non-streamed agent turn on a layer: Chat Completions with `reasoning_effort`, or
- * Responses (with an API key or the ChatGPT sign-in) with `reasoning.effort`.
+ * Responses (with an API key or the ChatGPT sign-in) with `reasoning.effort`. Every request has
+ * a deadline, can be cancelled, and is retried once on a rate limit, server error or network
+ * failure. Each request's duration goes to the timing log.
  * @param plugin - Plugin.
  * @param resolved - Resolved layer.
  * @param options - Chat Completions request; `model` is replaced by the layer's.
+ * @param control - Deadline and cancellation.
  */
 export async function layerFetch(
   plugin: PureChatLLM,
   resolved: ResolvedLayer,
   options: LayerRequest,
+  control: LayerControl = {},
 ): Promise<ChatResponse> {
   const problem = layerProblem(plugin, resolved);
   if (problem) throw new Error(problem);
+  const label = control.label ?? `The ${resolved.layer} request`;
+  return withDeadline(signal => sendLayer(plugin, resolved, options, signal), {
+    timeoutMs: control.timeoutMs ?? LAYER_TIMEOUT_MS[resolved.layer] ?? 120_000,
+    signal: control.signal,
+    retries: control.retries,
+    label,
+    onTiming: (ms, outcome) =>
+      logTiming(plugin, `${resolved.layer} request (${resolved.model})`, ms, outcome),
+  });
+}
+
+/**
+ * Records how long something took: the developer console, and the open call's note.
+ * @param plugin - Plugin.
+ * @param what - What was timed.
+ * @param ms - Milliseconds.
+ * @param outcome - How it ended.
+ */
+export function logTiming(plugin: PureChatLLM, what: string, ms: number, outcome = 'ok'): void {
+  plugin.console?.log(`[timing] ${what}: ${ms} ms (${outcome})`);
+  plugin.calls?.logTiming?.(what, ms, outcome);
+}
+
+async function sendLayer(
+  plugin: PureChatLLM,
+  resolved: ResolvedLayer,
+  options: LayerRequest,
+  signal: AbortSignal,
+): Promise<ChatResponse> {
   const request: ChatRequestOptions = { ...options, model: resolved.model, stream: false };
   if (resolved.google) {
     return callGemini({
@@ -181,6 +234,7 @@ export async function layerFetch(
       projectId: plugin.google.projectId,
       options: request,
       effort: resolved.effort,
+      signal,
     });
   }
   if (resolved.api === 'responses') {
@@ -191,6 +245,7 @@ export async function layerFetch(
         options: request,
         effort: resolved.effort,
         chatgptPlan: true,
+        signal,
       });
     }
     const ep = resolved.endpoint as PureChatLLMAPI;
@@ -199,8 +254,15 @@ export async function layerFetch(
       token: () => Promise.resolve(ep.apiKey),
       options: request,
       effort: resolved.effort,
+      signal,
     });
   }
   if (resolved.effort) request.reasoning_effort = resolved.effort;
-  return service.fetchResponse(resolved.endpoint as PureChatLLMAPI, request);
+  return service.fetchResponse(
+    resolved.endpoint as PureChatLLMAPI,
+    request,
+    undefined,
+    undefined,
+    signal,
+  );
 }

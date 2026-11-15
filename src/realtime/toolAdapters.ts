@@ -1,5 +1,14 @@
 import type { ToolRegistry } from '../tools';
 import type { McpServerConfig, ToolDefinition, VoiceProviderId, VoiceSettings } from '../types';
+import {
+  allowedIn,
+  clipDescription,
+  clipToolText,
+  isReadOnlyTool,
+  isToolError,
+  toolErrorLine,
+  toolErrorType,
+} from '../tools/toolContract';
 
 /** Providers that accept remote MCP servers natively (`type: "mcp"`). */
 export const NATIVE_MCP_PROVIDERS: VoiceProviderId[] = [
@@ -9,7 +18,7 @@ export const NATIVE_MCP_PROVIDERS: VoiceProviderId[] = [
 ];
 
 /** Tools kept when voice tool exposure is "code mode only". */
-const CODEMODE_CORE = ['codemode', 'activate_skill', 'read_skill_file'];
+const CODEMODE_CORE = ['codemode', 'activate_skill', 'read_skill_file', 'new_topic'];
 
 /** Hard cap for one tool description sent to a voice model. */
 const MAX_DESCRIPTION = 4000;
@@ -37,7 +46,11 @@ export function selectVoiceTools(
   const nativePrefixes = nativeMcp.map(s => `mcp__${s.name.replace(/[^A-Za-z0-9_-]/g, '_')}__`);
 
   let tools = registry.getEnabledDefinitions();
-  tools = tools.filter(t => !nativePrefixes.some(p => t.function.name.startsWith(p)));
+  tools = tools.filter(
+    t =>
+      !nativePrefixes.some(p => t.function.name.startsWith(p)) &&
+      allowedIn(t.function.name, 'voice'),
+  );
 
   if (settings.toolExposure === 'codemode') {
     const core = tools.filter(t => CODEMODE_CORE.includes(t.function.name));
@@ -47,11 +60,12 @@ export function selectVoiceTools(
 }
 
 /**
- * Trims a description for realtime models.
+ * Trims a description for realtime models, keeping its start (the summary line) and saying how
+ * much was cut.
  * @param text - Description.
  */
-function voiceDescription(text: string): string {
-  return text.length > MAX_DESCRIPTION ? `${text.slice(0, MAX_DESCRIPTION - 1)}…` : text;
+export function voiceDescription(text: string): string {
+  return clipDescription(text, MAX_DESCRIPTION);
 }
 
 /**
@@ -82,33 +96,69 @@ export function toResponsesFunctionTool(def: ToolDefinition): Record<string, unk
 }
 
 /**
+ * Which Gemini functions are declared NON_BLOCKING (the model keeps talking while they run):
+ * - `false`: none.
+ * - `true` or `'reads'`: read-only tools only (`isReadOnlyTool`). Writes, UI actions, code mode,
+ *   MCP tools and task control stay blocking, so the model does not talk past a change before it
+ *   has happened or been refused.
+ * - `'all'`: every function, for models that only accept NON_BLOCKING functions.
+ */
+export type GeminiNonBlocking = boolean | 'reads' | 'all';
+
+/**
+ * The NON_BLOCKING mode for a Gemini session.
+ * @param nonBlockingTools - The user's "Non-blocking tools" setting.
+ * @param supportsScheduling - `geminiSupportsScheduling(model)`; models without it only accept
+ *   NON_BLOCKING functions.
+ */
+export function geminiNonBlockingMode(
+  nonBlockingTools: boolean,
+  supportsScheduling: boolean,
+): GeminiNonBlocking {
+  if (!supportsScheduling) return 'all';
+  return nonBlockingTools ? 'reads' : false;
+}
+
+/**
+ * The `response` of a Gemini function response: `{ output }`, or for a failed call
+ * `{ error, error_type }` with the type, reason and recovery on one line.
+ * @param output - Tool output (already clipped).
+ */
+export function geminiFunctionResponse(output: string): Record<string, unknown> {
+  return isToolError(output)
+    ? { error: toolErrorLine(output), error_type: toolErrorType(output) }
+    : { output };
+}
+
+/**
  * Gemini Live function declaration. Uses `parametersJsonSchema`, which accepts full JSON Schema,
  * so schemas no longer need `additionalProperties` stripped.
  * @param def - Plugin tool definition.
- * @param nonBlocking - Declare the function NON_BLOCKING so the model keeps talking while it runs.
+ * @param nonBlocking - Which functions are NON_BLOCKING (see `GeminiNonBlocking`).
  */
 export function toGeminiFunctionDeclaration(
   def: ToolDefinition,
-  nonBlocking: boolean,
+  nonBlocking: GeminiNonBlocking,
 ): Record<string, unknown> {
+  const name = def.function.name;
+  const declare = nonBlocking === 'all' || (!!nonBlocking && isReadOnlyTool(name));
   return {
-    name: def.function.name,
+    name,
     description: voiceDescription(def.function.description),
     parametersJsonSchema: def.function.parameters,
-    ...(nonBlocking ? { behavior: 'NON_BLOCKING' } : {}),
+    ...(declare ? { behavior: 'NON_BLOCKING' } : {}),
   };
 }
 
 /**
- * Keeps tool output small enough for a voice model, keeping the start and the end.
+ * Keeps tool output small enough for a voice model. The first line (the summary) stays whole, and
+ * for a failed call so do the error type, reason and recovery lines, so the voice can say what
+ * went wrong; then the start and end of the rest, with a note of how much was cut.
  * @param text - Tool output.
  * @param max - Maximum characters.
  */
 export function clipToolOutput(text: string, max: number): string {
-  if (!max || text.length <= max) return text;
-  const head = Math.floor(max * 0.7);
-  const tail = max - head;
-  return `${text.slice(0, head)}\n…[${text.length - max} characters omitted]…\n${text.slice(-tail)}`;
+  return clipToolText(text, max, 0.7);
 }
 
 /** Guidance appended to voice instructions when tools are available. */

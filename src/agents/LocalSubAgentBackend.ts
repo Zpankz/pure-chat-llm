@@ -6,6 +6,60 @@ import type { SubAgentBackend, SubAgentRunContext, SubAgentTask } from './types'
 import { VaultGraph } from '../graph/VaultGraph';
 import { ontologySummary } from '../graph/ontology';
 import { layerFetch, resolveLayer } from './layers';
+import {
+  AbortHost,
+  callWithSignal,
+  isToolError,
+  toolError,
+  toolErrorLine,
+  toolTimeoutMs,
+  withToolTimeout,
+} from '../tools/toolContract';
+
+/** Characters of one tool output kept in a worker's history (system review C3). */
+export const MAX_TOOL_OUTPUT_IN_HISTORY = 8000;
+/** Characters of tool output kept in a worker's history in all before old outputs are dropped. */
+export const HISTORY_TOOL_BUDGET = 60_000;
+/** The latest tool outputs that are always kept whole. */
+const KEEP_RECENT_TOOL_OUTPUTS = 6;
+
+/**
+ * Clips one tool output for the history, keeping its head and tail.
+ * @param output - Tool output.
+ */
+export function clipToolOutput(output: string, max = MAX_TOOL_OUTPUT_IN_HISTORY): string {
+  if (output.length <= max) return output;
+  const head = Math.floor(max * 0.75);
+  const tail = max - head;
+  return `${output.slice(0, head)}\n…[${output.length - max} characters cut; call the tool again with a narrower request if you need them]…\n${output.slice(-tail)}`;
+}
+
+/**
+ * Keeps a worker's history from growing without limit: once the tool outputs add up past the
+ * budget, the oldest ones (all but the latest few) are replaced by a one-line stub. The model's
+ * own messages and the brief are kept. Returns how many outputs were dropped.
+ * @param messages - Task history, changed in place.
+ */
+export function compactHistory(
+  messages: { role: string; content?: unknown }[],
+  budget = HISTORY_TOOL_BUDGET,
+): number {
+  const toolIndexes = messages.map((m, i) => (m.role === 'tool' ? i : -1)).filter(i => i >= 0);
+  const size = (i: number) =>
+    typeof messages[i].content === 'string' ? messages[i].content.length : 0;
+  let total = toolIndexes.reduce((n, i) => n + size(i), 0);
+  let dropped = 0;
+  for (const i of toolIndexes.slice(0, -KEEP_RECENT_TOOL_OUTPUTS)) {
+    if (total <= budget) break;
+    const before = size(i);
+    if (before < 200) continue;
+    messages[i].content =
+      '[Older tool output dropped to keep the context small. Call the tool again if you need it.]';
+    total -= before - size(i);
+    dropped++;
+  }
+  return dropped;
+}
 
 /** Tools a sub-agent may not use (orchestration belongs to the orchestrator). */
 const ORCHESTRATOR_ONLY = new Set(ORCHESTRATOR_TOOL_NAMES);
@@ -34,9 +88,9 @@ export class LocalSubAgentBackend implements SubAgentBackend {
       p === 'allow'
         ? 'go ahead'
         : p === 'peer'
-          ? 'need two independent reviewers to approve (a rejection explains why; revise or ask the orchestrator)'
+          ? 'need two independent reviewers to approve (a rejection explains why; revise or ask the orchestrator; large removals, changes to a note’s type and deletes of well-linked notes are held for the user)'
           : p === 'review'
-            ? 'wait for the user to review'
+            ? 'are saved as proposals for the user to review later (not applied)'
             : 'are not allowed';
     const parts = [
       orchestrator.subAgentInstructions,
@@ -61,6 +115,9 @@ export class LocalSubAgentBackend implements SubAgentBackend {
     const chat = new PureChatLLMChat(this.plugin);
     chat.role = 'subagent';
     chat.subAgentTaskId = task.id;
+    chat.task = task;
+    // Tools see cancellation too, so a cancelled or timed-out task never lands a write later.
+    chat.abortSignal = ctx.signal;
     chat.registerAvailableTools();
     const tools = chat.toolregistry
       .getEnabledDefinitions()
@@ -88,11 +145,17 @@ export class LocalSubAgentBackend implements SubAgentBackend {
         ctx.log({ kind: 'message', text: message });
       }
 
-      const response: ChatResponse = await layerFetch(this.plugin, layer, {
-        messages: task.messages,
-        max_completion_tokens: this.plugin.settings.defaultmaxTokens,
-        ...(tools.length ? { tools } : {}),
-      });
+      compactHistory(task.messages);
+      const response: ChatResponse = await layerFetch(
+        this.plugin,
+        layer,
+        {
+          messages: task.messages,
+          max_completion_tokens: this.plugin.settings.defaultmaxTokens,
+          ...(tools.length ? { tools } : {}),
+        },
+        { signal: ctx.signal, label: `Task ${task.id}'s model request` },
+      );
       if (ctx.isCancelled()) throw new Error('cancelled');
       for (const hook of ctx.hooks) await hook.afterResponse?.({ task, step }, response);
 
@@ -122,21 +185,26 @@ export class LocalSubAgentBackend implements SubAgentBackend {
       });
 
       for (const call of calls) {
+        if (ctx.isCancelled()) throw new Error('cancelled');
         const output = await this.runCall(chat, task, step, call, ctx);
-        task.messages.push({ role: 'tool', content: output, tool_call_id: call.id });
+        task.messages.push({
+          role: 'tool',
+          content: clipToolOutput(output),
+          tool_call_id: call.id,
+        });
 
         // Deterministic stuck checks: the same call over and over, or failures in a row.
         const signature = `${call.function.name}:${call.function.arguments}`;
         repeats = signature === lastSignature ? repeats + 1 : 1;
         lastSignature = signature;
-        failures = /^Error:/.test(output) ? failures + 1 : 0;
+        failures = isToolError(output) ? failures + 1 : 0;
         if (!stuckReported && (repeats >= threshold || failures >= threshold)) {
           stuckReported = true;
           ctx.emit(
             'stuck',
             repeats >= threshold
               ? `It has called ${call.function.name} with the same input ${repeats} times in a row.`
-              : `${failures} tool calls in a row failed. Last error: ${output.slice(0, 300)}`,
+              : `${failures} tool calls in a row failed. Last error: ${toolErrorLine(output).slice(0, 300)}`,
           );
         } else if (repeats < threshold && failures === 0) {
           stuckReported = false;
@@ -167,23 +235,50 @@ export class LocalSubAgentBackend implements SubAgentBackend {
       const decision = await hook.beforeTool?.({ task, step }, call);
       if (decision?.block) {
         ctx.log({ kind: 'tool', text: `${name} blocked: ${decision.block}` });
-        return `Error: blocked by a hook: ${decision.block}`;
+        return toolError('Blocked', `A hook blocked ${name}: ${decision.block}`);
       }
     }
     let args: Record<string, unknown> = {};
     try {
       args = JSON.parse(call.function.arguments || '{}') as Record<string, unknown>;
     } catch {
-      return `Error: the arguments for ${name} were not valid JSON.`;
+      return toolError('InvalidArguments', `The arguments for ${name} were not valid JSON.`, [
+        'Call it again with one JSON object of arguments.',
+      ]);
     }
     let output = ORCHESTRATOR_ONLY.has(name)
-      ? `Error: ${name} is only available to the orchestrator.`
-      : await chat.toolregistry.executeTool(name, args);
+      ? toolError('NotAllowed', `${name} is only available to the orchestrator.`)
+      : await this.execute(chat, name, args, ctx);
     for (const hook of ctx.hooks) {
       const replaced = await hook.afterTool?.({ task, step }, call, output);
       if (typeof replaced === 'string') output = replaced;
     }
     ctx.log({ kind: 'tool', text: `${name}: ${output.slice(0, 200).replace(/\s+/g, ' ')}` });
     return output;
+  }
+
+  /**
+   * Runs one tool with its time limit (see toolContract). The call's abort signal fires on the
+   * time limit and the moment the task is cancelled or times out (the task's own signal).
+   * @param chat - Sub-agent chat.
+   * @param name - Tool name.
+   * @param args - Arguments.
+   * @param ctx - Run context.
+   */
+  private execute(
+    chat: PureChatLLMChat,
+    name: string,
+    args: Record<string, unknown>,
+    ctx: SubAgentRunContext,
+  ): Promise<string> {
+    return withToolTimeout(
+      name,
+      toolTimeoutMs(name),
+      signal =>
+        callWithSignal(chat as unknown as AbortHost, signal, () =>
+          chat.toolregistry.executeTool(name, args),
+        ),
+      ctx.signal,
+    );
   }
 }

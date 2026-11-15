@@ -6,7 +6,12 @@ import { persistentSecrets } from '../auth/secrets';
 import type PureChatLLM from '../main';
 import { DEFAULT_MCP_SERVER } from '../mcp/McpManager';
 import { signIn } from '../mcp/McpOAuth';
-import { djsModulePath, loadDjsModule, resetDjsModule } from '../tools/codemode/djsEngine';
+import {
+  djsModulePath,
+  djsProblem,
+  loadDjsModule,
+  resetDjsModule,
+} from '../tools/codemode/djsEngine';
 import {
   LIVE_BACKEND_MODELS,
   OPENAI_TRANSCRIPTION_MODELS,
@@ -318,7 +323,7 @@ export function renderOrchestratorSettings(
   const policies: Record<SubAgentWritePolicy, string> = {
     allow: 'Go ahead',
     peer: 'Two reviewers must agree',
-    review: 'Ask me (edit review window)',
+    review: 'Save as a proposal for me to review',
     deny: 'Not allowed',
   };
   const writeLabels = {
@@ -818,6 +823,20 @@ export function renderVoiceSettings(
           .setValue(v.callsFolder)
           .onChange(async value => {
             v.callsFolder = value.trim() || 'Voice Agent';
+            await save();
+          }),
+      );
+    new Setting(el)
+      .setName('Call layout')
+      .setDesc(
+        'Topics: the voice starts a linked note for each new concept, step or idea, with an index note mapping the branches. Transcript: one note with the whole conversation.',
+      )
+      .addDropdown(d =>
+        d
+          .addOptions({ topics: 'Topic notes with an index', transcript: 'One transcript note' })
+          .setValue(v.callNotes ?? 'topics')
+          .onChange(async value => {
+            v.callNotes = value === 'transcript' ? 'transcript' : 'topics';
             await save();
           }),
       );
@@ -1619,10 +1638,32 @@ export function renderSkillsAndCodeMode(
         `Vault path of djs.wasm. Leave empty to use ${djsModulePath(plugin)}. ${
           module
             ? 'Module loaded: scripts run in djs.'
-            : 'Module not found: scripts run in the Web Worker. Build it with scripts/build-wasm.sh in the djs repository and copy it here.'
+            : `${djsProblem() ?? 'Module not found.'} Scripts run in the Web Worker, a weaker sandbox.`
         }`,
       ),
     );
+    new Setting(el)
+      .setName('djs download address')
+      .setDesc(
+        'Where to fetch djs.wasm when it is missing. Used only with a pinned checksum below, over https.',
+      )
+      .addText(t =>
+        t.setValue(c.djsModuleUrl ?? '').onChange(async x => {
+          c.djsModuleUrl = x.trim();
+          resetDjsModule();
+          await save();
+        }),
+      );
+    new Setting(el)
+      .setName('djs checksum')
+      .setDesc('The sha256 of djs.wasm, 64 hex characters. A file that does not match is refused.')
+      .addText(t =>
+        t.setValue(c.djsModuleSha256 ?? '').onChange(async x => {
+          c.djsModuleSha256 = x.trim();
+          resetDjsModule();
+          await save();
+        }),
+      );
     numberInput(
       new Setting(el)
         .setName('djs instruction budget')

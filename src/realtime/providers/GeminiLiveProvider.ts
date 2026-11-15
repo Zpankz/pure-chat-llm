@@ -1,6 +1,10 @@
 import { arrayBufferToBase64, base64ToArrayBuffer, PcmCapture, PcmPlayer } from '../audio/pcm';
 import { geminiSupportsScheduling, geminiSupportsThinking } from '../voiceCatalog';
-import { toGeminiFunctionDeclaration } from '../toolAdapters';
+import {
+  geminiFunctionResponse,
+  geminiNonBlockingMode,
+  toGeminiFunctionDeclaration,
+} from '../toolAdapters';
 import { BaseVoiceProvider } from './BaseVoiceProvider';
 import type { VoiceCallConfig } from './IVoiceCallProvider';
 
@@ -98,7 +102,10 @@ export class GeminiLiveProvider extends BaseVoiceProvider {
 
     const tools: Record<string, unknown>[] = [];
     if (this.toolExecutor && config.tools.length) {
-      const nonBlocking = g.nonBlockingTools || !geminiSupportsScheduling(g.model);
+      const nonBlocking = geminiNonBlockingMode(
+        g.nonBlockingTools,
+        geminiSupportsScheduling(g.model),
+      );
       tools.push({
         functionDeclarations: config.tools.map(t => toGeminiFunctionDeclaration(t, nonBlocking)),
       });
@@ -365,11 +372,10 @@ export class GeminiLiveProvider extends BaseVoiceProvider {
     const responses = await Promise.all(
       calls.map(async call => {
         const output = await this.runTool(call.name, call.args ?? {});
-        const isError = output.startsWith('Error:');
         return {
           id: call.id,
           name: call.name,
-          response: isError ? { error: output } : { output },
+          response: geminiFunctionResponse(output),
           ...(scheduling ? { scheduling } : {}),
         };
       }),

@@ -1,4 +1,4 @@
-# Pure Chat LLM
+# Voice Agent
 
 Type `>go` at the end of the file to start a chat session.
 

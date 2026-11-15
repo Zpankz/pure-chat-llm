@@ -19,6 +19,10 @@ import type {
 interface Runtime {
   inbox: string[];
   cancelled: boolean;
+  /** Aborts the task's in-flight requests and tool calls on cancel or time-out. */
+  abort: AbortController;
+  /** Wall-clock limit timer. */
+  limit: number | null;
   advice: ((answer: string) => void) | null;
   checkIn: number | null;
 }
@@ -128,10 +132,22 @@ export class SubAgentManager {
       messages: [],
       origin,
     };
+    // The user's own words, verbatim from the call, for the write reviewers.
+    if (origin === 'voice') {
+      const words = this.plugin.calls?.recentUserWords?.();
+      if (words) task.userRequest = words;
+    }
     // Tasks started during a voice call are saved with the call's notes, linked to their parent.
     this.plugin.calls?.attachTask(task);
     this.tasks.set(id, task);
-    this.runtime.set(id, { inbox: [], cancelled: false, advice: null, checkIn: null });
+    this.runtime.set(id, {
+      inbox: [],
+      cancelled: false,
+      abort: new AbortController(),
+      limit: null,
+      advice: null,
+      checkIn: null,
+    });
     this.queue.push(id);
     this.changed();
     this.pump();
@@ -179,6 +195,8 @@ export class SubAgentManager {
     if (['done', 'failed', 'cancelled'].includes(task.status))
       return `${task.title} already ended.`;
     rt.cancelled = true;
+    // Stops the request or tool call in flight, not just the next step.
+    rt.abort.abort();
     rt.advice?.('The task was cancelled.');
     if (task.status === 'queued') {
       this.queue = this.queue.filter(q => q !== id);
@@ -280,8 +298,10 @@ export class SubAgentManager {
     this.setProgressInterval(0);
     for (const [id, rt] of this.runtime) {
       rt.cancelled = true;
+      rt.abort.abort();
       rt.advice?.('The plugin is shutting down.');
       if (rt.checkIn) window.clearInterval(rt.checkIn);
+      if (rt.limit) window.clearTimeout(rt.limit);
       this.runtime.delete(id);
     }
     this.listeners.clear();
@@ -311,13 +331,24 @@ export class SubAgentManager {
     if (minutes > 0) {
       rt.checkIn = window.setInterval(() => this.checkIn(task), minutes * 60_000);
     }
+    // A task that runs past its time limit is stopped, which frees its slot.
+    const limitMinutes = this.settings.taskTimeoutMinutes ?? 20;
+    let timedOut = false;
+    if (limitMinutes > 0 && !rt.limit) {
+      rt.limit = window.setTimeout(() => {
+        timedOut = true;
+        rt.abort.abort();
+        rt.advice?.('The task ran out of time.');
+      }, limitMinutes * 60_000);
+    }
     await this.saveNote(task);
 
     const ctx: SubAgentRunContext = {
       hooks: this.hooks,
       emit: (kind, text) => this.emit(task, kind, text),
       log: step => this.log(task, step),
-      isCancelled: () => rt.cancelled,
+      isCancelled: () => rt.cancelled || rt.abort.signal.aborted,
+      signal: rt.abort.signal,
       drainInbox: () => rt.inbox.splice(0),
       askOrchestrator: question => this.ask(task.id, question),
     };
@@ -325,7 +356,11 @@ export class SubAgentManager {
       const result = await this.backend.run(task, ctx);
       this.finish(task, rt.cancelled ? 'cancelled' : 'done', result);
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
+      const message = timedOut
+        ? `Stopped after ${limitMinutes} minutes, the time limit for one task.`
+        : error instanceof Error
+          ? error.message
+          : String(error);
       this.finish(task, rt.cancelled ? 'cancelled' : 'failed', undefined, message);
     }
   }
@@ -338,7 +373,13 @@ export class SubAgentManager {
   ): void {
     const rt = this.runtime.get(task.id);
     if (rt?.checkIn) window.clearInterval(rt.checkIn);
-    if (rt) rt.checkIn = null;
+    if (rt?.limit) window.clearTimeout(rt.limit);
+    if (rt) {
+      rt.checkIn = null;
+      rt.limit = null;
+      // A follow-up turn gets a fresh controller.
+      if (rt.abort.signal.aborted && status !== 'cancelled') rt.abort = new AbortController();
+    }
     task.status = status;
     task.finishedAt = Date.now();
     task.result = result;
@@ -350,9 +391,24 @@ export class SubAgentManager {
     this.pump();
   }
 
-  /** Timed review: tells the orchestrator what the task did since it started. */
+  /**
+   * Timed review. A routine check-in is only a background note for the orchestrator; a task
+   * that has made no step since the last check-in is reported as stuck, which starts a turn
+   * (system review C2: routine check-ins no longer cost an orchestrator turn each).
+   */
   private checkIn(task: SubAgentTask): void {
     if (task.status !== 'running') return;
+    const lastStep = task.steps.length ? task.steps[task.steps.length - 1].at : task.startedAt;
+    const quietMinutes = (Date.now() - (lastStep ?? Date.now())) / 60000;
+    const interval = Math.max(1, this.settings.checkInMinutes || 5);
+    if (quietMinutes >= interval) {
+      this.emit(
+        task,
+        'stuck',
+        `No step for ${Math.round(quietMinutes)} min. It may be waiting on a slow request; message or cancel it if it should move on.`,
+      );
+      return;
+    }
     const recent = task.steps
       .slice(-5)
       .map(s => s.text)
@@ -414,6 +470,7 @@ export class SubAgentManager {
     try {
       const vault = this.plugin.app.vault;
       const dir = normalizePath(task.notePath ? task.notePath.replace(/\/[^/]*$/, '') : folder);
+      await this.plugin.calls?.ensureFolder(dir);
       if (!vault.getAbstractFileByPath(dir)) await vault.createFolder(dir);
       if (!task.notePath) {
         const date = new Date(task.createdAt).toISOString().slice(0, 10);
@@ -445,13 +502,26 @@ export class SubAgentManager {
       ...(task.finishedAt ? [`finished: ${time(task.finishedAt)}`] : []),
       ...(task.parentNote ? [`parent: ${JSON.stringify(linkTo(task.parentNote))}`] : []),
       ...(task.callNote ? [`call: ${JSON.stringify(linkTo(task.callNote))}`] : []),
+      ...(task.topicNote ? [`topic: ${JSON.stringify(linkTo(task.topicNote))}`] : []),
       '---',
       '',
       `# ${task.title}`,
       '',
       ...(task.parentNote
         ? [
-            `Started by ${linkTo(task.parentNote, task.parentNote === task.callNote ? 'the voice call' : 'the orchestrator')}${
+            `Started by ${linkTo(
+              task.parentNote,
+              task.parentNote === task.callNote
+                ? 'the voice call'
+                : task.parentNote === task.topicNote
+                  ? 'the voice call'
+                  : 'the orchestrator',
+              task.parentAnchor ? `#^${task.parentAnchor}` : '',
+            )}${
+              task.topicNote && task.topicNote !== task.parentNote
+                ? `, on ${linkTo(task.topicNote, 'this topic of the call')}`
+                : ''
+            }${
               task.callNote && task.callNote !== task.parentNote
                 ? ` during ${linkTo(task.callNote, 'the voice call')}`
                 : ''

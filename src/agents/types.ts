@@ -114,10 +114,19 @@ export interface SubAgentTask {
   notePath?: string;
   /** Note of the thread that started this one (the orchestrator's, or the call's), when saved. */
   parentNote?: string;
+  /** Topic note of the call this thread came from. */
+  topicNote?: string;
+  /** Block id in the parent note where this thread was started, without the caret. */
+  parentAnchor?: string;
   /** Note of the voice call this task belongs to. */
   callNote?: string;
   /** Who started it (for example "voice" or "chat"). */
   origin: string;
+  /**
+   * The user's own words that led to this task, when it came from a call (verbatim from the
+   * relay). Write reviewers judge a change against it.
+   */
+  userRequest?: string;
 }
 
 /** Context handed to hooks. */
@@ -162,6 +171,8 @@ export interface SubAgentRunContext {
   emit(kind: SubAgentEventKind, text: string): void;
   log(step: Omit<SubAgentStep, 'at'>): void;
   isCancelled(): boolean;
+  /** Fires when the task is cancelled or runs past its time limit; aborts its requests. */
+  signal: AbortSignal;
   /** Messages the orchestrator sent since the last call. */
   drainInbox(): string[];
   /** Asks the orchestrator and waits for its answer (or a timeout message). */

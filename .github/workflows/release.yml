@@ -1,41 +1,68 @@
 name: Release Obsidian plugin
 
+# Push a tag that matches manifest.json's version (for example `2.0.0`, no `v`) and this
+# builds the plugin and attaches main.js, manifest.json and styles.css to a GitHub release.
+# BRAT and Obsidian install from those three release assets.
+
 on:
   push:
     tags:
-      - '*'
+      - '[0-9]+.[0-9]+.[0-9]+'
+      - '[0-9]+.[0-9]+.[0-9]+-*'
+
+permissions:
+  contents: write
 
 jobs:
-  build:
+  release:
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
 
       - name: Use Node.js
-        uses: actions/setup-node@v3
+        uses: actions/setup-node@v4
         with:
-          node-version: '18.x'
+          node-version: '22.x'
+          cache: npm
 
-      - name: Build plugin
+      - name: Check the tag matches the manifest
         run: |
-          npm install
-          npm run build
+          tag="${GITHUB_REF_NAME}"
+          manifest=$(node -p "require('./manifest.json').version")
+          package=$(node -p "require('./package.json').version")
+          id=$(node -p "require('./manifest.json').id")
+          echo "Tag $tag, manifest $manifest, package $package, id $id"
+          if [ "$tag" != "$manifest" ]; then
+            echo "::error::Tag $tag does not match manifest.json version $manifest. BRAT reads the version from manifest.json."
+            exit 1
+          fi
+          if [ "$package" != "$manifest" ]; then
+            echo "::error::package.json version $package does not match manifest.json version $manifest."
+            exit 1
+          fi
+          node -e "const v=require('./versions.json'); if(!Object.keys(v).length) process.exit(1)"
+
+      - name: Install
+        run: npm ci
+
+      - name: Test
+        run: npm test
+
+      - name: Build
+        run: npm run build
 
       - name: Create release
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          tag="${GITHUB_REF#refs/tags/}"
-
-          # Extract changelog section for this tag
-          sed -n "/^## \[$tag\]/,/^## \[/ { /^## \[$tag\]/b; /^## \[/b; p; }" CHANGELOG.md > "release_notes.md"
-
+          tag="${GITHUB_REF_NAME}"
+          # Release notes: this version's CHANGELOG section, if there is one.
+          sed -n "/^## \[$tag\]/,/^## \[/ { /^## \[$tag\]/b; /^## \[/b; p; }" CHANGELOG.md > release_notes.md
+          [ -s release_notes.md ] || echo "Voice Agent $tag" > release_notes.md
+          prerelease=""
+          case "$tag" in *-*) prerelease="--prerelease" ;; esac
           gh release create "$tag" \
-            --title="$tag" \
-            --notes-file "release_notes.md" \
+            --title "$tag" \
+            --notes-file release_notes.md \
+            $prerelease \
             main.js manifest.json styles.css
-
-          # Remove release notes file
-          rm "release_notes.md"

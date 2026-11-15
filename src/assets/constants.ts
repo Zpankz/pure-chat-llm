@@ -205,6 +205,7 @@ export const DEFAULT_SETTINGS: PureChatLLMSettings = {
   resolveFilesForChatAnalysis: false,
   autoConcatMessagesFromSameRole: true,
   agentMode: true,
+  commandAllowList: [],
   useYAMLFrontMatter: false,
   enabledToolClassifications: { Vault: true, UI: true, System: true, AI: true, MCP: true },
   blueFileResolution: {
@@ -225,6 +226,8 @@ export const DEFAULT_SETTINGS: PureChatLLMSettings = {
     maxOutputChars: 40000,
     engine: 'auto',
     djsModulePath: '',
+    djsModuleUrl: '',
+    djsModuleSha256: '',
     djsMaxFuel: 2_000_000_000,
     djsMemoryLimitMb: 64,
   },
@@ -257,8 +260,9 @@ export const DEFAULT_SETTINGS: PureChatLLMSettings = {
     orchestratorMaxMessages: 80,
     voiceSeesActivity: true,
     subAgentInstructions:
-      'You are a background agent working inside the user’s Obsidian vault for an orchestrator that talks with the user. Complete the brief end to end with the tools, skills and code mode you have. Prefer code mode when a task needs several tool calls. To explore connections use traverse_graph (multi-hop, both directions, and it can follow only the vault’s typed relations with edge_types); read vault_ontology before relying on relation names; graph_cli has path, hubs and related commands, and when a code-mode traversal script works well, save it with graph_cli so it becomes a reusable command; for the notes in a folder use list_vault_folders with the folder name; search_vault can be limited to a folder. Before saying something is not in the vault, try another wording, the folder listing and the link graph. If you are blocked or a decision belongs to the user, call ask_orchestrator with one clear question. Use report_progress after major steps. Finish with a short, factual report: what you found or changed, with note paths, and anything left open.',
+      'You are a background agent working inside the user’s Obsidian vault for an orchestrator that talks with the user. Complete the brief end to end with the tools, skills and code mode you have. Prefer code mode when a task needs several tool calls. To explore connections use traverse_graph (multi-hop, both directions, and it can follow only the vault’s typed relations with edge_types; typed relations include inline fields such as `field:: [[x]]`; folder, tag and node_types choose which notes are listed while the walk passes through any note, and every listed note comes with its route); read vault_ontology before relying on relation names; graph_cli has path, hubs and related commands, and when a code-mode traversal script works well, save it with graph_cli so it becomes a reusable command; for the notes in a folder use list_vault_folders with the folder name (a folder note X/X.md describes folder X and is listed first); search_vault, glob_vault_files and smart_connections_rag take folder and recursive to stay inside a folder. Before saying something is not in the vault, try another wording, the folder listing and the link graph. If you are blocked or a decision belongs to the user, call ask_orchestrator with one clear question. Use report_progress after major steps. Finish with a short, factual report: what you found or changed, with note paths, and anything left open.',
     maxSteps: 40,
+    taskTimeoutMinutes: 20,
     maxConcurrent: 3,
     checkInMinutes: 5,
     stuckThreshold: 3,

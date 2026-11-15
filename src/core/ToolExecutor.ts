@@ -1,12 +1,22 @@
 import { ToolRegistry } from '../tools';
 import { ChatRequestOptions, RoleType, StreamDelta, ToolCall } from '../types';
 import { ChatSession } from './ChatSession';
+import {
+  AbortHost,
+  callWithSignal,
+  isReadOnlyTool,
+  toolError,
+  toolTimeoutMs,
+  withToolTimeout,
+} from '../tools/toolContract';
 
 /**
  * ToolExecutor handles the execution of tool calls from LLM responses.
  *
  * Responsibilities:
- * - Execute tool calls using the ToolRegistry
+ * - Execute tool calls using the ToolRegistry, each with its time limit and abort signal
+ *   (see toolContract): a hung call comes back as `Error: Timeout: ...`
+ * - Run read-only calls from one model turn side by side; everything else one at a time, in order
  * - Manage tool execution flow
  * - Filter uncalled tool calls from message history
  * - Update chat session with tool execution results
@@ -15,10 +25,20 @@ export class ToolExecutor {
   private streamCallback?: (delta: StreamDelta) => Promise<boolean>;
 
   /**
-   *
-   * @param toolRegistry
+   * @param toolRegistry - Tools of the chat.
+   * @param host - Where tools read their abort signal (the chat). Its `abortSignal` at the start
+   *   of a turn is the request's: when it aborts, running calls are cancelled. Defaults to the
+   *   registry's chat.
    */
-  constructor(private toolRegistry: ToolRegistry) {}
+  constructor(
+    private toolRegistry: ToolRegistry,
+    private host?: AbortHost,
+  ) {}
+
+  /** The chat tools read their abort signal from. */
+  private get signalHost(): AbortHost | undefined {
+    return this.host ?? (this.toolRegistry as unknown as { chat?: AbortHost }).chat;
+  }
 
   /**
    * Sets the stream callback for tool status updates.
@@ -47,23 +67,14 @@ export class ToolExecutor {
     options: ChatRequestOptions,
     assistantMessage?: { role: RoleType; content?: string | null; tool_calls?: ToolCall[] },
   ): Promise<boolean> {
-    let hasExecutedAnyTool = false;
+    const known = toolCalls.filter(call => this.toolRegistry.getTool(call.function.name));
+    const hasExecutedAnyTool = known.length > 0;
     const executedTools: { call: ToolCall; output: string }[] = [];
 
-    // Execute all tools first
-    for (const call of toolCalls) {
-      const toolName = call.function.name;
-      if (this.toolRegistry.getTool(toolName)) {
-        this.toolRegistry.setCallBack(this.streamCallback);
-
-        // Fix duplicated arguments if JSON is invalid
-        const fixedArguments = this.fixDuplicatedArguments(call.function.arguments);
-        const args = JSON.parse(fixedArguments) as Record<string, unknown>;
-        const output = await this.toolRegistry.executeTool(toolName, args);
-
-        executedTools.push({ call, output });
-        hasExecutedAnyTool = true;
-      }
+    if (hasExecutedAnyTool) {
+      this.toolRegistry.setCallBack(this.streamCallback);
+      const outputs = await this.runCalls(toolCalls);
+      toolCalls.forEach((call, i) => executedTools.push({ call, output: outputs[i] }));
     }
 
     // If any tools were executed, add the assistant message with all tool calls
@@ -90,6 +101,62 @@ export class ToolExecutor {
     }
 
     return hasExecutedAnyTool;
+  }
+
+  /**
+   * Runs the calls of one model turn and returns their outputs in the same order. Consecutive
+   * read-only calls run side by side; any other call runs alone, after the ones before it.
+   * Every call answers, so the model's turn stays valid: unknown tools and bad arguments come
+   * back as tool errors.
+   * @param calls - Tool calls of one assistant message.
+   */
+  async runCalls(calls: ToolCall[]): Promise<string[]> {
+    const parent = this.signalHost?.abortSignal;
+    const outputs: string[] = new Array<string>(calls.length);
+    let i = 0;
+    while (i < calls.length) {
+      let j = i + 1;
+      if (isReadOnlyTool(calls[i].function.name)) {
+        while (j < calls.length && isReadOnlyTool(calls[j].function.name)) j++;
+      }
+      const batch = calls.slice(i, j);
+      const results = await Promise.all(batch.map(call => this.runCall(call, parent)));
+      results.forEach((output, k) => (outputs[i + k] = output));
+      i = j;
+    }
+    return outputs;
+  }
+
+  /**
+   * Runs one call with its time limit and signal.
+   * @param call - Tool call.
+   * @param parent - Signal of the request.
+   */
+  private runCall(call: ToolCall, parent?: AbortSignal): Promise<string> {
+    const name = call.function.name;
+    if (!this.toolRegistry.getTool(name)) {
+      return Promise.resolve(toolError('UnknownTool', `There is no tool named "${name}".`));
+    }
+    let args: Record<string, unknown>;
+    try {
+      args = JSON.parse(this.fixDuplicatedArguments(call.function.arguments || '{}')) as Record<
+        string,
+        unknown
+      >;
+    } catch {
+      return Promise.resolve(
+        toolError('InvalidArguments', `The arguments for ${name} were not valid JSON.`, [
+          'Call it again with one JSON object of arguments.',
+        ]),
+      );
+    }
+    return withToolTimeout(
+      name,
+      toolTimeoutMs(name),
+      signal =>
+        callWithSignal(this.signalHost, signal, () => this.toolRegistry.executeTool(name, args)),
+      parent,
+    );
   }
 
   /**

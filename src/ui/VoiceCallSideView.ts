@@ -32,7 +32,9 @@ import {
   VOICE_LAYER_TOOL_NAMES,
   ORCHESTRATOR_TOOL_NAMES,
 } from '../tools/Orchestrator';
+import { voiceUnsupportedReason } from '../realtime/support';
 import type { NoticeMode, SubAgentEvent } from '../agents/types';
+import { TOPIC_GUIDANCE } from '../tools/TopicTool';
 import { shouldInterrupt } from '../agents/relevance';
 
 /**
@@ -211,6 +213,7 @@ export class VoiceCallSideView extends ItemView {
     const controlsContainer = container.createDiv({ cls: 'voice-call-controls' });
 
     if (this.callState.status === 'idle' || this.callState.status === 'disconnected') {
+      const unsupported = voiceUnsupportedReason(this.plugin.settings.voice.provider);
       new Setting(controlsContainer)
         .addDropdown(dropdown => {
           for (const info of Object.values(VOICE_PROVIDERS))
@@ -225,10 +228,13 @@ export class VoiceCallSideView extends ItemView {
           btn
             .setButtonText('Start call')
             .setCta()
+            .setDisabled(!!unsupported)
             .onClick(() => {
               void this.startCall();
             }),
         );
+      if (unsupported)
+        controlsContainer.createEl('p', { cls: 'setting-item-description', text: unsupported });
     }
 
     if (this.callState.status === 'error') {
@@ -371,7 +377,9 @@ export class VoiceCallSideView extends ItemView {
    * @param transcript - Recent conversation.
    */
   private async runClientBackend(transcript: string): Promise<string> {
-    const chat = this.chat ?? new PureChatLLMChat(this.plugin);
+    const chat =
+      this.chat ??
+      Object.assign(new PureChatLLMChat(this.plugin), { role: 'direct-voice' as const });
     const tools: ToolDefinition[] = this.plugin.settings.agentMode
       ? chat.toolregistry.getEnabledDefinitions()
       : [];
@@ -457,10 +465,12 @@ export class VoiceCallSideView extends ItemView {
           .map(l => `${l.role === 'user' ? 'User' : 'Assistant'}: ${l.text}`),
       );
       this.stopAgentWatch.push(
-        orchestrator.onSay((text, urgency) =>
+        // The answer to what the user just asked skips the relevance check: they are waiting
+        // for it, and the check would only add a model round trip (system review D1).
+        orchestrator.onSay((text, urgency, answersUser) =>
           text.startsWith('[Orchestrator activity]')
             ? this.voiceCall?.notify(text, 'silent')
-            : void this.deliver(`[Orchestrator] ${text}`, 'Orchestrator', urgency, true),
+            : void this.deliver(`[Orchestrator] ${text}`, 'Orchestrator', urgency, !answersUser),
         ),
         () => orchestrator.setTranscriptSource(null),
       );
@@ -571,6 +581,10 @@ export class VoiceCallSideView extends ItemView {
       const voice = this.plugin.settings.voice;
       const info = VOICE_PROVIDERS[voice.provider] ?? VOICE_PROVIDERS['openai-realtime'];
 
+      // 0. Can this device make the call at all? (Obsidian on phones may lack the APIs.)
+      const unsupported = voiceUnsupportedReason(info.id);
+      if (unsupported) throw new Error(unsupported);
+
       // 1. API key from the matching endpoint
       const providerEndpoint = this.plugin.settings.endpoints.find(
         ep => ep.name === info.keyEndpoint,
@@ -607,6 +621,8 @@ export class VoiceCallSideView extends ItemView {
         nativeMcp = [];
       } else if (this.plugin.settings.agentMode) {
         this.chat = new PureChatLLMChat(this.plugin);
+        // A voice model calling tools itself: confirmations are asked aloud, never in a modal.
+        this.chat.role = 'direct-voice';
         this.toolExecutor = new ChatToolExecutor(this.chat);
         const selected = selectVoiceTools(
           this.chat.toolregistry,
@@ -627,6 +643,7 @@ export class VoiceCallSideView extends ItemView {
       if (layered) instructions += `\n\n${VOICE_LAYER_GUIDANCE}`;
       else if (orchestrator) instructions += `\n\n${ORCHESTRATOR_GUIDANCE}`;
       else if (tools.length || nativeMcp.length) instructions += `\n\n${VOICE_TOOL_GUIDANCE}`;
+      if (tools.some(t => t.function.name === 'new_topic')) instructions += `\n\n${TOPIC_GUIDANCE}`;
 
       const config: VoiceCallConfig = {
         apiKey: providerEndpoint.apiKey,
@@ -651,13 +668,13 @@ export class VoiceCallSideView extends ItemView {
         stream => this.handleRemoteStream(stream),
       );
 
-      await this.voiceCall.startCall();
+      if (!(await this.voiceCall.startCall())) return;
       this.plugin.calls?.start(info.label, () => this.transcript);
       if (layered || orchestrator) this.watchAgents(layered);
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
       console.error('Failed to start call:', msg);
-      new Notice(`Failed to start call: ${msg}`);
+      new Notice(msg, 10000);
       this.callState.error = msg;
       this.renderView();
     }
@@ -745,6 +762,8 @@ export class VoiceCallSideView extends ItemView {
    */
   private async endCall(): Promise<void> {
     this.unwatchAgents();
+    // Tool calls still running for the call are stopped, so nothing lands after hang-up.
+    this.toolExecutor?.cancel();
     if (this.voiceCall) {
       await this.voiceCall.endCall();
       this.voiceCall = null;

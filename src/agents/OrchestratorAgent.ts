@@ -2,7 +2,8 @@ import { PureChatLLMChat } from '../core/Chat';
 import type PureChatLLM from '../main';
 import { ORCHESTRATOR_AGENT_TOOL_NAMES, ORCHESTRATOR_TOOL_NAMES } from '../tools/Orchestrator';
 import type { ChatRequestOptions, ToolCall } from '../types';
-import { layerFetch, layerProblem, resolveLayer } from './layers';
+import { isAbortError } from '../core/requestControl';
+import { layerFetch, layerProblem, logTiming, resolveLayer } from './layers';
 import type { NoticeMode, SubAgentEvent } from './types';
 
 /**
@@ -30,31 +31,46 @@ export const ORCHESTRATOR_AGENT_GUIDANCE = [
   'You never write to the vault yourself; workers do, under the vault write rules. If a relayed request is unclear, ask through tell_user rather than guess.',
 ].join('\n');
 
-/** Read-only tools the orchestrator may use itself (directly or from code mode). */
-const ORCHESTRATOR_READ_TOOLS = [
+/**
+ * Read-only tools the orchestrator may use itself (directly or from code mode). Graph questions
+ * go to traverse_graph (which covers backlinks) and vault_ontology; graph_cli stays with workers
+ * because its run and save commands execute and write scripts.
+ */
+export const ORCHESTRATOR_READ_TOOLS = [
   'codemode',
   'read_file',
   'read_note_section',
   'search_vault',
   'glob_vault_files',
   'list_vault_folders',
-  'get_backlinks',
   'traverse_graph',
   'vault_ontology',
   'smart_connections_rag',
+  'get_active_context',
   'activate_skill',
   'read_skill_file',
 ];
 
 /** Kinds that only become notes for the next turn. */
-const NOTE_ONLY = new Set(['started', 'progress', 'cancelled']);
+const NOTE_ONLY = new Set(['started', 'progress', 'cancelled', 'checkpoint']);
 
-type SayListener = (text: string, urgency: NoticeMode) => void;
+/** `answersUser`: this is the first answer to something the user asked, which they are waiting for. */
+type SayListener = (text: string, urgency: NoticeMode, answersUser: boolean) => void;
 
 interface Input {
   text: string;
   fromUser: boolean;
+  /** The user is waiting for this answer (fast path: low effort, no extra hop). */
+  waiting?: boolean;
+  /** When the relay arrived, for the time-to-answer log. */
+  at?: number;
 }
+
+/** Longest one orchestrator turn may take in all before it is stopped (system review A1). */
+export const TURN_TIMEOUT_MS = 90_000;
+/** Model steps in a turn started by a user relay, and by a worker event (system review A2). */
+const USER_TURN_STEPS = 12;
+const EVENT_TURN_STEPS = 3;
 
 export class OrchestratorAgent {
   private messages: ChatRequestOptions['messages'] = [];
@@ -78,6 +94,10 @@ export class OrchestratorAgent {
    */
   readonly activity: { at: number; text: string }[] = [];
   private turnActivity: string[] = [];
+  /** Cancels the turn in progress. */
+  private turnAbort: AbortController | null = null;
+  /** When the oldest unanswered relay arrived. */
+  private relayAt: number | null = null;
 
   /** @param plugin - Plugin. */
   constructor(private plugin: PureChatLLM) {
@@ -102,7 +122,7 @@ export class OrchestratorAgent {
   onSay(listener: SayListener): () => void {
     this.listeners.add(listener);
     const pending = this.undelivered.splice(0);
-    for (const p of pending) listener(p.text, p.urgency);
+    for (const p of pending) listener(p.text, p.urgency, false);
     return () => this.listeners.delete(listener);
   }
 
@@ -136,6 +156,8 @@ export class OrchestratorAgent {
         ...(recent.length ? ['Conversation since your last relay:', ...recent] : []),
       ].join('\n'),
       fromUser: true,
+      waiting,
+      at: Date.now(),
     });
     return 'Passed to the orchestrator. Tell the user briefly that you are on it; the answer comes back on its own.';
   }
@@ -166,17 +188,28 @@ export class OrchestratorAgent {
    */
   say(text: string, urgency: NoticeMode): string {
     this.spokeThisTurn = true;
+    const answersUser = this.relayAt !== null && urgency !== 'silent';
+    if (answersUser) {
+      logTiming(this.plugin, 'relay to first spoken answer', Date.now() - (this.relayAt as number));
+      this.relayAt = null;
+    }
     if (!this.listeners.size) {
       this.undelivered.push({ text, urgency });
       if (this.undelivered.length > 20) this.undelivered.shift();
       return 'No call is open; it will be said when the next call starts.';
     }
-    for (const l of this.listeners) l(text, urgency);
+    for (const l of this.listeners) l(text, urgency, answersUser);
     return urgency === 'silent' ? 'Passed to the voice quietly.' : 'The voice will say it.';
+  }
+
+  /** Stops the turn in progress, if any. */
+  cancelTurn(): void {
+    this.turnAbort?.abort();
   }
 
   /** Forgets the orchestrator's conversation. */
   reset(): void {
+    this.turnAbort?.abort();
     this.messages = [];
     this.notes = [];
     this.inputs = [];
@@ -189,6 +222,7 @@ export class OrchestratorAgent {
     this.listeners.clear();
     this.changeListeners.clear();
     this.inputs = [];
+    this.turnAbort?.abort();
   }
 
   /** @param event - Task event from the worker manager. */
@@ -221,7 +255,10 @@ export class OrchestratorAgent {
     this.running = true;
     try {
       while (this.inputs.length) {
-        const batch = this.inputs.splice(0);
+        // The user's requests go first; worker events wait for the next turn.
+        const user = this.inputs.filter(i => i.fromUser);
+        const batch = user.length ? user : this.inputs.splice(0);
+        if (user.length) this.inputs = this.inputs.filter(i => !i.fromUser);
         await this.turn(batch);
       }
     } finally {
@@ -239,7 +276,7 @@ export class OrchestratorAgent {
     // Only the orchestrator's own tools and read-only vault tools; code mode sees the same set.
     // Spoken progress updates are the voice layer's business.
     const allowed = new Set([
-      ...ORCHESTRATOR_TOOL_NAMES.filter(n => n !== 'set_progress_updates'),
+      ...ORCHESTRATOR_TOOL_NAMES.filter(n => n !== 'set_progress_updates' && n !== 'new_topic'),
       ...ORCHESTRATOR_AGENT_TOOL_NAMES,
       ...ORCHESTRATOR_READ_TOOLS,
     ]);
@@ -256,7 +293,17 @@ export class OrchestratorAgent {
   /** @param batch - Inputs handled in this turn. */
   private async turn(batch: Input[]): Promise<void> {
     const chat = this.ensureChat();
-    const layer = resolveLayer(this.plugin, 'orchestrator');
+    const resolved = resolveLayer(this.plugin, 'orchestrator');
+    // Fast path: a question the user is waiting on runs at low effort.
+    const waiting = batch.some(b => b.waiting);
+    const layer = waiting && resolved.effort ? { ...resolved, effort: 'low' as const } : resolved;
+    const firstRelay = batch.find(b => b.at)?.at;
+    if (firstRelay && this.relayAt === null) this.relayAt = firstRelay;
+    const abort = new AbortController();
+    this.turnAbort = abort;
+    chat.abortSignal = abort.signal;
+    const turnTimer = window.setTimeout(() => abort.abort(), TURN_TIMEOUT_MS);
+    const turnStarted = Date.now();
     const tools = chat.toolregistry.getEnabledDefinitions();
     const allowed = new Set(tools.map(t => t.function.name));
     const fromUser = batch.some(b => b.fromUser);
@@ -269,20 +316,38 @@ export class OrchestratorAgent {
     this.trim();
     this.messages.push({ role: 'user', content });
     const calls = this.plugin.calls;
-    calls?.logOrchestrator('input', content);
+    calls?.logOrchestrator('input', content, fromUser);
     this.state = 'thinking';
     this.spokeThisTurn = false;
     this.turnActivity = [];
     this.changed();
 
     let finalText = '';
+    let userTurn = fromUser;
     try {
-      for (let step = 0; step < 12; step++) {
-        const response = await layerFetch(this.plugin, layer, {
-          messages: [{ role: 'system', content: this.systemPrompt() }, ...this.messages],
-          max_completion_tokens: this.plugin.settings.defaultmaxTokens,
-          ...(tools.length ? { tools } : {}),
-        });
+      for (let step = 0; step < (userTurn ? USER_TURN_STEPS : EVENT_TURN_STEPS); step++) {
+        // A request the user makes mid-turn joins this turn at the next step.
+        if (step > 0) {
+          const late = this.inputs.filter(i => i.fromUser);
+          if (late.length) {
+            this.inputs = this.inputs.filter(i => !i.fromUser);
+            const text = late.map(l => l.text).join('\n');
+            this.messages.push({ role: 'user', content: text });
+            calls?.logOrchestrator('input', text, true);
+            userTurn = true;
+            if (this.relayAt === null) this.relayAt = late[0].at ?? Date.now();
+          }
+        }
+        const response = await layerFetch(
+          this.plugin,
+          layer,
+          {
+            messages: [{ role: 'system', content: this.systemPrompt() }, ...this.messages],
+            max_completion_tokens: this.plugin.settings.defaultmaxTokens,
+            ...(tools.length ? { tools } : {}),
+          },
+          { signal: abort.signal, label: "The orchestrator's model request" },
+        );
         const toolCalls = (response.tool_calls ?? []).filter(c => c.function?.name);
         if (response.content?.trim()) calls?.logOrchestrator('reply', response.content.trim());
         if (!toolCalls.length) {
@@ -305,20 +370,62 @@ export class OrchestratorAgent {
           this.record(call, output);
           this.messages.push({ role: 'tool', content: output, tool_call_id: call.id });
         }
+        // Fast path: when the step only spoke to the user, the turn is done; asking the model
+        // again would only add a hop before the next request can start.
+        if (
+          toolCalls.every(c => c.function.name === 'tell_user') &&
+          !this.inputs.some(i => i.fromUser)
+        )
+          break;
       }
       this.lastError = '';
     } catch (error) {
-      this.lastError = error instanceof Error ? error.message : String(error);
+      const timedOut = abort.signal.aborted;
+      this.lastError = timedOut
+        ? `The turn took longer than ${Math.round(TURN_TIMEOUT_MS / 1000)} s and was stopped.`
+        : error instanceof Error
+          ? error.message
+          : String(error);
       this.plugin.console?.error('Orchestrator turn failed', error);
       calls?.logOrchestrator('error', this.lastError);
       calls?.scheduleOrchestratorSave();
-      if (fromUser) this.say(`I couldn't work on that: ${this.lastError.slice(0, 200)}`, 'pause');
+      // Keep the history valid: a tool call without its result would break the next turn.
+      this.repairHistory();
+      if (userTurn)
+        this.say(
+          isAbortError(error) || timedOut
+            ? "That's taking longer than expected, so I stopped it. Ask again, or I can hand it to a background task."
+            : `I couldn't work on that: ${spokenError(this.lastError)}`,
+          'pause',
+        );
       return;
+    } finally {
+      window.clearTimeout(turnTimer);
+      if (this.turnAbort === abort) this.turnAbort = null;
+      logTiming(
+        this.plugin,
+        `orchestrator turn (${userTurn ? 'user' : 'event'})`,
+        Date.now() - turnStarted,
+      );
     }
     // A relayed request must never go unanswered.
-    if (fromUser && !this.spokeThisTurn && finalText) this.say(finalText, 'pause');
+    if (userTurn && !this.spokeThisTurn && finalText) this.say(finalText, 'pause');
     this.shareActivity();
     calls?.scheduleOrchestratorSave();
+  }
+
+  /** After a failed turn, answers any tool call left without a result. */
+  private repairHistory(): void {
+    const last = this.messages[this.messages.length - 1] as
+      | { role: string; tool_calls?: ToolCall[] }
+      | undefined;
+    if (last?.role !== 'assistant' || !last.tool_calls?.length) return;
+    for (const call of last.tool_calls)
+      this.messages.push({
+        role: 'tool',
+        content: 'Error: Cancelled: the turn stopped before this ran.',
+        tool_call_id: call.id,
+      });
   }
 
   private async runCall(
@@ -368,7 +475,7 @@ export class OrchestratorAgent {
     if (!this.turnActivity.length || !this.plugin.settings.orchestrator.voiceSeesActivity) return;
     if (!this.listeners.size) return;
     const text = `[Orchestrator activity] ${this.turnActivity.join('; ')}`;
-    for (const l of this.listeners) l(text, 'silent');
+    for (const l of this.listeners) l(text, 'silent', false);
     this.turnActivity = [];
   }
 
@@ -402,4 +509,21 @@ export class OrchestratorAgent {
   private changed(): void {
     for (const l of this.changeListeners) l();
   }
+}
+
+/**
+ * A failure in words the voice can say: no status codes or stack text.
+ * @param message - Error message.
+ */
+export function spokenError(message: string): string {
+  if (/401|unauthori[sz]ed|sign in/i.test(message))
+    return 'the sign-in for the orchestrator needs renewing in settings.';
+  if (/429|rate limit/i.test(message))
+    return 'the model provider is rate-limiting us; try again in a minute.';
+  if (/5\d\d|server error|overloaded/i.test(message))
+    return 'the model provider is having trouble right now.';
+  if (/Network|fetch failed|ECONN/i.test(message))
+    return "I can't reach the model provider; check the connection.";
+  if (/API key/i.test(message)) return message;
+  return message.replace(/\s+/g, ' ').slice(0, 160);
 }

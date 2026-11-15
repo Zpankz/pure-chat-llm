@@ -5,8 +5,11 @@
  * - A locked-down Web Worker, used when the djs module is missing.
  *
  * `CODEMODE_PRELUDE` builds the script's globals from tool metadata and a host object with
- * `call(name, args)` (a promise) and `store(key, json)`. It is plain ES2020 so both engines
- * (and djs's TypeScript mode) accept it.
+ * `call(name, args)` (a promise), `store(key, json)` and optionally `out(kind, text)`, which
+ * streams each `text()` and console line to the plugin as it happens, so a script that times out
+ * still reports what it printed. A tool call that fails rejects with a `ToolError` (name
+ * `ToolError`, `tool`, `type` such as `NotFound`, and the reason and recovery in `message`).
+ * It is plain ES2020 so both engines (and djs's TypeScript mode) accept it.
  */
 export const CODEMODE_PRELUDE = String.raw`
 function __fmt(v) {
@@ -47,28 +50,55 @@ function __bm25(allTools, query, limit, namespace) {
 
 const __EXIT = { exit: true };
 
+function __toolError(name, e) {
+  const msg = e && e.message !== undefined ? String(e.message) : String(e);
+  const err = new Error(name + ' failed: ' + msg);
+  err.name = 'ToolError';
+  err.tool = name;
+  const m = /^([A-Z][A-Za-z0-9]*):/.exec(msg);
+  err.type = m ? m[1] : 'Error';
+  return err;
+}
+
+function __describeError(error) {
+  if (error && error.name === 'ToolError') {
+    return { error: String(error.message), errorType: 'ToolError' };
+  }
+  const name = error && error.name ? String(error.name) : 'Error';
+  const message = error && error.message !== undefined ? String(error.message) : String(error);
+  const frames = error && error.stack
+    ? String(error.stack).split('\n').filter(l => /^\s+at /.test(l)).slice(0, 3).map(l => '  ' + l.trim())
+    : [];
+  return { error: name + ': ' + message + (frames.length ? '\n' + frames.join('\n') : ''), errorType: name };
+}
+
 function __makeApi(meta, host) {
   const storeMap = Object.assign({}, meta.store || {});
   const outputs = [];
   const consoleLines = [];
   const consoleObj = {};
+  const out = (kind, text) => { if (host.out) host.out(kind, text); };
   for (const level of ['log', 'info', 'warn', 'error', 'debug']) {
     consoleObj[level] = (...args) => {
-      consoleLines.push((level === 'log' ? '' : '[' + level + '] ') + args.map(__fmt).join(' '));
+      const line = (level === 'log' ? '' : '[' + level + '] ') + args.map(__fmt).join(' ');
+      consoleLines.push(line);
+      out('console', line);
     };
   }
   const allTools = meta.tools;
   const tools = {};
+  const callTool = (name, args) =>
+    Promise.resolve(host.call(name, args || {})).catch((e) => { throw __toolError(name, e); });
   for (const t of allTools) {
-    const call = (args) => host.call(t.name, args || {});
+    const call = (args) => callTool(t.name, args);
     tools[t.name] = call;
     tools[t.id] = call;
   }
-  tools.call = (name, args) => host.call(name, args || {});
+  tools.call = (name, args) => callTool(name, args);
   const api = {
     tools,
     console: consoleObj,
-    text: (v) => { outputs.push(__fmt(v)); },
+    text: (v) => { const s = __fmt(v); outputs.push(s); out('text', s); },
     store: (key, value) => {
       const json = JSON.stringify(value);
       storeMap[key] = json;
@@ -93,8 +123,8 @@ async function __finish(state, run) {
     return { ok: true, ret: ret === undefined ? undefined : __fmt(ret), outputs: state.outputs, console: state.consoleLines };
   } catch (error) {
     if (error === __EXIT) return { ok: true, outputs: state.outputs, console: state.consoleLines };
-    const text = error && error.stack ? String(error.stack) : String(error);
-    return { ok: false, error: text, outputs: state.outputs, console: state.consoleLines };
+    const d = __describeError(error);
+    return { ok: false, error: d.error, errorType: d.errorType, outputs: state.outputs, console: state.consoleLines };
   }
 }
 `;
@@ -147,6 +177,7 @@ const host = {
     });
   },
   store(key, value) { post({ type: 'store', key, value }); },
+  out(kind, text) { post({ type: 'out', kind, text }); },
 };
 const GLOBALS = ${JSON.stringify(CODEMODE_GLOBALS)};
 
@@ -173,12 +204,21 @@ self.onmessage = async (event) => {
 /**
  * The script djs runs: the prelude, then the model's code as the body of an inner async
  * function whose parameters are the code mode globals. `__meta` (tool metadata and store) is a
- * run parameter; `__host.call` and `__host.store` are host functions.
+ * run parameter; `__host.call` (resolves to `{"value"}` or `{"error"}` as JSON), `__host.store`
+ * and `__host.out` are host functions.
  * @param code - The model's script.
  */
 export function buildDjsScript(code: string): string {
   return `${CODEMODE_PRELUDE}
-const __state = __makeApi(__meta, { call: (n, a) => __host.call(n, JSON.stringify(a)).then(r => JSON.parse(r)), store: (k, v) => __host.store(k, v) });
+const __state = __makeApi(__meta, {
+  call: (n, a) => __host.call(n, JSON.stringify(a)).then(r => {
+    const x = JSON.parse(r);
+    if (x && x.error !== undefined) throw new Error(x.error);
+    return x ? x.value : undefined;
+  }),
+  store: (k, v) => __host.store(k, v),
+  out: (k, t) => __host.out(k, t),
+});
 const __user = async (${CODEMODE_GLOBALS.join(', ')}) => {
 ${code}
 };

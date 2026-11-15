@@ -1,4 +1,5 @@
 import { Notice } from 'obsidian';
+import { HttpStatusError, isAbortError } from './requestControl';
 import {
   ChatRequestOptions,
   ChatResponse,
@@ -53,6 +54,7 @@ export class LLMService {
     options: ChatRequestOptions,
     statusCallback?: (status: string) => void,
     streamCallback?: (textFragment: StreamDelta) => Promise<boolean>,
+    signal?: AbortSignal,
   ): Promise<ChatResponse> {
     this.console.log('Sending chat request with options:', options);
     statusCallback?.(`running: ${options.model}`);
@@ -75,8 +77,10 @@ export class LLMService {
           ...requestOptions,
           stream: requestOptions.stream && !!streamCallback,
         }),
+        signal,
       });
     } catch (error) {
+      if (isAbortError(error) || signal?.aborted) throw error;
       this.console.error(`Network request failed:`, error);
       statusCallback?.('');
       const errorMsg = error instanceof Error ? error.message : String(error);
@@ -127,7 +131,7 @@ export class LLMService {
         new Notice(userMessage);
       }
 
-      throw new Error(errorMessage);
+      throw new HttpStatusError(errorMessage, response.status);
     }
 
     if (options.stream && !!streamCallback) {

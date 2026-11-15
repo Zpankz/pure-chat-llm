@@ -1,6 +1,6 @@
-# Pure Chat LLM
+# Voice Agent
 
-**Pure Chat LLM** leverages Obsidian notes to provide a graphical user interface (GUI) for ChatGPT directly within your vault. This plugin transforms your notes into interactive chat windows, enabling seamless conversations, brainstorming, questions, and prompt generation — all without leaving Obsidian.
+**Voice Agent** (formerly Pure Chat LLM) lets you talk to your vault through a duplex voice agent with a background orchestrator and workers, and still turns notes into chats. It leverages Obsidian notes to provide a graphical user interface (GUI) for ChatGPT directly within your vault. This plugin transforms your notes into interactive chat windows, enabling seamless conversations, brainstorming, questions, and prompt generation — all without leaving Obsidian.
 
 ---
 
@@ -71,11 +71,30 @@
 
 ## Installation
 
-1. Open **Settings** -> **Community Plugins**
-2. Turn off **Safe Mode**
-3. Click **Browse** and search for **Pure Chat LLM**
-4. Click **Install** and then **Enable**
-5. (Optional) Configure plugin settings as desired
+### With BRAT (this fork)
+
+Voice Agent isn't in the community plugin browser yet. Install it from this repository's GitHub releases with [BRAT](https://github.com/TfTHacker/obsidian42-brat):
+
+1. Install and enable **BRAT** from **Settings → Community plugins → Browse**.
+2. Run the command **BRAT: Plugins: Add a beta plugin for testing**.
+3. Enter the repository, `Zpankz/pure-chat-llm` (use the new name if the repository is renamed), and pick the latest version.
+4. Enable **Voice Agent** under **Settings → Community plugins**.
+
+BRAT installs `main.js`, `manifest.json` and `styles.css` from the newest release, and can check for updates.
+
+**Moving from Pure Chat LLM:** Voice Agent has its own plugin id (`voice-agent`). On first load it copies your Pure Chat LLM settings, and sign-ins carry over. Hotkeys don't carry over, so bind them again under **Settings → Hotkeys**, and turn off Pure Chat LLM if it's still on.
+
+### Making a release (maintainers)
+
+1. Bump the version: `npm version <x.y.z> --no-git-tag-version` updates `package.json`, `manifest.json` and `versions.json`.
+2. Add a `## [x.y.z]` section to `CHANGELOG.md` and commit.
+3. Push a tag that equals the manifest version, with no `v`: `git tag x.y.z && git push origin x.y.z`.
+
+The release workflow checks that the tag matches `manifest.json`, runs the tests, builds, and attaches the three files to a GitHub release. A tag like `x.y.z-beta.1` makes a pre-release.
+
+### Original Pure Chat LLM
+
+The original plugin is in the community plugin browser as **Pure Chat LLM**.
 
 ---
 
@@ -184,9 +203,9 @@ Add Streamable HTTP servers under **Settings → Remote MCP servers**. The clien
 
 Workers explore the vault's link graph, including typed relations from the [Typed Graph](https://github.com/volland/obsigraph) plugin's schema notes (frontmatter with `tgs:`, such as a `_types` folder):
 
-- `traverse_graph`: multi-hop outgoing links, backlinks and unresolved links, filtered by relation (`edge_types`), node type, folder and tag.
+- `traverse_graph`: multi-hop outgoing links, backlinks and unresolved links, filtered by relation (`edge_types`), node type, folder and tag, with the route to each note. Inline fields in a note's text (`field:: [[x]]`) count as typed relations, like frontmatter. Notes can be named by path, name, alias or folder note.
 - `vault_ontology`: the declared node and edge types, how often each is used, tags and properties. A short version goes into every worker's instructions.
-- `graph_cli`: single-purpose commands (`path`, `hubs`, `related`, `traverse`), plus `save` and `run` for traversal scripts that worked well, kept as notes in **Saved graph commands folder** so they become reusable commands.
+- `graph_cli`: single-purpose commands (`path`, `hubs`, `related`), plus `save` and `run` for traversal scripts that worked well, kept as notes in **Saved graph commands folder** so they become reusable commands.
 
 ### Troubleshooting
 

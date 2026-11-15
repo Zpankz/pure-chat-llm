@@ -1,4 +1,5 @@
 import { Notice } from 'obsidian';
+import { describeCallError } from './support';
 import { CallState } from '../types';
 import type { NoticeMode } from '../agents/types';
 import { IVoiceCallProvider, VoiceCallConfig, VoiceEvent } from './providers/IVoiceCallProvider';
@@ -53,7 +54,7 @@ export class VoiceCall {
   /**
    * Initializes and starts a voice call
    */
-  async startCall(): Promise<void> {
+  async startCall(): Promise<boolean> {
     try {
       this.updateState({ status: 'connecting', error: undefined });
 
@@ -74,9 +75,10 @@ export class VoiceCall {
 
       this.updateState({ status: 'connected' });
       new Notice(`Call started with ${this.provider.getName()}`);
+      return true;
     } catch (error) {
       console.error('Failed to start call:', error);
-      const errorMessage = error instanceof Error ? error.message : 'Failed to start voice call';
+      const errorMessage = describeCallError(error);
       this.updateState({ status: 'error', error: errorMessage });
 
       // Clean up stream if acquired but connection failed
@@ -84,12 +86,8 @@ export class VoiceCall {
         this.localStream.getTracks().forEach(track => track.stop());
         this.localStream = null;
       }
-
-      if (errorMessage.includes('Permission denied') || errorMessage.includes('NotAllowedError')) {
-        new Notice('Microphone permission denied. Please allow microphone access.');
-      } else {
-        new Notice(`Call connection failed: ${errorMessage}`);
-      }
+      new Notice(`Call failed: ${errorMessage}`);
+      return false;
     }
   }
 

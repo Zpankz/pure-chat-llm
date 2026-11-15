@@ -1,6 +1,6 @@
 {
   "name": "voice-agent",
-  "version": "1.12.1",
+  "version": "2.0.0",
   "description": "Turn notes into conversations with chatGPT",
   "main": "main.js",
   "scripts": {
@@ -14,7 +14,8 @@
     "copy-to-mobile-vault": "kioclient5 --overwrite copy styles.css manifest.json main.js \"mtp:/Armor X31 Pro/Internal shared storage/Documents/Obsidian/.obsidian/plugins/pure-chat-llm/\"",
     "e2e": "wdio run ./e2e/wdio.conf.mts",
     "e2e:typecheck": "tsc -p e2e/tsconfig.json",
-    "e2e:report": "node e2e/report.mjs"
+    "e2e:report": "node e2e/report.mjs",
+    "test": "node tests/unit/run.mjs"
   },
   "keywords": [
     "obsidian",
