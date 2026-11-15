@@ -3,7 +3,7 @@
 // layout.generated.ts, which djs-core exports from its layout table (D1052).
 // Format notes: docs/wire.md, "Outbound: direct heap reads".
 
-import { LAYOUT } from "./layout.generated";
+import { LAYOUT } from './layout.generated';
 
 const cells = LAYOUT.cells;
 const tags = LAYOUT.value.tags;
@@ -73,9 +73,18 @@ const BYTES_DATA = cells.Bytes.tail.offset;
 type TypedArrayCtor = new (buffer: ArrayBuffer) => ArrayBufferView;
 const F16 = (globalThis as { Float16Array?: TypedArrayCtor }).Float16Array ?? Uint16Array;
 const TA_CTORS: [TypedArrayCtor, number][] = [
-  [Int8Array, 1], [Uint8Array, 1], [Uint8ClampedArray, 1], [Int16Array, 2], [Uint16Array, 2],
-  [Int32Array, 4], [Uint32Array, 4], [F16, 2], [Float32Array, 4], [Float64Array, 8],
-  [BigInt64Array, 8], [BigUint64Array, 8],
+  [Int8Array, 1],
+  [Uint8Array, 1],
+  [Uint8ClampedArray, 1],
+  [Int16Array, 2],
+  [Uint16Array, 2],
+  [Int32Array, 4],
+  [Uint32Array, 4],
+  [F16, 2],
+  [Float32Array, 4],
+  [Float64Array, 8],
+  [BigInt64Array, 8],
+  [BigUint64Array, 8],
 ];
 const TAG_PREFIX = LAYOUT.value.tagPrefix;
 const HI_HOLE = ((TAG_PREFIX << 16) | tags.HOLE) >>> 0;
@@ -106,12 +115,13 @@ interface NodeBufferCtor {
 const NodeBuffer = (globalThis as unknown as { Buffer?: NodeBufferCtor }).Buffer;
 const hasNodeBuffer =
   NodeBuffer !== undefined &&
-  typeof (NodeBuffer.from(new ArrayBuffer(2), 0, 2) as Partial<NodeBuffer>).latin1Slice === "function";
+  typeof (NodeBuffer.from(new ArrayBuffer(2), 0, 2) as Partial<NodeBuffer>).latin1Slice ===
+    'function';
 
-const utf16Decoder = new TextDecoder("utf-16le", { fatal: true, ignoreBOM: true });
+const utf16Decoder = new TextDecoder('utf-16le', { fatal: true, ignoreBOM: true });
 // "latin1" is windows-1252 in the Encoding standard. It agrees with Latin-1 everywhere but
 // 0x80..0x9F, so it is only used for data without bytes in that range.
-const win1252Decoder = new TextDecoder("windows-1252");
+const win1252Decoder = new TextDecoder('windows-1252');
 
 /**
  * A VM value with no host equivalent: a symbol, a function or other non-plain object, a
@@ -159,9 +169,9 @@ class ReadError extends TypeError {
 }
 
 function formatPath(segments: (string | number)[]): string {
-  let p = "$";
+  let p = '$';
   for (const s of segments) {
-    if (typeof s === "number") p += `[${s}]`;
+    if (typeof s === 'number') p += `[${s}]`;
     else if (/^[A-Za-z_$][\w$]*$/.test(s)) p += `.${s}`;
     else p += `[${JSON.stringify(s)}]`;
   }
@@ -179,10 +189,10 @@ export class LayoutMismatch extends Error {}
  * (the magic and `LAYOUT_HASH` in the roots cell).
  */
 export function checkHeap(memory: Uint8Array): void {
-  if (memory.length < cells.Roots.minSize) throw new LayoutMismatch("not a djs heap: too small");
+  if (memory.length < cells.Roots.minSize) throw new LayoutMismatch('not a djs heap: too small');
   const view = new DataView(memory.buffer, memory.byteOffset, memory.byteLength);
   if (view.getUint32(ROOTS_MAGIC, true) !== LAYOUT.magic) {
-    throw new LayoutMismatch("not a djs heap: bad magic");
+    throw new LayoutMismatch('not a djs heap: bad magic');
   }
   const version = view.getUint32(ROOTS_VERSION, true);
   if (version !== LAYOUT.layoutHash) {
@@ -209,7 +219,7 @@ export function readValue(
 ): unknown {
   checkHeap(memory);
   let lo: number, hi: number;
-  if (typeof value === "bigint") {
+  if (typeof value === 'bigint') {
     lo = Number(value & 0xffffffffn);
     hi = Number((value >> 32n) & 0xffffffffn);
   } else {
@@ -255,11 +265,17 @@ class Reader {
     this.mem = mem;
     this.view = new DataView(mem.buffer, mem.byteOffset, mem.byteLength);
     // Two-byte string data is 2-aligned within the arena; a view needs the base aligned too.
-    this.u16 = mem.byteOffset % 2 === 0 ? new Uint16Array(mem.buffer, mem.byteOffset, mem.length >> 1) : null;
+    this.u16 =
+      mem.byteOffset % 2 === 0
+        ? new Uint16Array(mem.buffer, mem.byteOffset, mem.length >> 1)
+        : null;
     const aligned = mem.byteOffset % 8 === 0;
     this.w32 = aligned ? new Uint32Array(mem.buffer, mem.byteOffset, mem.length >>> 2) : null;
     this.f64 = aligned ? new Float64Array(mem.buffer, mem.byteOffset, mem.length >>> 3) : null;
-    this.buf = hasNodeBuffer && !portable ? NodeBuffer!.from(mem.buffer, mem.byteOffset, mem.byteLength) : null;
+    this.buf =
+      hasNodeBuffer && !portable
+        ? NodeBuffer!.from(mem.buffer, mem.byteOffset, mem.byteLength)
+        : null;
     this.atoms = atoms;
     const table = this.view.getUint32(ROOTS_ATOMS, true);
     this.atomEntries = table === 0 ? 0 : this.view.getUint32(table + ATOMS_ENTRIES, true);
@@ -293,7 +309,7 @@ class Reader {
         return this.bigint(payload);
       case tags.SYMBOL: {
         const d = this.slotIfString(payload + SYM_DESCRIPTION);
-        return new Opaque("symbol", payload, undefined, d);
+        return new Opaque('symbol', payload, undefined, d);
       }
       default: {
         const name = tagNames[tag];
@@ -323,8 +339,10 @@ class Reader {
 
   string(off: number): string {
     const kind = this.mem[off + HDR_KIND];
-    if (kind === K_STR8) return this.latin1(off + STR8_DATA, this.view.getUint32(off + STR8_LEN, true));
-    if (kind === K_STR16) return this.utf16(off + STR16_DATA, this.view.getUint32(off + STR16_LEN, true));
+    if (kind === K_STR8)
+      return this.latin1(off + STR8_DATA, this.view.getUint32(off + STR8_LEN, true));
+    if (kind === K_STR16)
+      return this.utf16(off + STR16_DATA, this.view.getUint32(off + STR16_LEN, true));
     if (kind === K_ROPE) {
       if (this.view.getUint16(off + HDR_FLAGS, true) & ROPE_APPEND) return this.appendRope(off);
       return this.rope(off);
@@ -351,10 +369,13 @@ class Reader {
       } else if (this.view.getUint16(c + HDR_FLAGS, true) & ROPE_FLATTENED) {
         stack.push(this.view.getUint32(c + ROPE_LEFT, true));
       } else {
-        stack.push(this.view.getUint32(c + ROPE_RIGHT, true), this.view.getUint32(c + ROPE_LEFT, true));
+        stack.push(
+          this.view.getUint32(c + ROPE_RIGHT, true),
+          this.view.getUint32(c + ROPE_LEFT, true),
+        );
       }
     }
-    return parts.join("");
+    return parts.join('');
   }
 
   /** An append rope (D1610): the first LEN code units of its buffer (LEFT). */
@@ -368,7 +389,7 @@ class Reader {
   latin1(at: number, n: number): string {
     const mem = this.mem;
     if (n <= TINY) {
-      let s = "";
+      let s = '';
       for (let i = 0; i < n; i++) s += String.fromCharCode(mem[at + i]);
       return s;
     }
@@ -413,9 +434,10 @@ class Reader {
     let s = this.atoms[index];
     if (s === undefined) {
       const n = this.atomBaseCount;
-      const slot = index < n
-        ? this.atomBaseEntries + VA_VALUES + 8 * index
-        : this.atomEntries + VA_VALUES + 8 * (index - n);
+      const slot =
+        index < n
+          ? this.atomBaseEntries + VA_VALUES + 8 * index
+          : this.atomEntries + VA_VALUES + 8 * (index - n);
       s = this.string(this.view.getUint32(slot, true));
       this.atoms[index] = s;
     }
@@ -427,14 +449,14 @@ class Reader {
     if (cls === C_TYPED_ARRAY) return this.typedArray(off);
     if (cls === C_ARRAY_BUFFER) return this.arrayBuffer(off);
     if (cls !== C_ARRAY && cls !== C_ORDINARY) {
-      return new Opaque("object", off, classNames[cls] ?? `class ${cls}`);
+      return new Opaque('object', off, classNames[cls] ?? `class ${cls}`);
     }
     // A cycle reaches any depth, so only deep nesting needs the (linear) check.
     const depth = this.depth;
     if (depth >= CYCLE_CHECK_DEPTH) {
       const stack = this.stack;
       for (let i = 0; i < depth; i++) {
-        if (stack[i] === off) throw new ReadError("cyclic value");
+        if (stack[i] === off) throw new ReadError('cyclic value');
       }
     }
     this.stack[depth] = off;
@@ -487,7 +509,7 @@ class Reader {
 
   spend(n: number): void {
     this.budget -= n;
-    if (this.budget < 0) throw new RangeError("djs heap read: value too large (maxValues)");
+    if (this.budget < 0) throw new RangeError('djs heap read: value too large (maxValues)');
   }
 
   plain(off: number): Record<string, unknown> {
@@ -511,7 +533,9 @@ class Reader {
       // block whose shape's descriptors hold (key, flags) pairs (docs/objects.md 7).
       const dict = (view.getUint16(off + HDR_FLAGS, true) & OBJ_DICTIONARY) !== 0;
       const count = view.getUint32(t + (dict ? TAB_COUNT : PV_LEN), true);
-      const descs = dict ? 0 : view.getUint32(view.getUint32(t + PV_SHAPE, true) + SHAPE_DESCS, true) + U32_DATA + 4;
+      const descs = dict
+        ? 0
+        : view.getUint32(view.getUint32(t + PV_SHAPE, true) + SHAPE_DESCS, true) + U32_DATA + 4;
       this.spend(count + 1);
       for (let i = 0; i < count; i++) {
         const e = dict ? t + TAB_ENTRIES + ENTRY_SIZE * i : descs + 8 * i;
@@ -523,8 +547,13 @@ class Reader {
         if (key === undefined) continue;
         const v = this.slot(dict ? e + ENTRY_VALUE : t + PV_VALUES + 8 * i);
         // Assigning "__proto__" would set the prototype instead of defining a property.
-        if (key === "__proto__") {
-          Object.defineProperty(o, key, { value: v, writable: true, enumerable: true, configurable: true });
+        if (key === '__proto__') {
+          Object.defineProperty(o, key, {
+            value: v,
+            writable: true,
+            enumerable: true,
+            configurable: true,
+          });
         } else {
           o[key] = v;
         }
@@ -581,7 +610,7 @@ class Reader {
           const flags = view.getUint32(e + ENTRY_FLAGS, true);
           if (atom === 0 || flags & P_ACCESSOR || !(flags & P_ENUMERABLE)) continue;
           const key = this.key(atom);
-          if (typeof key === "number" || (typeof key === "string" && isArrayIndex(key))) {
+          if (typeof key === 'number' || (typeof key === 'string' && isArrayIndex(key))) {
             i = Number(key);
             this.spend(1);
             a[i] = this.slot(e + ENTRY_VALUE);
@@ -612,10 +641,15 @@ function fromCodes(units: ArrayLike<number>, at: number, n: number): string {
   return String.fromCharCode.apply(null, codes);
 }
 
-function chunked(units: ArrayLike<number> & { subarray(a: number, b: number): ArrayLike<number> }): string {
-  let s = "";
+function chunked(
+  units: ArrayLike<number> & { subarray(a: number, b: number): ArrayLike<number> },
+): string {
+  let s = '';
   for (let i = 0; i < units.length; i += CHUNK) {
-    s += String.fromCharCode.apply(null, units.subarray(i, Math.min(i + CHUNK, units.length)) as unknown as number[]);
+    s += String.fromCharCode.apply(
+      null,
+      units.subarray(i, Math.min(i + CHUNK, units.length)) as unknown as number[],
+    );
   }
   return s;
 }

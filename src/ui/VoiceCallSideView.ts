@@ -376,7 +376,9 @@ export class VoiceCallSideView extends ItemView {
    * @param transcript - Recent conversation.
    */
   private async runClientBackend(transcript: string): Promise<string> {
-    const chat = this.chat ?? new PureChatLLMChat(this.plugin);
+    const chat =
+      this.chat ??
+      Object.assign(new PureChatLLMChat(this.plugin), { role: 'direct-voice' as const });
     const tools: ToolDefinition[] = this.plugin.settings.agentMode
       ? chat.toolregistry.getEnabledDefinitions()
       : [];
@@ -618,6 +620,8 @@ export class VoiceCallSideView extends ItemView {
         nativeMcp = [];
       } else if (this.plugin.settings.agentMode) {
         this.chat = new PureChatLLMChat(this.plugin);
+        // A voice model calling tools itself: confirmations are asked aloud, never in a modal.
+        this.chat.role = 'direct-voice';
         this.toolExecutor = new ChatToolExecutor(this.chat);
         const selected = selectVoiceTools(
           this.chat.toolregistry,

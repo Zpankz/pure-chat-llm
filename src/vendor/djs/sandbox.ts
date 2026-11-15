@@ -1,12 +1,12 @@
 // The Sandbox API: loads djs-wasm (docs/host.md) and runs code in a djs VM. Values go in
 // through the wire format (wire.ts) and come out through direct heap reads (reader.ts).
 
-import { IN_PLACE_MIN, encode, stringInPlace } from "./wire";
-import { trapText } from "./trap";
-import { Opaque, readValue } from "./reader";
-import { provideBase, rememberBase } from "./base";
-import { scriptFor as dumpRuntimeFor } from "./dump-runtime.js";
-import { envVar } from "./env";
+import { IN_PLACE_MIN, encode, stringInPlace } from './wire';
+import { trapText } from './trap';
+import { Opaque, readValue } from './reader';
+import { provideBase, rememberBase } from './base';
+import { scriptFor as dumpRuntimeFor } from './dump-runtime.js';
+import { envVar } from './env';
 
 /** A host function callable from the sandbox. Arguments and the result are host values. */
 export type HostFunction = (...args: unknown[]) => unknown;
@@ -133,7 +133,7 @@ export interface SandboxOptions {
    * `"throw"` fails the run with a `threw` SandboxError, `"collect"` keeps them for
    * `takeUnhandledRejections()`.
    */
-  unhandledRejections?: "warn" | "throw" | "collect";
+  unhandledRejections?: 'warn' | 'throw' | 'collect';
   /**
    * Parse the code as TypeScript (types are erased, enums and namespaces run; 0048).
    * Default false.
@@ -150,7 +150,7 @@ export interface SandboxOptions {
    * collection is observable) or `"absent"` (the globals are deleted). Default
    * `"collected"`, with `deterministic` `"strong"`.
    */
-  weakRefs?: "collected" | "strong" | "absent";
+  weakRefs?: 'collected' | 'strong' | 'absent';
   /**
    * Frozen builtins (D2304): the builtin objects (prototypes, constructors, `Math`, ...)
    * behave as frozen: writes to them fail (a TypeError in strict code), their properties
@@ -207,7 +207,15 @@ export interface SandboxOptions {
   debugger?: HostFunction | AsyncHostFunction;
 }
 
-export type SandboxErrorKind = "threw" | "syntax" | "fuel" | "trap" | "memory" | "misuse" | "diverged" | "suspended";
+export type SandboxErrorKind =
+  | 'threw'
+  | 'syntax'
+  | 'fuel'
+  | 'trap'
+  | 'memory'
+  | 'misuse'
+  | 'diverged'
+  | 'suspended';
 
 /**
  * One entry of a run's journal (D1730, docs/host.md "Journals"): everything a
@@ -224,11 +232,19 @@ export type SandboxErrorKind = "threw" | "syntax" | "fuel" | "trap" | "memory" |
  *   hash.
  */
 export type JournalEntry =
-  | { type: "run"; engine: string; code: string; params: Record<string, unknown>; hash: string }
-  | { type: "sync"; fn: string; args: unknown[]; ok: boolean; value: unknown }
-  | { type: "async"; callId: number; fn: string; args: unknown[]; ok: boolean; value: unknown; now: number }
-  | { type: "check"; delivered: number; issued: number; hash: string }
-  | { type: "end"; ok: boolean; value: unknown; delivered: number; issued: number; hash: string };
+  | { type: 'run'; engine: string; code: string; params: Record<string, unknown>; hash: string }
+  | { type: 'sync'; fn: string; args: unknown[]; ok: boolean; value: unknown }
+  | {
+      type: 'async';
+      callId: number;
+      fn: string;
+      args: unknown[];
+      ok: boolean;
+      value: unknown;
+      now: number;
+    }
+  | { type: 'check'; delivered: number; issued: number; hash: string }
+  | { type: 'end'; ok: boolean; value: unknown; delivered: number; issued: number; hash: string };
 
 /** Options of one run. */
 /** A source position (`Sandbox.callSite`): the script's name, line and column from 1. */
@@ -283,7 +299,7 @@ export class SandboxError extends Error {
   readonly value?: unknown;
   constructor(kind: SandboxErrorKind, message: string, value?: unknown) {
     super(message);
-    this.name = "SandboxError";
+    this.name = 'SandboxError';
     this.kind = kind;
     this.value = value;
   }
@@ -298,13 +314,13 @@ const STATUS_HOST_OUT_OF_MEMORY = 5;
 const ABI_VERSION = 5;
 /** `vm_new_with`'s flag: frozen builtins (D2304). */
 const VM_FROZEN_BUILTINS = 1;
-const CONSOLE_METHODS = ["log", "info", "warn", "error"] as const;
+const CONSOLE_METHODS = ['log', 'info', 'warn', 'error'] as const;
 /**
  * A plain dump's host hooks (D2832, D2890): the global object `$djs` with `resume(id,
  * name, args, state)` and `seed(lo, hi)`, defined while the dump's Script runs. Their
  * function ids are outside the host functions' (ids are places in `fnNames`).
  */
-const PLAIN_HOOKS = "$djs";
+const PLAIN_HOOKS = '$djs';
 const HOOK_RESUME = 0x7fff_fff0;
 const HOOK_SEED = 0x7fff_fff1;
 const HOOK_SOURCE = 0x7fff_fff2;
@@ -336,11 +352,13 @@ export function scriptHash(source: string, params: string, bits: number): string
   step(textEncoder.encode(String(bits)));
   step(new Uint8Array([0]));
   step(textEncoder.encode(source));
-  return BigInt.asUintN(32, h ^ (h >> 32n)).toString(16).padStart(8, "0");
+  return BigInt.asUintN(32, h ^ (h >> 32n))
+    .toString(16)
+    .padStart(8, '0');
 }
 
 function rememberScript(name: string, code: string): void {
-  const list = (ranScripts.get(name) ?? []).filter((c) => c !== code);
+  const list = (ranScripts.get(name) ?? []).filter(c => c !== code);
   list.unshift(code);
   if (list.length > SCRIPTS_KEPT) list.length = SCRIPTS_KEPT;
   ranScripts.set(name, list);
@@ -381,7 +399,13 @@ interface Exports {
   vm_arena_len(vm: number): number;
   vm_collect(vm: number): number;
   vm_compile(vm: number, goal: number, paramsLen: number, srcLen: number): number;
-  vm_compile_file(vm: number, goal: number, nameLen: number, paramsLen: number, srcLen: number): number;
+  vm_compile_file(
+    vm: number,
+    goal: number,
+    nameLen: number,
+    paramsLen: number,
+    srcLen: number,
+  ): number;
   vm_global(vm: number): number;
   vm_new_object(vm: number): number;
   /** Since 0207 (D2903): the plain dump runtime, `$djs`'s helpers. */
@@ -418,7 +442,13 @@ interface Exports {
   vm_open_call?(vm: number, parked: number, fnId: number): number;
   vm_set_next_call_id?(vm: number, id: number): void;
   vm_set_weak_refs(vm: number, mode: number): number;
-  vm_resolve_host_call_at(vm: number, callId: number, ok: number, value: number, now: number): number;
+  vm_resolve_host_call_at(
+    vm: number,
+    callId: number,
+    ok: number,
+    value: number,
+    now: number,
+  ): number;
   vm_canonical_hash(vm: number): number;
   djs_build_hash(): number;
   /** The base snapshot (D1321); the inject exports only with the base coded (D2252). */
@@ -448,12 +478,12 @@ const dumpers = new WeakMap<WebAssembly.Module, Map<number, Sandbox>>();
  * own defaults (`Sandbox.defaultModule`), the modules shipped in the package (D3106).
  */
 export function defaultWasmPath(): string | URL {
-  const env = envVar("DJS_WASM");
+  const env = envVar('DJS_WASM');
   if (env !== undefined) return env;
   // Not `new URL("…", import.meta.url)` literally: bundlers take that for an asset of the
   // package, and the built package has no repository around it.
   // pure-chat-llm: the plugin always passes its module; no default location in a CommonJS bundle.
-  throw new SandboxError("misuse", "no default djs-wasm module: pass a location or set $DJS_WASM");
+  throw new SandboxError('misuse', 'no default djs-wasm module: pass a location or set $DJS_WASM');
 }
 
 /**
@@ -462,7 +492,9 @@ export function defaultWasmPath(): string | URL {
  * string that is no URL in node, Bun or Deno, is read from the file system; anything else
  * is fetched (in a browser, a relative string is relative to the page).
  */
-export function loadModule(location: string | URL = defaultWasmPath()): Promise<WebAssembly.Module> {
+export function loadModule(
+  location: string | URL = defaultWasmPath(),
+): Promise<WebAssembly.Module> {
   const key = String(location);
   let m = modules.get(key);
   if (m === undefined) {
@@ -471,21 +503,24 @@ export function loadModule(location: string | URL = defaultWasmPath()): Promise<
       if (isFile(location)) {
         // Not a literal specifier, so the package type-checks without node's types, and
         // bundlers for the browser leave it alone.
-        const fsModule = "node:fs/promises";
+        const fsModule = 'node:fs/promises';
         const fs = (await import(/* @vite-ignore */ /* webpackIgnore: true */ fsModule)) as {
           readFile(p: string | URL): Promise<Uint8Array>;
         };
-        bytes = await fs.readFile(typeof location === "string" && /^file:/i.test(location) ? new URL(location) : location);
+        bytes = await fs.readFile(
+          typeof location === 'string' && /^file:/i.test(location) ? new URL(location) : location,
+        );
       } else {
         const r = await fetch(location);
-        if (!r.ok) throw new SandboxError("misuse", `cannot fetch djs-wasm from ${key}: HTTP ${r.status}`);
+        if (!r.ok)
+          throw new SandboxError('misuse', `cannot fetch djs-wasm from ${key}: HTTP ${r.status}`);
         bytes = new Uint8Array(await r.arrayBuffer());
       }
       return WebAssembly.compile(bytes as Uint8Array<ArrayBuffer>);
     })();
     modules.set(key, m);
     m.then(
-      (mod) => compiled.set(key, mod),
+      mod => compiled.set(key, mod),
       () => modules.delete(key),
     );
   }
@@ -495,9 +530,16 @@ export function loadModule(location: string | URL = defaultWasmPath()): Promise<
 /** Whether `loadModule` reads `location` from the file system (else it fetches it). */
 function isFile(location: string | URL): boolean {
   // A scheme of two letters or more: `C:\x` is a path.
-  const url = typeof location === "string" ? /^([a-z][a-z0-9+.-]+):/i.exec(location)?.[1] : location.protocol.slice(0, -1);
-  if (url !== undefined) return url.toLowerCase() === "file";
-  const g = globalThis as { process?: { versions?: { node?: string } }; Deno?: unknown; Bun?: unknown };
+  const url =
+    typeof location === 'string'
+      ? /^([a-z][a-z0-9+.-]+):/i.exec(location)?.[1]
+      : location.protocol.slice(0, -1);
+  if (url !== undefined) return url.toLowerCase() === 'file';
+  const g = globalThis as {
+    process?: { versions?: { node?: string } };
+    Deno?: unknown;
+    Bun?: unknown;
+  };
   return g.process?.versions?.node !== undefined || g.Deno !== undefined || g.Bun !== undefined;
 }
 
@@ -526,7 +568,10 @@ interface RunCore {
   dump(states?: [number, string][]): string;
 }
 
-type RunEnd = { state: "idle" } | { state: "done"; value: unknown } | { state: "threw"; error: SandboxError };
+type RunEnd =
+  | { state: 'idle' }
+  | { state: 'done'; value: unknown }
+  | { state: 'threw'; error: SandboxError };
 
 /**
  * A run the host drives itself (docs/host.md "Host-driven runs"; the part 0179
@@ -538,7 +583,7 @@ type RunEnd = { state: "idle" } | { state: "done"; value: unknown } | { state: "
  */
 export class Run {
   /** "idle": waiting on `calls`; "done": `value` is the result; "threw": `error`. */
-  state: "idle" | "done" | "threw" = "idle";
+  state: 'idle' | 'done' | 'threw' = 'idle';
   value: unknown = undefined;
   error: SandboxError | undefined = undefined;
   readonly #core: RunCore;
@@ -567,7 +612,7 @@ export class Run {
    * promises). New async calls show up in `calls`.
    */
   async advance(): Promise<void> {
-    if (this.state !== "idle") throw new SandboxError("misuse", `the run is ${this.state}`);
+    if (this.state !== 'idle') throw new SandboxError('misuse', `the run is ${this.state}`);
     this.end(await this.#core.advance());
   }
 
@@ -579,15 +624,18 @@ export class Run {
    * (`OpenCall.state`).
    */
   dump(states: Record<number, unknown> = {}): string {
-    if (this.state !== "idle") throw new SandboxError("misuse", `the run is ${this.state}: only an idle run can be dumped`);
-    return this.#core.dump(Object.entries(states).map(([id, v]) => [Number(id), stateJson(Number(id), v)]));
+    if (this.state !== 'idle')
+      throw new SandboxError('misuse', `the run is ${this.state}: only an idle run can be dumped`);
+    return this.#core.dump(
+      Object.entries(states).map(([id, v]) => [Number(id), stateJson(Number(id), v)]),
+    );
   }
 
   /** Records how a step ended. */
   end(e: RunEnd): void {
     this.state = e.state;
-    if (e.state === "done") this.value = e.value;
-    if (e.state === "threw") this.error = e.error;
+    if (e.state === 'done') this.value = e.value;
+    if (e.state === 'threw') this.error = e.error;
   }
 }
 
@@ -625,7 +673,12 @@ export class Task {
   readonly #request: (r: DumpRequest) => void;
 
   /** Made by `Sandbox.start` and `Sandbox.resume`. */
-  constructor(sandbox: Sandbox, result: Promise<unknown>, calls: Map<number, LiveCall>, request: (r: DumpRequest) => void) {
+  constructor(
+    sandbox: Sandbox,
+    result: Promise<unknown>,
+    calls: Map<number, LiveCall>,
+    request: (r: DumpRequest) => void,
+  ) {
     this.sandbox = sandbox;
     this.result = result;
     this.#calls = calls;
@@ -634,7 +687,7 @@ export class Task {
 
   /** The async host calls the task waits for, oldest first. */
   get calls(): HostCall[] {
-    return [...this.#calls.values()].map((c) => c.call);
+    return [...this.#calls.values()].map(c => c.call);
   }
 
   /**
@@ -669,7 +722,7 @@ interface RawImage {
 }
 
 /** `drive`'s value at an idle point of a host-driven run. */
-const IDLE = Symbol("idle");
+const IDLE = Symbol('idle');
 
 export class Sandbox {
   private readonly x: Exports;
@@ -759,11 +812,12 @@ export class Sandbox {
   /** Loads a dump that holds a run: its open calls and the run's result promise. */
   private loadRunDump(dump: string): { calls: OpenCall[]; result: number } {
     const { calls, handles } = this.loadDump(dump);
-    const result = handles.get("run") ?? 0;
+    const result = handles.get('run') ?? 0;
     this.guard(() => {
-      for (const [name, h] of handles) if (name !== "run") this.x.vm_handle_free(this.vm, h);
+      for (const [name, h] of handles) if (name !== 'run') this.x.vm_handle_free(this.vm, h);
     });
-    if (result === 0) throw new SandboxError("misuse", "the dump holds no run (no handle named run)");
+    if (result === 0)
+      throw new SandboxError('misuse', 'the dump holds no run (no handle named run)');
     return { calls, result };
   }
 
@@ -782,11 +836,17 @@ export class Sandbox {
       }
     }
     if (module === undefined) {
-      throw new SandboxError("misuse", "no compiled module: pass opts.module or await loadModule() first");
+      throw new SandboxError(
+        'misuse',
+        'no compiled module: pass opts.module or await loadModule() first',
+      );
     }
     const x = new WebAssembly.Instance(module, {}).exports as unknown as Exports;
     if (x.djs_abi_version() !== ABI_VERSION) {
-      throw new SandboxError("misuse", `djs-wasm ABI ${x.djs_abi_version()}, expected ${ABI_VERSION}`);
+      throw new SandboxError(
+        'misuse',
+        `djs-wasm ABI ${x.djs_abi_version()}, expected ${ABI_VERSION}`,
+      );
     }
     let vm: number;
     let restoredFns: string[] = [];
@@ -797,10 +857,14 @@ export class Sandbox {
       provideBase(module, x);
       rememberBase(module, x);
       if (opts.frozenBuiltins) {
-        if (!x.vm_new_with) throw new SandboxError("misuse", "the djs-wasm module has no frozenBuiltins (vm_new_with)");
+        if (!x.vm_new_with)
+          throw new SandboxError(
+            'misuse',
+            'the djs-wasm module has no frozenBuiltins (vm_new_with)',
+          );
         vm = x.vm_new_with(opts.memoryLimit ?? 0, 0, VM_FROZEN_BUILTINS);
       } else vm = x.vm_new(opts.memoryLimit ?? 0);
-      if (vm === 0) throw new SandboxError("memory", "memory limit too small for the realm");
+      if (vm === 0) throw new SandboxError('memory', 'memory limit too small for the realm');
     } else {
       const image = raw.image;
       restoredFns = raw.functions;
@@ -811,10 +875,12 @@ export class Sandbox {
       // May grow memory: take the buffer afterwards. The image's buffer becomes the arena,
       // so it is staged with the arena's capacity (D1942).
       const limit = opts.memoryLimit ?? 0;
-      const at = x.djs_image_staging ? x.djs_image_staging(image.length, limit) : x.djs_staging(image.length);
+      const at = x.djs_image_staging
+        ? x.djs_image_staging(image.length, limit)
+        : x.djs_staging(image.length);
       new Uint8Array(x.memory.buffer).set(image, at);
       vm = x.vm_from_bytes(image.length, opts.memoryLimit ?? 0);
-      if (vm === 0) throw new SandboxError("misuse", outText(x));
+      if (vm === 0) throw new SandboxError('misuse', outText(x));
     }
     this.x = x;
     this.module = module;
@@ -827,32 +893,47 @@ export class Sandbox {
     if (raw !== undefined) {
       // The VM already has its host functions; bind the ids to the given implementations.
       restoredFns.forEach((name, i) => {
-        const a = name === "debugger" && opts.debugger !== undefined ? opts.debugger : opts.asyncFunctions?.[name];
-        const f = builtins[name] ?? opts.functions?.[name] ?? (typeof a === "object" ? a.call : a);
-        if (f === undefined) throw new SandboxError("misuse", `the image needs host function ${name}`);
+        const a =
+          name === 'debugger' && opts.debugger !== undefined
+            ? opts.debugger
+            : opts.asyncFunctions?.[name];
+        const f = builtins[name] ?? opts.functions?.[name] ?? (typeof a === 'object' ? a.call : a);
+        if (f === undefined)
+          throw new SandboxError('misuse', `the image needs host function ${name}`);
         this.fnNames.push(name);
         this.fns.set(i + 1, f);
-        if (typeof a === "object") this.hooks.set(i + 1, a);
+        if (typeof a === 'object') this.hooks.set(i + 1, a);
       });
     } else {
       // `console` is a namespace like `tools` (a host root of dumps, D2971).
-      for (const m of CONSOLE_METHODS) this.addFunction(`console.${m}`, builtins[`console.${m}`], false);
-      for (const [name, f] of Object.entries(opts.functions ?? {})) this.addFunction(name, f, false);
-      for (const [name, f] of Object.entries(opts.asyncFunctions ?? {})) this.addFunction(name, f, true);
+      for (const m of CONSOLE_METHODS)
+        this.addFunction(`console.${m}`, builtins[`console.${m}`], false);
+      for (const [name, f] of Object.entries(opts.functions ?? {}))
+        this.addFunction(name, f, false);
+      for (const [name, f] of Object.entries(opts.asyncFunctions ?? {}))
+        this.addFunction(name, f, true);
       if (opts.debugger !== undefined) {
-        if (!x.vm_dump) throw new SandboxError("misuse", "the debugger option needs a djs-wasm module with the dumper (the `dump` feature)");
-        this.addFunction("debugger", opts.debugger, true);
+        if (!x.vm_dump)
+          throw new SandboxError(
+            'misuse',
+            'the debugger option needs a djs-wasm module with the dumper (the `dump` feature)',
+          );
+        this.addFunction('debugger', opts.debugger, true);
       }
       const globals = { ...(opts.globals ?? this.defaultGlobals()) };
-      if (opts.debugger !== undefined) globals.debugger = "debugger";
+      if (opts.debugger !== undefined) globals.debugger = 'debugger';
       for (const [name, identity] of Object.entries(globals)) this.bindGlobal(name, identity);
       // What a new VM starts with; an image keeps its own (D1680).
       const det = opts.deterministic;
-      const [lo, hi] = det ? seedWords(det.seed) : opts.randomSeed !== undefined ? seedWords(opts.randomSeed) : entropy();
+      const [lo, hi] = det
+        ? seedWords(det.seed)
+        : opts.randomSeed !== undefined
+          ? seedWords(opts.randomSeed)
+          : entropy();
       x.vm_set_random_seed(vm, lo, hi);
-      const weak = opts.weakRefs ?? (det ? "strong" : "collected");
+      const weak = opts.weakRefs ?? (det ? 'strong' : 'collected');
       if (this.guard(() => x.vm_set_weak_refs(vm, WEAK_REF_MODES[weak])) !== 0) {
-        throw new SandboxError("misuse", `bad weakRefs mode ${String(weak)}`);
+        throw new SandboxError('misuse', `bad weakRefs mode ${String(weak)}`);
       }
       if (det) {
         this.clock = det.startedAt;
@@ -891,7 +972,7 @@ export class Sandbox {
   private namespace(ns: string): number {
     let o = this.namespaces.get(ns);
     if (o === undefined) {
-      o = this.check(this.x.vm_new_object(this.vm), "memory");
+      o = this.check(this.x.vm_new_object(this.vm), 'memory');
       this.namespaces.set(ns, o);
     }
     return o;
@@ -921,7 +1002,8 @@ export class Sandbox {
 
   private bindGlobal(name: string, identity: string): void {
     const h = this.hostValue(identity);
-    if (h === undefined) throw new SandboxError("misuse", `global ${name}: no host function or namespace ${identity}`);
+    if (h === undefined)
+      throw new SandboxError('misuse', `global ${name}: no host function or namespace ${identity}`);
     this.guard(() => {
       const g = this.x.vm_global(this.vm);
       this.defineOn(g, name, h);
@@ -981,7 +1063,7 @@ export class Sandbox {
       this.abandon(e);
       throw e;
     }
-    if (core.run.state !== "idle") this.endRun();
+    if (core.run.state !== 'idle') this.endRun();
     return core.run;
   }
 
@@ -1029,17 +1111,23 @@ export class Sandbox {
         const hooks = this.hooks.get(fnId);
         if (!loaded) r = this.invoke(fnId, open.args, live.call);
         else if (hooks === undefined) {
-          throw new Error(`${open.fn}: the call was open when the run was dumped, and the host function has no hooks to continue it`);
+          throw new Error(
+            `${open.fn}: the call was open when the run was dumped, and the host function has no hooks to continue it`,
+          );
         } else if (hooks.resume) r = hooks.resume(open.state, live.call);
         else r = this.invoke(fnId, open.args, live.call);
       } catch (e) {
         done(open.id, false, e);
         return;
       }
-      if (r instanceof Promise) r.then((v) => done(open.id, true, v), (e) => done(open.id, false, e));
+      if (r instanceof Promise)
+        r.then(
+          v => done(open.id, true, v),
+          e => done(open.id, false, e),
+        );
       else done(open.id, true, r);
     };
-    core.onCall = (call) => begin(call, false);
+    core.onCall = call => begin(call, false);
     core.beforeSlice = () => {
       for (const { id, ok, value } of finished.splice(0)) {
         calls.delete(id);
@@ -1050,7 +1138,8 @@ export class Sandbox {
       ended = true;
       this.cancelTask = null;
       for (const c of calls.values()) c.abort.abort();
-      for (const r of requests.splice(0)) r.reject(new SandboxError("misuse", "the task ended before an idle point"));
+      for (const r of requests.splice(0))
+        r.reject(new SandboxError('misuse', 'the task ended before an idle point'));
     };
     let settle!: { resolve(v: unknown): void; reject(e: unknown): void };
     const result = new Promise<unknown>((resolve, reject) => (settle = { resolve, reject }));
@@ -1058,11 +1147,11 @@ export class Sandbox {
       if (ended) return;
       stopWaiting();
       if (this.active === core) this.endRun();
-      if (e.kind === "suspended") result.catch(() => {});
+      if (e.kind === 'suspended') result.catch(() => {});
       settle.reject(e);
       poke();
     };
-    this.cancelTask = () => stop(new SandboxError("misuse", "the sandbox was disposed"));
+    this.cancelTask = () => stop(new SandboxError('misuse', 'the sandbox was disposed'));
     // The dump at an idle point: each open call's state, from `save` or `call.state`.
     const dump = (): string => {
       const states: [number, string][] = [];
@@ -1077,9 +1166,9 @@ export class Sandbox {
       for (;;) {
         const end = await core.advance();
         if (ended) return;
-        if (end.state !== "idle") {
+        if (end.state !== 'idle') {
           stopWaiting();
-          if (end.state === "done") settle.resolve(end.value);
+          if (end.state === 'done') settle.resolve(end.value);
           else settle.reject(end.error);
           return;
         }
@@ -1095,8 +1184,8 @@ export class Sandbox {
               continue;
             }
             for (const r of asked) r.resolve(text);
-            if (asked.some((r) => r.stop)) {
-              stop(new SandboxError("suspended", "the task was suspended into a dump"));
+            if (asked.some(r => r.stop)) {
+              stop(new SandboxError('suspended', 'the task was suspended into a dump'));
               return;
             }
             continue;
@@ -1108,20 +1197,20 @@ export class Sandbox {
             settle.resolve(undefined);
             return;
           }
-          await new Promise<void>((w) => (wake = w));
+          await new Promise<void>(w => (wake = w));
         }
         if (ended) return;
       }
     };
     for (const c of loaded) begin(c, true);
-    const task = new Task(this, result, calls, (r) => {
-      if (ended) r.reject(new SandboxError("misuse", "the task has ended"));
+    const task = new Task(this, result, calls, r => {
+      if (ended) r.reject(new SandboxError('misuse', 'the task has ended'));
       else {
         requests.push(r);
         poke();
       }
     });
-    loop().catch((e) => {
+    loop().catch(e => {
       if (ended) return;
       stopWaiting();
       settle.reject(e);
@@ -1132,7 +1221,7 @@ export class Sandbox {
   /** Makes a run, waiting on `calls`, with its result promise `result` (0: the entry call's). */
   private startRun(calls: OpenCall[], result: number): RunCore & { run: Run } {
     const core: RunCore & { run: Run } = {
-      open: new Map(calls.map((c) => [c.id, c])),
+      open: new Map(calls.map(c => [c.id, c])),
       result,
       used: 0,
       run: undefined as unknown as Run,
@@ -1142,7 +1231,7 @@ export class Sandbox {
           let r = it.next();
           while (!r.done) r = it.next(await r.value);
           const end = r.value;
-          if (end.state !== "idle") this.endRun();
+          if (end.state !== 'idle') this.endRun();
           return end;
         } catch (e) {
           this.endRun();
@@ -1151,8 +1240,8 @@ export class Sandbox {
         }
       },
       settle: (id, s) => {
-        if (this.active !== core) throw new SandboxError("misuse", "the run has ended");
-        if (!core.open.has(id)) throw new SandboxError("misuse", `no open call ${id}`);
+        if (this.active !== core) throw new SandboxError('misuse', 'the run has ended');
+        if (!core.open.has(id)) throw new SandboxError('misuse', `no open call ${id}`);
         core.deliver(id, s.ok, s.value);
       },
       deliver: (id, ok, value, at) => {
@@ -1161,12 +1250,20 @@ export class Sandbox {
         const now = this.complete(id, ok, value, true, at);
         const j = this.journal;
         if (j) j.delivered++;
-        if (j?.mode === "record" && call) {
-          j.push({ type: "async", callId: id, fn: call.fn, args: call.args, ok, value: errorJson(ok, value), now: now! });
+        if (j?.mode === 'record' && call) {
+          j.push({
+            type: 'async',
+            callId: id,
+            fn: call.fn,
+            args: call.args,
+            ok,
+            value: errorJson(ok, value),
+            now: now!,
+          });
         }
       },
-      dump: (states) => {
-        if (this.active !== core) throw new SandboxError("misuse", "the run has ended");
+      dump: states => {
+        if (this.active !== core) throw new SandboxError('misuse', 'the run has ended');
         return this.dumpRun(core, states);
       },
     };
@@ -1179,11 +1276,11 @@ export class Sandbox {
   private *step(core: RunCore, async: boolean): Generator<Promise<unknown>, RunEnd, unknown> {
     try {
       const r = yield* this.drive(async, core);
-      if (r !== IDLE) return { state: "done", value: r };
+      if (r !== IDLE) return { state: 'done', value: r };
       this.recordCheck();
-      return { state: "idle" };
+      return { state: 'idle' };
     } catch (e) {
-      if (e instanceof SandboxError && e.kind === "threw") return { state: "threw", error: e };
+      if (e instanceof SandboxError && e.kind === 'threw') return { state: 'threw', error: e };
       throw e;
     }
   }
@@ -1209,7 +1306,7 @@ export class Sandbox {
     };
     core.onCall = (call, fnId) => {
       // Replay: the result comes from the journal, at an idle point.
-      if (j?.mode === "replay") return;
+      if (j?.mode === 'replay') return;
       const callId = call.id;
       let p: Promise<unknown>;
       try {
@@ -1218,7 +1315,8 @@ export class Sandbox {
           finished.push({ callId, ok: true, value: r });
           return;
         }
-        if (!async) throw new TypeError(`host function ${call.fn} returned a promise; use runAsync`);
+        if (!async)
+          throw new TypeError(`host function ${call.fn} returned a promise; use runAsync`);
         p = r;
       } catch (e) {
         finished.push({ callId, ok: false, value: e });
@@ -1227,21 +1325,24 @@ export class Sandbox {
       inflight.set(
         callId,
         p.then(
-          (value) => void finished.push({ callId, ok: true, value }),
-          (value) => void finished.push({ callId, ok: false, value }),
+          value => void finished.push({ callId, ok: true, value }),
+          value => void finished.push({ callId, ok: false, value }),
         ),
       );
     };
     for (;;) {
       const r = yield* this.drive(async, core);
       if (r !== IDLE) return r;
-      if (j?.mode === "record") this.recordCheck();
+      if (j?.mode === 'record') this.recordCheck();
       else if (j && core.open.size > 0) {
         // Replay: the checks recorded at this point, then the next result.
         j.checkIdle(this.canonicalHash());
-        const e = j.take("async");
+        const e = j.take('async');
         const call = core.open.get(e.callId);
-        j.expect(call !== undefined, () => `result ${j.delivered + 1} is for call ${e.callId}, which the script has not made`);
+        j.expect(
+          call !== undefined,
+          () => `result ${j.delivered + 1} is for call ${e.callId}, which the script has not made`,
+        );
         j.expectCall(e.fn, e.args, call!.fn, call!.args);
         core.deliver(e.callId, e.ok, e.ok ? e.value : errorFromJson(e.value), e.now);
         continue;
@@ -1256,7 +1357,13 @@ export class Sandbox {
   /** Records a `check` entry at an idle point, when recording. */
   private recordCheck(): void {
     const j = this.journal;
-    if (j?.mode === "record") j.push({ type: "check", delivered: j.delivered, issued: j.issued, hash: this.canonicalHash() });
+    if (j?.mode === 'record')
+      j.push({
+        type: 'check',
+        delivered: j.delivered,
+        issued: j.issued,
+        hash: this.canonicalHash(),
+      });
   }
 
   /** The run has ended: frees its result handle; the sandbox can run again. */
@@ -1276,7 +1383,7 @@ export class Sandbox {
    * was and a journal's later checks still replay).
    */
   private dumpRun(core: RunCore, states: [number, string][] = []): string {
-    return this.dumpText([], [["run", core.result]], states);
+    return this.dumpText([], [['run', core.result]], states);
   }
 
   /**
@@ -1299,14 +1406,21 @@ export class Sandbox {
    * (the namespace objects, `handle:name`, written as `$djs.host(name)`, D2971), then the open calls'
    * states (`id:bytes`, tab separated) followed by their JSON texts (D2770).
    */
-  private dumpText(names: string[], handles: [string, number][], states: [number, string][]): string {
+  private dumpText(
+    names: string[],
+    handles: [string, number][],
+    states: [number, string][],
+  ): string {
     // Dumps need frozen builtins (D2836): the VM's mode, which a restored sandbox keeps
     // from its image.
     if (this.x.vm_frozen_builtins?.(this.vm) !== 1) {
-      throw new SandboxError("misuse", "cannot dump: dumps need frozen builtins (SandboxOptions.frozenBuiltins, D2836)");
+      throw new SandboxError(
+        'misuse',
+        'cannot dump: dumps need frozen builtins (SandboxOptions.frozenBuiltins, D2836)',
+      );
     }
     const refs = !this.opts.inlineSources;
-    return this.viaDumper((sb) => sb.dumpHere(names, handles, states, refs));
+    return this.viaDumper(sb => sb.dumpHere(names, handles, states, refs));
   }
 
   /**
@@ -1356,10 +1470,15 @@ export class Sandbox {
     }
     this.guard(() => {
       const limit = this.opts.memoryLimit ?? 0;
-      const at = x.djs_image_staging ? x.djs_image_staging(raw.image.length, limit) : x.djs_staging(raw.image.length);
+      const at = x.djs_image_staging
+        ? x.djs_image_staging(raw.image.length, limit)
+        : x.djs_staging(raw.image.length);
       new Uint8Array(x.memory.buffer).set(raw.image, at);
       if (x.vm_replace_image!(this.vm, raw.image.length) !== 0) {
-        throw new SandboxError("misuse", `the image does not load in the dump module: ${outText(x)}`);
+        throw new SandboxError(
+          'misuse',
+          `the image does not load in the dump module: ${outText(x)}`,
+        );
       }
     });
     this.clock = raw.clock;
@@ -1372,12 +1491,17 @@ export class Sandbox {
     this.guard(() => {
       x.vm_free(this.vm);
       const limit = this.opts.memoryLimit ?? 0;
-      const at = x.djs_image_staging ? x.djs_image_staging(raw.image.length, limit) : x.djs_staging(raw.image.length);
+      const at = x.djs_image_staging
+        ? x.djs_image_staging(raw.image.length, limit)
+        : x.djs_staging(raw.image.length);
       new Uint8Array(x.memory.buffer).set(raw.image, at);
       const vm = x.vm_from_bytes(raw.image.length, limit);
       if (vm === 0) {
         this.dead = `lost its VM: ${outText(x)}`;
-        throw new SandboxError("misuse", `the dump module's image does not load here: ${outText(x)}`);
+        throw new SandboxError(
+          'misuse',
+          `the dump module's image does not load here: ${outText(x)}`,
+        );
       }
       this.vm = vm;
     });
@@ -1395,23 +1519,40 @@ export class Sandbox {
     const vm = this.vm;
     const [name, hash, params] = args;
     const fail = (why: string) => this.failHook(callId, new Error(`source: ${why}`));
-    if (typeof name !== "string" || typeof hash !== "string") return void fail("not a name and a hash");
+    if (typeof name !== 'string' || typeof hash !== 'string')
+      return void fail('not a name and a hash');
     const candidates: string[] = [];
     const given = this.opts.sources?.(name);
     if (given !== undefined) candidates.push(given);
     for (const code of ranScripts.get(name) ?? []) if (code !== given) candidates.push(code);
     if (candidates.length === 0) {
-      return void fail(`the dump continues the script ${JSON.stringify(name)}, which this host does not have (pass the sandbox option \`sources\`, or dump with \`inlineSources\`)`);
+      return void fail(
+        `the dump continues the script ${JSON.stringify(name)}, which this host does not have (pass the sandbox option \`sources\`, or dump with \`inlineSources\`)`,
+      );
     }
     const o = this.opts;
-    const goal = 1 | (o.typescript ? 2 : 0) | (o.experimentalDecorators || o.emitDecoratorMetadata ? 4 : 0) | (o.emitDecoratorMetadata ? 8 : 0) | (o.debugger ? 16 : 0);
+    const goal =
+      1 |
+      (o.typescript ? 2 : 0) |
+      (o.experimentalDecorators || o.emitDecoratorMetadata ? 4 : 0) |
+      (o.emitDecoratorMetadata ? 8 : 0) |
+      (o.debugger ? 16 : 0);
     // The script's compile options as the dump's hash counts them (`CompileOptions::bits`).
-    const bits = 1 | (goal & 2 ? 4 : 0) | (goal & 12 ? 8 : 0) | (goal & 8 ? 16 : 0) | (goal & 16 ? 64 : 0);
-    const ps = typeof params === "string" ? params : "";
-    const code = candidates.find((c) => scriptHash(c, ps, bits) === hash);
-    if (code === undefined) return void fail(`the host's script ${JSON.stringify(name)} is not the one the dump refers to (another text, parameters or options)`);
+    const bits =
+      1 | (goal & 2 ? 4 : 0) | (goal & 12 ? 8 : 0) | (goal & 8 ? 16 : 0) | (goal & 16 ? 64 : 0);
+    const ps = typeof params === 'string' ? params : '';
+    const code = candidates.find(c => scriptHash(c, ps, bits) === hash);
+    if (code === undefined)
+      return void fail(
+        `the host's script ${JSON.stringify(name)} is not the one the dump refers to (another text, parameters or options)`,
+      );
     const n = textEncoder.encode(name);
-    const head = textEncoder.encode(ps.split(",").filter((p) => p !== "").join("\n"));
+    const head = textEncoder.encode(
+      ps
+        .split(',')
+        .filter(p => p !== '')
+        .join('\n'),
+    );
     const src = textEncoder.encode(code);
     const all = new Uint8Array(n.length + head.length + src.length);
     all.set(n);
@@ -1434,8 +1575,9 @@ export class Sandbox {
    */
   private serveHost(callId: number, args: unknown[]): void {
     const [name] = args;
-    const h = typeof name === "string" ? this.hostValue(name) : undefined;
-    if (h === undefined) return void this.failHook(callId, new Error(`host: unknown host value ${String(name)}`));
+    const h = typeof name === 'string' ? this.hostValue(name) : undefined;
+    if (h === undefined)
+      return void this.failHook(callId, new Error(`host: unknown host value ${String(name)}`));
     this.guard(() => this.x.vm_resolve_host_call(this.vm, callId, 1, h));
   }
 
@@ -1450,22 +1592,31 @@ export class Sandbox {
   }
 
   /** `vm_dump` in this sandbox's own module. */
-  private dumpHere(names: string[], handles: [string, number][], states: [number, string][], sourceRefs = true): string {
+  private dumpHere(
+    names: string[],
+    handles: [string, number][],
+    states: [number, string][],
+    sourceRefs = true,
+  ): string {
     const x = this.x;
     x.vm_set_dump_source_refs?.(this.vm, sourceRefs ? 1 : 0);
-    if (!x.vm_dump) throw new SandboxError("misuse", "the djs-wasm module has no dump (vm_dump): build it with the `dump` feature, or pass `dumpModule`");
+    if (!x.vm_dump)
+      throw new SandboxError(
+        'misuse',
+        'the djs-wasm module has no dump (vm_dump): build it with the `dump` feature, or pass `dumpModule`',
+      );
     const host = this.globalNames;
     const text = [
-      [...host].join(","),
-      names.join(","),
-      this.fnNames.join("\t"),
-      handles.map(([name, h]) => `${h}:${name}`).join("\t"),
-      [...this.namespaces].map(([name, h]) => `${h}:${name}`).join("\t"),
-      states.map(([id, json]) => `${id}:${textEncoder.encode(json).length}`).join("\t"),
-      states.map(([, json]) => json).join(""),
-    ].join("\n");
+      [...host].join(','),
+      names.join(','),
+      this.fnNames.join('\t'),
+      handles.map(([name, h]) => `${h}:${name}`).join('\t'),
+      [...this.namespaces].map(([name, h]) => `${h}:${name}`).join('\t'),
+      states.map(([id, json]) => `${id}:${textEncoder.encode(json).length}`).join('\t'),
+      states.map(([, json]) => json).join(''),
+    ].join('\n');
     const r = this.guard(() => x.vm_dump!(this.vm, this.stageText(text)));
-    if (r !== 0) throw new SandboxError("misuse", `cannot dump:\n${outText(x)}`);
+    if (r !== 0) throw new SandboxError('misuse', `cannot dump:\n${outText(x)}`);
     return outText(x);
   }
 
@@ -1486,9 +1637,13 @@ export class Sandbox {
 
   /** Loads a dump: the open calls it recreated and the handles it named (the caller frees them). */
   private loadDump(dump: string): { calls: OpenCall[]; handles: Map<string, number> } {
-    if (this.active !== null) throw new SandboxError("misuse", "a run is in progress");
+    if (this.active !== null) throw new SandboxError('misuse', 'a run is in progress');
     const plain = plainDump(dump);
-    if (!plain) throw new SandboxError("misuse", 'cannot load the dump: not a djs dump (no "djs-dump"; header)');
+    if (!plain)
+      throw new SandboxError(
+        'misuse',
+        'cannot load the dump: not a djs dump (no "djs-dump"; header)',
+      );
     return this.loadPlain(dump, plain.typescript);
   }
 
@@ -1504,19 +1659,30 @@ export class Sandbox {
    * the run that follows reports. The Script's completion value, when a promise, is the
    * handle "run". The dumper is not needed: a plain dump is code.
    */
-  private loadPlain(dump: string, typescript: boolean): { calls: OpenCall[]; handles: Map<string, number> } {
+  private loadPlain(
+    dump: string,
+    typescript: boolean,
+  ): { calls: OpenCall[]; handles: Map<string, number> } {
     const x = this.x;
     const vm = this.vm;
     if (!x.vm_open_call || !x.vm_dump_runtime) {
-      throw new SandboxError("misuse", "the djs-wasm module cannot load plain dumps (no vm_open_call or vm_dump_runtime): rebuild it");
+      throw new SandboxError(
+        'misuse',
+        'the djs-wasm module cannot load plain dumps (no vm_open_call or vm_dump_runtime): rebuild it',
+      );
     }
     const dumpRuntime = x.vm_dump_runtime;
     const calls: OpenCall[] = [];
     this.guard(() => {
       // `$djs`: the dump runtime's helpers the dump names (D2903, 0215) with the hooks added.
-      const hooks = this.check(dumpRuntime(vm, this.stageText(dumpRuntimeFor(dump))), "memory");
-      for (const [name, id] of [["resume", HOOK_RESUME], ["seed", HOOK_SEED], ["source", HOOK_SOURCE], ["host", HOOK_HOST]] as const) {
-        const f = this.check(x.vm_new_host_function(vm, id, this.stageText(name)), "memory");
+      const hooks = this.check(dumpRuntime(vm, this.stageText(dumpRuntimeFor(dump))), 'memory');
+      for (const [name, id] of [
+        ['resume', HOOK_RESUME],
+        ['seed', HOOK_SEED],
+        ['source', HOOK_SOURCE],
+        ['host', HOOK_HOST],
+      ] as const) {
+        const f = this.check(x.vm_new_host_function(vm, id, this.stageText(name)), 'memory');
         this.defineOn(hooks, name, f);
         x.vm_handle_free(vm, f);
       }
@@ -1529,7 +1695,7 @@ export class Sandbox {
     this.hookError = undefined;
     // `$djs.seed`'s next call id: the counter goes on from the dumped VM's (D2897).
     let next: number | undefined;
-    this.enter(dump, {}, true, "dump.js", typescript);
+    this.enter(dump, {}, true, 'dump.js', typescript);
     const slice = this.opts.fuelSlice ?? 1_000_000;
     const maxFuel = this.opts.maxFuel ?? Infinity;
     let used = 0;
@@ -1541,14 +1707,14 @@ export class Sandbox {
       used += x.vm_fuel_used ? x.vm_fuel_used(vm) : st === STATUS_OUT_OF_FUEL ? slice : 0;
       if (used >= maxFuel) {
         this.guard(() => x.vm_abort(vm));
-        throw new SandboxError("fuel", `out of fuel after ${used} units while loading the dump`);
+        throw new SandboxError('fuel', `out of fuel after ${used} units while loading the dump`);
       }
       if (st === STATUS_OUT_OF_FUEL) continue;
       if (st !== STATUS_HOST_CALL) break;
       const { callId, fnId, args } = this.guard(() => this.readCall(x.vm_host_call(vm)));
       if (fnId === HOOK_RESUME) {
         const [id, name, callArgs, state] = args;
-        const f = typeof name === "string" ? this.fnNames.indexOf(name) + 1 : 0;
+        const f = typeof name === 'string' ? this.fnNames.indexOf(name) + 1 : 0;
         if (f === 0) {
           this.failHook(callId, new Error(`resume: unknown host function ${String(name)}`));
           continue;
@@ -1558,7 +1724,11 @@ export class Sandbox {
           this.complete(callId, false, new Error(outText(x)), false);
           continue;
         }
-        const call: OpenCall = { id: id as number, fn: name as string, args: Array.isArray(callArgs) ? callArgs : [] };
+        const call: OpenCall = {
+          id: id as number,
+          fn: name as string,
+          args: Array.isArray(callArgs) ? callArgs : [],
+        };
         if (state !== undefined) call.state = state;
         calls.push(call);
         continue;
@@ -1576,18 +1746,23 @@ export class Sandbox {
       if (fnId === HOOK_SEED) {
         // `$djs.seed(lo, hi[, next])`, or `$djs.seed(next)` (D2837).
         const [lo, hi, n] = args;
-        if (hi === undefined && typeof lo === "number") next = lo;
-        else if (typeof lo === "number" && typeof hi === "number") {
+        if (hi === undefined && typeof lo === 'number') next = lo;
+        else if (typeof lo === 'number' && typeof hi === 'number') {
           // (A state that ran, which the next dump writes again: `vm_restore_math_random`.)
-          this.guard(() => (x.vm_restore_math_random ?? x.vm_set_math_random_seed)(vm, lo >>> 0, hi >>> 0));
-          if (typeof n === "number") next = n;
-        } else [ok, result] = [false, new TypeError("seed: not two int32 halves")];
+          this.guard(() =>
+            (x.vm_restore_math_random ?? x.vm_set_math_random_seed)(vm, lo >>> 0, hi >>> 0),
+          );
+          if (typeof n === 'number') next = n;
+        } else [ok, result] = [false, new TypeError('seed: not two int32 halves')];
       } else {
         try {
           result = this.invoke(fnId, args);
-          if (result instanceof Promise) throw new TypeError(`host function ${this.fnNames[fnId - 1]} returned a promise while a dump loads`);
+          if (result instanceof Promise)
+            throw new TypeError(
+              `host function ${this.fnNames[fnId - 1]} returned a promise while a dump loads`,
+            );
         } catch (e) {
-          if (e instanceof SandboxError && e.kind === "trap") throw e;
+          if (e instanceof SandboxError && e.kind === 'trap') throw e;
           [ok, result] = [false, e];
         }
       }
@@ -1595,7 +1770,7 @@ export class Sandbox {
     }
     // (Without `next`: one past the highest reopened call, D2837.)
     if (x.vm_set_next_call_id) {
-      const last = Math.max(0, ...calls.map((c) => c.id));
+      const last = Math.max(0, ...calls.map(c => c.id));
       this.guard(() => x.vm_set_next_call_id!(vm, Math.max(next ?? 0, last + 1)));
     }
     // Set by hooks that ran meanwhile, which the narrowing of `this.hookError` cannot see.
@@ -1604,21 +1779,23 @@ export class Sandbox {
     return this.guard(() => {
       if (st === STATUS_THREW || st === STATUS_HOST_OUT_OF_MEMORY) {
         const h = x.vm_result(vm);
-        const why = st === STATUS_THREW ? `the dump threw: ${this.display(h)}` : "out of host memory";
+        const why =
+          st === STATUS_THREW ? `the dump threw: ${this.display(h)}` : 'out of host memory';
         x.vm_handle_free(vm, h);
-        throw new SandboxError("misuse", `cannot load the dump: ${why}`);
+        throw new SandboxError('misuse', `cannot load the dump: ${why}`);
       }
-      if (hookError !== undefined) throw new SandboxError("misuse", `cannot load the dump: ${hookError.message}`);
+      if (hookError !== undefined)
+        throw new SandboxError('misuse', `cannot load the dump: ${hookError.message}`);
       // The completion value: vm_result once done, else (idle) the entry call's outcome.
       const h = st === STATUS_DONE ? x.vm_result(vm) : x.vm_outcome(vm);
       const handles = new Map<string, number>();
       const ps = h === 0 ? 0 : x.vm_promise_state(vm, h);
       if (ps >= 2) x.vm_handle_free(vm, outWords(x, 1)[0]);
-      if (ps !== 0) handles.set("run", h);
+      if (ps !== 0) handles.set('run', h);
       else if (h !== 0) x.vm_handle_free(vm, h);
       // The load is over: the host deletes the dump's globals (D2916), by running JS (the
       // module has no delete of its own).
-      const drop = textEncoder.encode("delete globalThis.$djs; delete globalThis.$dump");
+      const drop = textEncoder.encode('delete globalThis.$djs; delete globalThis.$dump');
       this.stage(drop);
       const f = x.vm_compile_file(vm, 0, 0, 0, drop.length);
       if (f !== 0) {
@@ -1634,7 +1811,11 @@ export class Sandbox {
    * Like `run`, but awaits host functions that return promises: a sync one keeps the VM
    * parked meanwhile, async ones run concurrently while the script goes on.
    */
-  async runAsync(code: string, params: Record<string, unknown> = {}, opts: RunOptions = {}): Promise<unknown> {
+  async runAsync(
+    code: string,
+    params: Record<string, unknown> = {},
+    opts: RunOptions = {},
+  ): Promise<unknown> {
     this.beginJournal(code, params, opts);
     this.enter(code, params);
     try {
@@ -1663,11 +1844,18 @@ export class Sandbox {
    */
   async replay(journal: JournalEntry[]): Promise<unknown> {
     const head = journal[0];
-    if (head?.type !== "run") throw new SandboxError("misuse", "a journal starts with a run entry");
-    if (this.opts.deterministic === undefined) throw new SandboxError("misuse", "replay needs a deterministic sandbox");
-    const j = new Journal("replay", journal);
-    j.expect(head.engine === this.buildHash(), () => `engine ${this.buildHash()}, the journal was made by ${head.engine}`);
-    j.expect(head.hash === this.canonicalHash(), () => "the sandbox's state before the run differs from the recording's");
+    if (head?.type !== 'run') throw new SandboxError('misuse', 'a journal starts with a run entry');
+    if (this.opts.deterministic === undefined)
+      throw new SandboxError('misuse', 'replay needs a deterministic sandbox');
+    const j = new Journal('replay', journal);
+    j.expect(
+      head.engine === this.buildHash(),
+      () => `engine ${this.buildHash()}, the journal was made by ${head.engine}`,
+    );
+    j.expect(
+      head.hash === this.canonicalHash(),
+      () => "the sandbox's state before the run differs from the recording's",
+    );
     j.next = 1;
     this.enter(head.code, head.params);
     this.journal = j;
@@ -1688,24 +1876,32 @@ export class Sandbox {
   /** The VM's canonical hash (D1730) as 16 hex digits: its state, independent of collections. */
   canonicalHash(): string {
     return this.guard(() => {
-      if (this.x.vm_canonical_hash(this.vm) !== 0) throw new SandboxError("memory", "no memory for the canonical hash");
+      if (this.x.vm_canonical_hash(this.vm) !== 0)
+        throw new SandboxError('memory', 'no memory for the canonical hash');
       const [lo, hi] = outWords(this.x, 2);
-      return hi.toString(16).padStart(8, "0") + lo.toString(16).padStart(8, "0");
+      return hi.toString(16).padStart(8, '0') + lo.toString(16).padStart(8, '0');
     });
   }
 
   private buildHash(): string {
-    return (this.x.djs_build_hash() >>> 0).toString(16).padStart(8, "0");
+    return (this.x.djs_build_hash() >>> 0).toString(16).padStart(8, '0');
   }
 
   /** Starts recording a run into `opts.journal`, if given. */
   private beginJournal(code: string, params: Record<string, unknown>, opts: RunOptions): void {
-    if (this.active !== null) throw new SandboxError("misuse", "a run is in progress");
+    if (this.active !== null) throw new SandboxError('misuse', 'a run is in progress');
     this.journal = null;
     if (opts.journal === undefined) return;
-    if (this.opts.deterministic === undefined) throw new SandboxError("misuse", "recording needs a deterministic sandbox");
-    opts.journal.push({ type: "run", engine: this.buildHash(), code, params, hash: this.canonicalHash() });
-    this.journal = new Journal("record", opts.journal);
+    if (this.opts.deterministic === undefined)
+      throw new SandboxError('misuse', 'recording needs a deterministic sandbox');
+    opts.journal.push({
+      type: 'run',
+      engine: this.buildHash(),
+      code,
+      params,
+      hash: this.canonicalHash(),
+    });
+    this.journal = new Journal('record', opts.journal);
   }
 
   /**
@@ -1714,7 +1910,7 @@ export class Sandbox {
    * instance is gone then.
    */
   private abandon(e: unknown): void {
-    if (this.dead === null && !(e instanceof SandboxError && e.kind === "trap")) {
+    if (this.dead === null && !(e instanceof SandboxError && e.kind === 'trap')) {
       this.guard(() => this.x.vm_abort(this.vm));
     }
   }
@@ -1765,7 +1961,7 @@ export class Sandbox {
     this.active = null;
     if (this.dead === null) {
       this.x.vm_free(this.vm);
-      this.dead = "disposed";
+      this.dead = 'disposed';
     }
   }
 
@@ -1777,7 +1973,7 @@ export class Sandbox {
   // ---- internals ---------------------------------------------------------------------
 
   private alive(): void {
-    if (this.dead !== null) throw new SandboxError("misuse", `sandbox is unusable: ${this.dead}`);
+    if (this.dead !== null) throw new SandboxError('misuse', `sandbox is unusable: ${this.dead}`);
   }
 
   /** Runs `f` and turns a wasm trap into a SandboxError; the sandbox is dead afterwards. */
@@ -1789,14 +1985,14 @@ export class Sandbox {
       if (e instanceof WebAssembly.RuntimeError) {
         const msg = trapText(this.x, e);
         this.dead = `trapped (${msg})`;
-        throw new SandboxError("trap", `djs-wasm trapped: ${msg}`);
+        throw new SandboxError('trap', `djs-wasm trapped: ${msg}`);
       }
       throw e;
     }
   }
 
   private check(h: number, kind: SandboxErrorKind): number {
-    if (h === 0) throw new SandboxError(kind, outText(this.x) || "out of memory");
+    if (h === 0) throw new SandboxError(kind, outText(this.x) || 'out of memory');
     return h;
   }
 
@@ -1818,11 +2014,15 @@ export class Sandbox {
       this.fnNames.push(name);
       id = this.fnNames.length;
     }
-    if (typeof f === "function") {
+    if (typeof f === 'function') {
       this.fns.set(id, f);
       this.hooks.delete(id);
     } else {
-      if (!async || typeof f?.call !== "function") throw new SandboxError("misuse", `host function ${name}: not a function or { call, save, resume }`);
+      if (!async || typeof f?.call !== 'function')
+        throw new SandboxError(
+          'misuse',
+          `host function ${name}: not a function or { call, save, resume }`,
+        );
       this.fns.set(id, f.call);
       this.hooks.set(id, f);
     }
@@ -1830,9 +2030,14 @@ export class Sandbox {
     // the sandbox bound. A redefinition makes a new one only if its kind changes.
     const old = this.fnHandles.get(id);
     if (old !== undefined && this.fnAsync.get(id) === async) return old;
-    const shortName = name.slice(name.lastIndexOf(".") + 1);
+    const shortName = name.slice(name.lastIndexOf('.') + 1);
     const len = this.stageText(shortName);
-    const h = this.check(async ? this.x.vm_new_async_host_function(this.vm, id, len) : this.x.vm_new_host_function(this.vm, id, len), "memory");
+    const h = this.check(
+      async
+        ? this.x.vm_new_async_host_function(this.vm, id, len)
+        : this.x.vm_new_host_function(this.vm, id, len),
+      'memory',
+    );
     if (old !== undefined) this.x.vm_handle_free(this.vm, old);
     this.fnHandles.set(id, h);
     this.fnAsync.set(id, async);
@@ -1841,7 +2046,7 @@ export class Sandbox {
 
   private defineOn(obj: number, name: string, value: number): void {
     if (this.x.vm_define(this.vm, obj, this.stageText(name), value) !== 0) {
-      throw new SandboxError("memory", `cannot define ${name}`);
+      throw new SandboxError('memory', `cannot define ${name}`);
     }
   }
 
@@ -1849,12 +2054,12 @@ export class Sandbox {
   private toHandle(v: unknown): number {
     if (v === undefined) return 0;
     const bytes = encode(v);
-    if (typeof v === "string" && v.length >= IN_PLACE_MIN) {
+    if (typeof v === 'string' && v.length >= IN_PLACE_MIN) {
       const h = stringInPlace(this.x, this.vm, v, bytes);
       if (h !== 0) return h;
     }
     this.stage(bytes);
-    return this.check(this.x.vm_decode_wire(this.vm, bytes.length), "memory");
+    return this.check(this.x.vm_decode_wire(this.vm, bytes.length), 'memory');
   }
 
   private arena(): Uint8Array {
@@ -1878,8 +2083,14 @@ export class Sandbox {
   }
 
   /** Compiles `code` and starts the call; returns nothing (the VM holds the call). */
-  private enter(code: string, params: Record<string, unknown>, script = false, filename?: string, typescript = false): void {
-    if (this.active !== null) throw new SandboxError("misuse", "a run is in progress");
+  private enter(
+    code: string,
+    params: Record<string, unknown>,
+    script = false,
+    filename?: string,
+    typescript = false,
+  ): void {
+    if (this.active !== null) throw new SandboxError('misuse', 'a run is in progress');
     this.guard(() => {
       const x = this.x;
       const vm = this.vm;
@@ -1887,15 +2098,20 @@ export class Sandbox {
       // objects the sandbox owns.
       const bound = script ? [] : Object.entries(this.opts.bindings ?? {});
       const boundHandles = bound.map(([p, identity]) => {
-        if (Object.hasOwn(params, p)) throw new SandboxError("misuse", `parameter ${p} is both a run parameter and a binding`);
+        if (Object.hasOwn(params, p))
+          throw new SandboxError('misuse', `parameter ${p} is both a run parameter and a binding`);
         const h = this.hostValue(identity);
-        if (h === undefined) throw new SandboxError("misuse", `binding ${p}: no host function or namespace ${identity}`);
+        if (h === undefined)
+          throw new SandboxError(
+            'misuse',
+            `binding ${p}: no host function or namespace ${identity}`,
+          );
         return h;
       });
       const names = [...Object.keys(params), ...bound.map(([p]) => p)];
-      const handles = Object.values(params).map((v) => this.toHandle(v));
-      const name = textEncoder.encode(filename ?? "");
-      const head = textEncoder.encode(names.join("\n"));
+      const handles = Object.values(params).map(v => this.toHandle(v));
+      const name = textEncoder.encode(filename ?? '');
+      const head = textEncoder.encode(names.join('\n'));
       const src = textEncoder.encode(code);
       const all = new Uint8Array(name.length + head.length + src.length);
       all.set(name);
@@ -1903,19 +2119,22 @@ export class Sandbox {
       all.set(src, name.length + head.length);
       this.stage(all);
       const o = this.opts;
-      const goal = (o.debugger ? 16 : 0) |
+      const goal =
+        (o.debugger ? 16 : 0) |
         (script
-          ? typescript ? 2 : 0
+          ? typescript
+            ? 2
+            : 0
           : 1 |
             (o.typescript ? 2 : 0) |
             (o.experimentalDecorators || o.emitDecoratorMetadata ? 4 : 0) |
             (o.emitDecoratorMetadata ? 8 : 0));
       const f = x.vm_compile_file(vm, goal, name.length, head.length, src.length);
-      if (f !== 0 && !script) rememberScript(filename || "sandbox.js", code);
+      if (f !== 0 && !script) rememberScript(filename || 'sandbox.js', code);
       if (f === 0) {
         const msg = outText(x);
         for (const h of handles) if (h !== 0) x.vm_handle_free(vm, h);
-        throw new SandboxError(msg.startsWith("SyntaxError") ? "syntax" : "memory", msg);
+        throw new SandboxError(msg.startsWith('SyntaxError') ? 'syntax' : 'memory', msg);
       }
       const argv = [...handles, ...boundHandles];
       const args = new Uint8Array(4 * argv.length);
@@ -1925,7 +2144,7 @@ export class Sandbox {
       const r = x.vm_call(vm, f, 0, argv.length);
       x.vm_handle_free(vm, f);
       for (const h of handles) if (h !== 0) x.vm_handle_free(vm, h);
-      if (r !== 0) throw new SandboxError("misuse", "a call is already in progress");
+      if (r !== 0) throw new SandboxError('misuse', 'a call is already in progress');
     });
   }
 
@@ -1969,7 +2188,7 @@ export class Sandbox {
           const ps = x.vm_promise_state(vm, h);
           if (ps === 1) {
             x.vm_handle_free(vm, h);
-            throw new SandboxError("threw", "the result is a promise that never settles");
+            throw new SandboxError('threw', 'the result is a promise that never settles');
           }
           if (ps >= 2) {
             const r = outWords(x, 1)[0];
@@ -1978,37 +2197,38 @@ export class Sandbox {
             threw = ps === 3;
           }
           const value = this.readHandle(h);
-          const message = threw ? this.display(h) : "";
+          const message = threw ? this.display(h) : '';
           x.vm_handle_free(vm, h);
           return { value, message, threw };
         });
         const { value, message, threw } = outcome;
         if (j) {
-          const end = { type: "end" as const, ok: !threw, value: threw ? message : value };
+          const end = { type: 'end' as const, ok: !threw, value: threw ? message : value };
           j.finish(end, this.canonicalHash());
         }
-        if (threw) throw new SandboxError("threw", message, value);
+        if (threw) throw new SandboxError('threw', message, value);
         this.checkRejections();
         return value;
       }
       if (st === STATUS_OUT_OF_FUEL) {
         if (run.used >= maxFuel) {
           // `run` abandons the call (vm_abort), so the sandbox stays usable.
-          throw new SandboxError("fuel", `out of fuel after ${run.used} units`);
+          throw new SandboxError('fuel', `out of fuel after ${run.used} units`);
         }
         continue;
       }
       if (st === STATUS_HOST_OUT_OF_MEMORY) {
         // The host (wasm memory) could not back the heap below its cap: not a script
         // error. The VM abandoned the call and is usable again (D1690).
-        throw new SandboxError("memory", "out of host memory");
+        throw new SandboxError('memory', 'out of host memory');
       }
       if (st === STATUS_IDLE) {
         this.checkRejections();
         return IDLE;
       }
       if (st !== STATUS_HOST_CALL) return undefined;
-      if (run.used >= maxFuel) throw new SandboxError("fuel", `out of fuel after ${run.used} units`);
+      if (run.used >= maxFuel)
+        throw new SandboxError('fuel', `out of fuel after ${run.used} units`);
       const { callId, fnId, args } = this.guard(() => {
         const argc = x.vm_host_call(vm);
         return this.readCall(argc);
@@ -2016,11 +2236,11 @@ export class Sandbox {
       let ok = true;
       let result: unknown;
       const fn = this.fnNames[fnId - 1];
-      const journaled = j !== null && !fn?.startsWith("console.");
+      const journaled = j !== null && !fn?.startsWith('console.');
       try {
-        if (journaled && j.mode === "replay") {
+        if (journaled && j.mode === 'replay') {
           j.issued++;
-          const e = j.take("sync");
+          const e = j.take('sync');
           j.expectCall(e.fn, e.args, fn, args);
           if (!e.ok) throw errorFromJson(e.value);
           result = e.value;
@@ -2032,13 +2252,13 @@ export class Sandbox {
           }
         }
       } catch (e) {
-        if (e instanceof SandboxError && (e.kind === "trap" || e.kind === "diverged")) throw e;
+        if (e instanceof SandboxError && (e.kind === 'trap' || e.kind === 'diverged')) throw e;
         ok = false;
         result = e;
       }
-      if (journaled && j.mode === "record") {
+      if (journaled && j.mode === 'record') {
         j.issued++;
-        j.push({ type: "sync", fn, args, ok, value: errorJson(ok, result) });
+        j.push({ type: 'sync', fn, args, ok, value: errorJson(ok, result) });
       }
       this.complete(callId, ok, result, false);
     }
@@ -2058,7 +2278,7 @@ export class Sandbox {
       const x = this.x;
       const n = x.vm_take_unhandled_rejections(this.vm);
       const handles = outWords(x, n);
-      return handles.map((h) => {
+      return handles.map(h => {
         const value = this.readHandle(h);
         const message = this.display(h);
         x.vm_handle_free(this.vm, h);
@@ -2066,14 +2286,18 @@ export class Sandbox {
       });
     });
     if (reasons.length === 0) return;
-    const mode = this.opts.unhandledRejections ?? "warn";
-    if (mode === "throw") {
+    const mode = this.opts.unhandledRejections ?? 'warn';
+    if (mode === 'throw') {
       const first = reasons[0];
-      throw new SandboxError("threw", `Possibly unhandled promise rejection: ${first.message}`, first.value);
+      throw new SandboxError(
+        'threw',
+        `Possibly unhandled promise rejection: ${first.message}`,
+        first.value,
+      );
     }
     for (const r of reasons) {
-      if (mode === "collect") this.rejections.push(r.value);
-      else this.cons.warn("Possibly unhandled promise rejection:", r.message);
+      if (mode === 'collect') this.rejections.push(r.value);
+      else this.cons.warn('Possibly unhandled promise rejection:', r.message);
     }
   }
 
@@ -2084,7 +2308,7 @@ export class Sandbox {
   private setClock(): void {
     if (this.clock !== undefined) return;
     const { now, timeZoneOffset } = this.opts;
-    const ms = typeof now === "number" ? now : (now ?? Date.now)();
+    const ms = typeof now === 'number' ? now : (now ?? Date.now)();
     this.x.vm_set_now(this.vm, ms);
     this.x.vm_set_time_zone_offset(this.vm, timeZoneOffset ?? -new Date(ms).getTimezoneOffset());
   }
@@ -2093,8 +2317,9 @@ export class Sandbox {
   private invoke(fnId: number, args: unknown[], call?: HostCall): unknown {
     const f = this.fns.get(fnId);
     if (f === undefined) throw new TypeError(`unknown host function ${fnId}`);
-    if (this.hooks.has(fnId)) return f.apply(call ?? newCall(fnId, this.fnNames[fnId - 1], args).call, args);
-    const isConsole = this.fnNames[fnId - 1]?.startsWith("console.");
+    if (this.hooks.has(fnId))
+      return f.apply(call ?? newCall(fnId, this.fnNames[fnId - 1], args).call, args);
+    const isConsole = this.fnNames[fnId - 1]?.startsWith('console.');
     return f(...(isConsole ? args.map(consoleArg) : args));
   }
 
@@ -2126,7 +2351,13 @@ export class Sandbox {
    * kind with the host error's message. A value the wire format cannot carry becomes
    * such an error too.
    */
-  private complete(callId: number, ok: boolean, value: unknown, async: boolean, at?: number): number | undefined {
+  private complete(
+    callId: number,
+    ok: boolean,
+    value: unknown,
+    async: boolean,
+    at?: number,
+  ): number | undefined {
     const x = this.x;
     const vm = this.vm;
     let h = 0;
@@ -2134,7 +2365,7 @@ export class Sandbox {
       try {
         h = this.guard(() => this.toHandle(value));
       } catch (e) {
-        if (e instanceof SandboxError && e.kind === "trap") throw e;
+        if (e instanceof SandboxError && e.kind === 'trap') throw e;
         ok = false;
         value = e;
       }
@@ -2144,7 +2375,7 @@ export class Sandbox {
       h = this.guard(() => {
         const msg = this.stageText(e instanceof Error ? e.message : String(e));
         const kind = e instanceof TypeError ? 1 : e instanceof RangeError ? 2 : 0;
-        return this.check(x.vm_new_error(vm, kind, msg), "memory");
+        return this.check(x.vm_new_error(vm, kind, msg), 'memory');
       });
     }
     return this.guard(() => {
@@ -2153,7 +2384,8 @@ export class Sandbox {
         // Deterministic mode: the result's time (a replay's: the recorded one), applied
         // when the VM takes the result (D1670).
         const { now } = this.opts;
-        this.clock = at ?? Math.max(this.clock, typeof now === "number" ? now : (now ?? Date.now)());
+        this.clock =
+          at ?? Math.max(this.clock, typeof now === 'number' ? now : (now ?? Date.now)());
         clock = this.clock;
         x.vm_resolve_host_call_at(vm, callId, ok ? 1 : 0, h, this.clock);
       } else {
@@ -2179,9 +2411,10 @@ function stateJson(id: number, state: unknown): string {
   try {
     json = JSON.stringify(state);
   } catch (e) {
-    throw new SandboxError("misuse", `the state of call ${id} is not JSON data: ${String(e)}`);
+    throw new SandboxError('misuse', `the state of call ${id} is not JSON data: ${String(e)}`);
   }
-  if (json === undefined) throw new SandboxError("misuse", `the state of call ${id} is not JSON data`);
+  if (json === undefined)
+    throw new SandboxError('misuse', `the state of call ${id} is not JSON data`);
   return json;
 }
 
@@ -2192,9 +2425,9 @@ class Journal {
   /** Async results delivered, non-console host calls made. */
   delivered = 0;
   issued = 0;
-  readonly mode: "record" | "replay";
+  readonly mode: 'record' | 'replay';
   readonly entries: JournalEntry[];
-  constructor(mode: "record" | "replay", entries: JournalEntry[]) {
+  constructor(mode: 'record' | 'replay', entries: JournalEntry[]) {
     this.mode = mode;
     this.entries = entries;
   }
@@ -2204,64 +2437,96 @@ class Journal {
   }
 
   expect(ok: boolean, why: () => string): void {
-    if (!ok) throw new SandboxError("diverged", `replay diverged: ${why()}`);
+    if (!ok) throw new SandboxError('diverged', `replay diverged: ${why()}`);
   }
 
   /** Replay: takes the next entry, which must be of `type`. */
-  take<T extends JournalEntry["type"]>(type: T): Extract<JournalEntry, { type: T }> {
+  take<T extends JournalEntry['type']>(type: T): Extract<JournalEntry, { type: T }> {
     const e = this.entries[this.next];
-    this.expect(e?.type === type, () => `the script needs ${type === "sync" ? "a host call" : "a result"} here, the journal has ${e ? `a ${e.type} entry` : "nothing more"} (entry ${this.next})`);
+    this.expect(
+      e?.type === type,
+      () =>
+        `the script needs ${type === 'sync' ? 'a host call' : 'a result'} here, the journal has ${e ? `a ${e.type} entry` : 'nothing more'} (entry ${this.next})`,
+    );
     this.next++;
     return e as Extract<JournalEntry, { type: T }>;
   }
 
   expectCall(fn: string, args: unknown[], gotFn: string, gotArgs: unknown[]): void {
-    this.expect(fn === gotFn && sameValue(args, gotArgs), () => `the script called ${gotFn}(${stable(gotArgs)}), the recording ${fn}(${stable(args)})`);
+    this.expect(
+      fn === gotFn && sameValue(args, gotArgs),
+      () => `the script called ${gotFn}(${stable(gotArgs)}), the recording ${fn}(${stable(args)})`,
+    );
   }
 
   /** Replay at an idle point: the recorded checks for this many delivered results. */
   checkIdle(hash: string): void {
-    for (let e = this.entries[this.next]; e?.type === "check"; e = this.entries[this.next]) {
-      this.expect(e.delivered === this.delivered, () => `the recording was idle after ${e.delivered} results, the replay after ${this.delivered}`);
-      this.expect(e.issued === this.issued, () => `${this.issued} host calls made, the recording made ${e.issued} (after ${e.delivered} results)`);
+    for (let e = this.entries[this.next]; e?.type === 'check'; e = this.entries[this.next]) {
+      this.expect(
+        e.delivered === this.delivered,
+        () =>
+          `the recording was idle after ${e.delivered} results, the replay after ${this.delivered}`,
+      );
+      this.expect(
+        e.issued === this.issued,
+        () =>
+          `${this.issued} host calls made, the recording made ${e.issued} (after ${e.delivered} results)`,
+      );
       this.expect(e.hash === hash, () => `the state after ${e.delivered} results differs`);
       this.next++;
     }
   }
 
   /** At the end: records or checks the `end` entry. */
-  finish(end: { type: "end"; ok: boolean; value: unknown }, hash: string): void {
+  finish(end: { type: 'end'; ok: boolean; value: unknown }, hash: string): void {
     const full: JournalEntry = { ...end, delivered: this.delivered, issued: this.issued, hash };
-    if (this.mode === "record") {
+    if (this.mode === 'record') {
       this.push(full);
       return;
     }
-    while (this.entries[this.next]?.type === "check") this.next++;
-    const e = this.take("end");
-    this.expect(e.ok === full.ok && sameValue(e.value, full.value), () => `the run ended ${full.ok ? "with" : "throwing"} ${stable(full.value)}, the recording ${e.ok ? "with" : "throwing"} ${stable(e.value)}`);
-    this.expect(e.issued === full.issued && e.delivered === full.delivered, () => "a different number of host calls or results");
-    this.expect(e.hash === full.hash, () => "the final state differs");
+    while (this.entries[this.next]?.type === 'check') this.next++;
+    const e = this.take('end');
+    this.expect(
+      e.ok === full.ok && sameValue(e.value, full.value),
+      () =>
+        `the run ended ${full.ok ? 'with' : 'throwing'} ${stable(full.value)}, the recording ${e.ok ? 'with' : 'throwing'} ${stable(e.value)}`,
+    );
+    this.expect(
+      e.issued === full.issued && e.delivered === full.delivered,
+      () => 'a different number of host calls or results',
+    );
+    this.expect(e.hash === full.hash, () => 'the final state differs');
   }
 }
 
 /** A host value as a journal records it: errors as `{ name, message }`. */
 function errorJson(ok: boolean, v: unknown): unknown {
   if (ok) return v;
-  return v instanceof Error ? { name: v.name, message: v.message } : { name: "Error", message: String(v) };
+  return v instanceof Error
+    ? { name: v.name, message: v.message }
+    : { name: 'Error', message: String(v) };
 }
 
 /** The host error a journal entry stands for, of the same kind. */
 function errorFromJson(v: unknown): Error {
   const { name, message } = (v ?? {}) as { name?: string; message?: string };
-  const E = name === "TypeError" ? TypeError : name === "RangeError" ? RangeError : Error;
-  return new E(message ?? "");
+  const E = name === 'TypeError' ? TypeError : name === 'RangeError' ? RangeError : Error;
+  return new E(message ?? '');
 }
 
 /** A stable text form of a host value, for comparing and messages. */
 function stable(v: unknown): string {
-  return JSON.stringify(v, (_k, x) =>
-    typeof x === "bigint" ? `${x}n` : x === undefined ? "<undefined>" : x instanceof Uint8Array ? Array.from(x) : x,
-  ) ?? "<undefined>";
+  return (
+    JSON.stringify(v, (_k, x) =>
+      typeof x === 'bigint'
+        ? `${x}n`
+        : x === undefined
+          ? '<undefined>'
+          : x instanceof Uint8Array
+            ? Array.from(x)
+            : x,
+    ) ?? '<undefined>'
+  );
 }
 
 function sameValue(a: unknown, b: unknown): boolean {

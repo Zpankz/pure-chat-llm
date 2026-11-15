@@ -205,6 +205,7 @@ export const DEFAULT_SETTINGS: PureChatLLMSettings = {
   resolveFilesForChatAnalysis: false,
   autoConcatMessagesFromSameRole: true,
   agentMode: true,
+  commandAllowList: [],
   useYAMLFrontMatter: false,
   enabledToolClassifications: { Vault: true, UI: true, System: true, AI: true, MCP: true },
   blueFileResolution: {

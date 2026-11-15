@@ -59,6 +59,7 @@ export const TOOL_LAYERS: Record<string, ToolLayer[]> = {
   manage_plugin_settings: ['chat'],
   generate_image: FOREGROUND,
   suno_music_gen: FOREGROUND,
+  run_obsidian_command: FOREGROUND,
 };
 
 /**
@@ -83,6 +84,7 @@ export function layerForRole(role: string | undefined): ToolLayer {
       return 'orchestrator';
     case 'voice':
     case 'orchestrator':
+    case 'direct-voice':
       return 'voice';
     default:
       return 'chat';
@@ -123,7 +125,8 @@ export const FORMAT_PARAMETER = {
   type: 'string',
   description:
     '`text` (default) for reading; `json` for one compact JSON object with stable keys, for scripts and workers.',
-  enum: ['text', 'json'],
+  // Widened so it fits `ToolParameter.enum` inside `as const` tool parameters.
+  enum: ['text', 'json'] as string[],
 } as const;
 
 /**

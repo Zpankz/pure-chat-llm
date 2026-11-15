@@ -18,6 +18,8 @@ export interface PureChatLLMSettings {
   resolveFilesForChatAnalysis: boolean;
   autoConcatMessagesFromSameRole: boolean;
   agentMode: boolean;
+  /** Obsidian command ids the agent may run with run_obsidian_command (empty turns it off). */
+  commandAllowList: string[];
   useYAMLFrontMatter: boolean;
   enabledToolClassifications: {
     Vault: boolean;

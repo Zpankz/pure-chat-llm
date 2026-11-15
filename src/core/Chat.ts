@@ -12,6 +12,7 @@ import { GlobFilesTool } from '../tools/GlobFiles';
 import { ImageGenerationTool } from '../tools/ImageGen';
 import { ListFoldersTool } from '../tools/ListFolders';
 import { ManageWorkspaceTool } from '../tools/ManageWorkspace';
+import { RunCommandTool } from '../tools/RunCommand';
 import { PatchNoteTool } from '../tools/PatchNote';
 import { PluginSettingsTool } from '../tools/PluginSettings';
 import { ReadFileTool } from '../tools/ReadFile';
@@ -88,9 +89,11 @@ export class PureChatLLMChat {
    * What this chat's model is for: `agent` (ordinary chat with tools), `orchestrator` (a voice
    * model that delegates to background sub-agents itself), `voice` (the voice layer of the
    * layered setup, which relays to the orchestrator agent), `orchestrator-agent` (the layered
-   * orchestrator) or `subagent` (a background task). Layer tools are only offered in their role.
+   * orchestrator), `subagent` (a background task) or `direct-voice` (a voice model using tools
+   * itself, with no orchestrator). Layer tools are only offered in their role.
    */
-  role: 'agent' | 'orchestrator' | 'voice' | 'orchestrator-agent' | 'subagent' = 'agent';
+  role: 'agent' | 'orchestrator' | 'voice' | 'orchestrator-agent' | 'subagent' | 'direct-voice' =
+    'agent';
   /** Task id when this chat runs a sub-agent. */
   subAgentTaskId?: string;
   /** The task this chat runs, when it is a sub-agent (writes and reviewers read its request). */
@@ -231,6 +234,7 @@ export class PureChatLLMChat {
       .registerTool(ShowNoticeTool)
       .registerTool(PluginSettingsTool)
       .registerTool(SunoTool)
+      .registerTool(RunCommandTool)
       .registerTool(CodeModeTool)
       .registerTool(ActivateSkillTool)
       .registerTool(ReadSkillFileTool);

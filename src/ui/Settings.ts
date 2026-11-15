@@ -240,6 +240,28 @@ export class PureChatLLMSettingTab extends PluginSettingTab {
       .addSetting(
         setting =>
           void setting
+            .setName('Commands the agent may run')
+            .setDesc(
+              'One command id per line. The agent can run only these, and never commands that delete, close, reset or quit. Leave empty to turn the tool off.',
+            )
+            .addTextArea(text =>
+              text
+                .setPlaceholder('One command id per line')
+                .setValue((settings.commandAllowList ?? []).join('\n'))
+                .onChange(async value =>
+                  this.sett(
+                    'commandAllowList',
+                    value
+                      .split(/[\n,]/)
+                      .map(v => v.trim())
+                      .filter(Boolean),
+                  ),
+                ),
+            ),
+      )
+      .addSetting(
+        setting =>
+          void setting
             .setName('Realtime system prompt file')
             .setDesc(
               'Path to a file containing the system prompt for voice calls. If empty or not found, defaults to built-in prompts.',
