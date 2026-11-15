@@ -57,6 +57,8 @@ export const TOOL_LAYERS: Record<string, ToolLayer[]> = {
   get_active_context: ['chat', 'voice', 'orchestrator', 'codemode'],
   // Writes: follow the write policy for whoever calls them.
   create_obsidian_note: WRITES,
+  // Deprecated alias of write_note_section in append mode.
+  patch_note: WRITES,
   write_note_section: WRITES,
   replace_in_note: WRITES,
   delete_obsidian_note: WRITES,

@@ -214,6 +214,8 @@ export class PureChatLLMChat {
     for (const tool of [...AGENT_TOOLS, ...LAYER_TOOLS, NewTopicTool]) {
       this.toolregistry.registerTool(tool);
     }
+    // Deprecated: kept so chats that name it still work, but not offered by default.
+    this.toolregistry.disable('patch_note');
     this.toolregistry
       .registerTool(ImageGenerationTool)
       .registerTool(CreateNoteTool)

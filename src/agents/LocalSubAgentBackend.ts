@@ -88,9 +88,9 @@ export class LocalSubAgentBackend implements SubAgentBackend {
       p === 'allow'
         ? 'go ahead'
         : p === 'peer'
-          ? 'need two independent reviewers to approve (a rejection explains why; revise or ask the orchestrator)'
+          ? 'need two independent reviewers to approve (a rejection explains why; revise or ask the orchestrator; large removals, changes to a note’s type and deletes of well-linked notes are held for the user)'
           : p === 'review'
-            ? 'wait for the user to review'
+            ? 'are saved as proposals for the user to review later (not applied)'
             : 'are not allowed';
     const parts = [
       orchestrator.subAgentInstructions,

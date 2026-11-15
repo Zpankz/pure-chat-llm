@@ -24,6 +24,7 @@ import { DEFAULT_MCP_SERVER, McpManager } from './mcp/McpManager';
 import { SubAgentManager } from './agents/SubAgentManager';
 import { OrchestratorAgent } from './agents/OrchestratorAgent';
 import { CallRecorder } from './agents/CallRecorder';
+import { pendingProposals, ProposalPicker } from './ui/ProposalPicker';
 import { mergeLayers } from './agents/layers';
 import { ChatGPTAuth } from './auth/ChatGPTAuth';
 import { GoogleAuth } from './auth/GoogleAuth';
@@ -314,6 +315,16 @@ export default class PureChatLLM extends Plugin {
    * @returns {void}
    */
   private setupChatCommandHandlers() {
+    this.addCommand({
+      id: 'review-proposals',
+      name: 'Review proposals from background tasks',
+      icon: 'git-pull-request',
+      callback: () => {
+        const proposals = pendingProposals(this.app);
+        if (!proposals.length) new Notice('No proposals are waiting for review.');
+        else new ProposalPicker(this.app, proposals).open();
+      },
+    });
     this.addCommand({
       id: 'complete-chat-response',
       name: 'Complete chat response',

@@ -285,7 +285,8 @@ export interface LayerSettings {
  * - `allow`: the sub-agent writes straight away.
  * - `peer`: two independent reviewer agents see only the proposed change; it is made only if both
  *   approve.
- * - `review`: the Edit Review window asks you.
+ * - `review`: the change is saved as a proposal note for you to review later; nothing is applied
+ *   until you approve it (command "Review proposals from background tasks").
  * - `deny`: sub-agents can't do it.
  */
 export type SubAgentWritePolicy = 'allow' | 'peer' | 'review' | 'deny';

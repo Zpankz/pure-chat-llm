@@ -393,6 +393,8 @@ For files that are exceptionally long:
 
 # Tool Guide: patch_note
 
+> Deprecated: use `write_note_section`, which appends under a heading (creating it if missing), prepends, or replaces a section. `patch_note` is kept only so older chats that name it still work.
+
 ## Overview
 
 The `patch_note` tool allows the LLM to append new content to a specific note in the vault. Unlike `replace_in_note`, which modifies existing text, `patch_note` is additive, either inserting text under a specific Markdown heading or appending it to the very end of the file. This is the primary tool for iterative updates and growing notes over time.

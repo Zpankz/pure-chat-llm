@@ -323,7 +323,7 @@ export function renderOrchestratorSettings(
   const policies: Record<SubAgentWritePolicy, string> = {
     allow: 'Go ahead',
     peer: 'Two reviewers must agree',
-    review: 'Ask me (edit review window)',
+    review: 'Save as a proposal for me to review',
     deny: 'Not allowed',
   };
   const writeLabels = {
