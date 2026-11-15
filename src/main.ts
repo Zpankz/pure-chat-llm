@@ -21,6 +21,10 @@ import { DEFAULT_SETTINGS, EmptyApiKey } from './assets/constants';
 import { mergeVoiceSettings } from './realtime/voiceCatalog';
 import { DEFAULT_MCP_SERVER, McpManager } from './mcp/McpManager';
 import { SubAgentManager } from './agents/SubAgentManager';
+import { OrchestratorAgent } from './agents/OrchestratorAgent';
+import { mergeLayers } from './agents/layers';
+import { ChatGPTAuth } from './auth/ChatGPTAuth';
+import { hydrateMcpTokens, withoutSecrets } from './auth/mcpTokens';
 import { handleOAuthCallback, OAUTH_ACTION } from './mcp/McpOAuth';
 import { SkillsCatalog } from './skills/SkillsCatalog';
 import { ObsidianFileSystemAdapter } from './adapters/ObsidianFileSystemAdapter';
@@ -87,6 +91,10 @@ export default class PureChatLLM extends Plugin {
   mcp: McpManager;
   /** Background sub-agents run for orchestrators (voice calls). */
   agents: SubAgentManager;
+  /** The layered setup's orchestrator agent (between the voice layer and the workers). */
+  orchestrator: OrchestratorAgent;
+  /** Sign in with ChatGPT for layers that run on the user's ChatGPT plan. */
+  chatgpt: ChatGPTAuth;
   /** Agent Skills discovered in the vault. */
   skills: SkillsCatalog;
   /** Small key/value store that persists code mode `store()` values for this session. */
@@ -117,6 +125,8 @@ export default class PureChatLLM extends Plugin {
     // Remote MCP servers: discover tools in the background so startup stays fast.
     this.mcp = new McpManager(this);
     this.agents = new SubAgentManager(this);
+    this.orchestrator = new OrchestratorAgent(this);
+    this.chatgpt = new ChatGPTAuth(this.app);
     // OAuth sign-in for remote MCP servers returns to obsidian://pure-chat-llm-oauth.
     this.registerObsidianProtocolHandler(OAUTH_ACTION, params => handleOAuthCallback(params));
     this.app.workspace.onLayoutReady(() => void this.mcp.refreshAll(false));
@@ -807,6 +817,7 @@ export default class PureChatLLM extends Plugin {
           ...DEFAULT_SETTINGS.orchestrator.writes,
           ...loadedData.orchestrator?.writes,
         },
+        layers: mergeLayers(loadedData.orchestrator),
       },
       graph: { ...DEFAULT_SETTINGS.graph, ...loadedData.graph },
     };
@@ -858,6 +869,8 @@ export default class PureChatLLM extends Plugin {
         this.settings.endpoints.find(e => e.name === endpoint.name) ||
         this.settings.endpoints.push(endpoint),
     );
+    // MCP sign-in tokens live in secret storage; older versions saved them in this file.
+    if (hydrateMcpTokens(this.app, this.settings.mcpServers)) await this.saveSettings();
   }
 
   /**
@@ -878,7 +891,7 @@ export default class PureChatLLM extends Plugin {
         .map(key => [key, this.settings.chatTemplates[key]])
         .filter(([key, value]) => key && value),
     ) as { [key: string]: string };
-    await this.saveData(this.settings);
+    await this.saveData(withoutSecrets(this.app, this.settings));
   }
 
   /**
@@ -886,6 +899,7 @@ export default class PureChatLLM extends Plugin {
    */
   onunload() {
     this.mcp?.dispose();
+    this.orchestrator?.dispose();
     this.agents?.dispose();
   }
 }

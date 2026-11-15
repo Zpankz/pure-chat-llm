@@ -28,6 +28,8 @@ import { selectVoiceTools, VOICE_TOOL_GUIDANCE } from '../realtime/toolAdapters'
 import {
   describeTask,
   ORCHESTRATOR_GUIDANCE,
+  VOICE_LAYER_GUIDANCE,
+  VOICE_LAYER_TOOL_NAMES,
   ORCHESTRATOR_TOOL_NAMES,
 } from '../tools/Orchestrator';
 import type { NoticeMode, SubAgentEvent } from '../agents/types';
@@ -304,7 +306,7 @@ export class VoiceCallSideView extends ItemView {
    */
   private getDefaultSystemPrompt(): string {
     return this.plugin.settings.agentMode ||
-      this.plugin.settings.orchestrator.voiceRole === 'orchestrator'
+      this.plugin.settings.orchestrator.voiceRole !== 'direct'
       ? "You are a voice assistant for the user's Obsidian vault, a personal knowledge base of linked Markdown notes. Talk naturally and briefly."
       : 'You are a helpful voice assistant. Talk naturally and briefly.';
   }
@@ -418,15 +420,52 @@ export class VoiceCallSideView extends ItemView {
     );
   }
 
-  /** Speaks sub-agent events routed as interrupts and keeps the task list current. */
-  private watchAgents(): void {
+  /**
+   * GPT-Live client delegation in the layered setup: the hand-off goes to the orchestrator agent.
+   * @param transcript - Recent conversation.
+   */
+  private relayFromTranscript(transcript: string): Promise<string> {
+    const lines = transcript.split('\n').filter(Boolean);
+    const lastUser =
+      [...lines].reverse().find(l => l.startsWith('User:')) ?? lines[lines.length - 1] ?? '';
+    return Promise.resolve(
+      this.plugin.orchestrator.relay(lastUser.replace(/^User:\s*/, '') || transcript, true),
+    );
+  }
+
+  /**
+   * Speaks sub-agent events routed as interrupts and keeps the task list current. In the layered
+   * setup task events go to the orchestrator agent instead; the voice hears what the orchestrator
+   * says, plus the periodic progress summaries the user asked for.
+   * @param layered - Layered setup.
+   */
+  private watchAgents(layered = false): void {
     this.unwatchAgents();
     const agents = this.plugin.agents;
     this.stopAgentWatch.push(
-      agents.onInterrupt((event, mode) => void this.relayAgentEvent(event, mode)),
+      agents.onInterrupt((event, mode) => {
+        if (!layered || event.tick) void this.relayAgentEvent(event, mode);
+      }),
       agents.onChange(() => this.renderTasks()),
     );
     agents.setProgressInterval(this.plugin.settings.orchestrator.progressUpdateSeconds);
+    if (layered) {
+      const orchestrator = this.plugin.orchestrator;
+      orchestrator.setTranscriptSource(() =>
+        this.transcript
+          .filter(l => l.final && (l.role === 'user' || l.role === 'assistant'))
+          .map(l => `${l.role === 'user' ? 'User' : 'Assistant'}: ${l.text}`),
+      );
+      this.stopAgentWatch.push(
+        orchestrator.onSay((text, urgency) =>
+          text.startsWith('[Orchestrator activity]')
+            ? this.voiceCall?.notify(text, 'silent')
+            : void this.deliver(`[Orchestrator] ${text}`, 'Orchestrator', urgency, true),
+        ),
+        () => orchestrator.setTranscriptSource(null),
+      );
+      return;
+    }
     // Tell the model about anything that happened while no call was open.
     const held = agents.takeQueuedUpdates();
     if (held.length) this.voiceCall?.notify(held.map(formatAgentUpdate).join('\n'), 'pause');
@@ -439,11 +478,33 @@ export class VoiceCallSideView extends ItemView {
    * @param event - Sub-agent event.
    * @param mode - Delivery the routes chose.
    */
-  private async relayAgentEvent(event: SubAgentEvent, mode: NoticeMode): Promise<void> {
-    const text = formatAgentUpdate(event);
+  private relayAgentEvent(event: SubAgentEvent, mode: NoticeMode): Promise<void> {
+    const auto = (this.plugin.settings.orchestrator.routes[event.kind] ?? 'auto') === 'auto';
+    return this.deliver(
+      formatAgentUpdate(event),
+      `${event.title}: ${event.kind.replace('_', ' ')}`,
+      mode,
+      auto && !event.tick,
+    );
+  }
+
+  /**
+   * Passes an update to the voice model, cutting in only when it bears on what the user is
+   * saying right now (Hani's rule) and the timing is automatic.
+   * @param text - Update for the model.
+   * @param label - Line for the transcript.
+   * @param mode - Delivery.
+   * @param checkRelevance - Run the relevance check on `pause` updates.
+   */
+  private async deliver(
+    text: string,
+    label: string,
+    mode: NoticeMode,
+    checkRelevance: boolean,
+  ): Promise<void> {
     const o = this.plugin.settings.orchestrator;
     let finalMode = mode;
-    if (mode === 'pause' && (o.routes[event.kind] ?? 'auto') === 'auto') {
+    if (mode === 'pause' && checkRelevance) {
       const recent = this.transcript
         .filter(l => l.role === 'user' && (l.at ?? 0) > Date.now() - 10_000)
         .map(l => l.text)
@@ -454,7 +515,7 @@ export class VoiceCallSideView extends ItemView {
     }
     this.transcript.push({
       role: 'tool',
-      text: `${event.title}: ${event.kind.replace('_', ' ')}${finalMode === 'interrupt' ? ' (cutting in)' : ''}`,
+      text: `${label}${finalMode === 'interrupt' ? ' (cutting in)' : ''}`,
       final: true,
       at: Date.now(),
     });
@@ -520,11 +581,22 @@ export class VoiceCallSideView extends ItemView {
 
       await this.plugin.mcp?.freshenNativeTokens();
 
-      // 2. Tools: an orchestrator only gets the delegation tools; sub-agents do the work.
-      const orchestrator = this.plugin.settings.orchestrator.voiceRole === 'orchestrator';
+      // 2. Tools: the layered voice only relays; an orchestrator voice only delegates.
+      const role = this.plugin.settings.orchestrator.voiceRole;
+      const layered = role === 'layered';
+      const orchestrator = role === 'orchestrator';
       let tools: ToolDefinition[] = [];
       let nativeMcp = this.plugin.mcp?.nativeServers() ?? [];
-      if (orchestrator) {
+      if (layered) {
+        this.chat = new PureChatLLMChat(this.plugin);
+        this.chat.role = 'voice';
+        this.chat.registerAvailableTools();
+        this.toolExecutor = new ChatToolExecutor(this.chat);
+        tools = this.chat.toolregistry
+          .getEnabledDefinitions()
+          .filter(t => VOICE_LAYER_TOOL_NAMES.includes(t.function.name));
+        nativeMcp = [];
+      } else if (orchestrator) {
         this.chat = new PureChatLLMChat(this.plugin);
         this.chat.role = 'orchestrator';
         this.chat.registerAvailableTools();
@@ -552,7 +624,8 @@ export class VoiceCallSideView extends ItemView {
 
       // 3. Instructions
       let instructions = await this.getRealtimeSystemPrompt();
-      if (orchestrator) instructions += `\n\n${ORCHESTRATOR_GUIDANCE}`;
+      if (layered) instructions += `\n\n${VOICE_LAYER_GUIDANCE}`;
+      else if (orchestrator) instructions += `\n\n${ORCHESTRATOR_GUIDANCE}`;
       else if (tools.length || nativeMcp.length) instructions += `\n\n${VOICE_TOOL_GUIDANCE}`;
 
       const config: VoiceCallConfig = {
@@ -562,9 +635,11 @@ export class VoiceCallSideView extends ItemView {
         settings: voice,
         nativeMcp,
         runBackend: transcript =>
-          orchestrator
-            ? this.delegateFromTranscript(transcript)
-            : this.runClientBackend(transcript),
+          layered
+            ? this.relayFromTranscript(transcript)
+            : orchestrator
+              ? this.delegateFromTranscript(transcript)
+              : this.runClientBackend(transcript),
       };
 
       this.transcript = [];
@@ -577,7 +652,7 @@ export class VoiceCallSideView extends ItemView {
       );
 
       await this.voiceCall.startCall();
-      if (orchestrator) this.watchAgents();
+      if (layered || orchestrator) this.watchAgents(layered);
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
       console.error('Failed to start call:', msg);

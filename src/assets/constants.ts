@@ -136,6 +136,13 @@ export const ENDPOINTS = [
     getapiKey: 'https://console.x.ai',
   },
   {
+    name: 'Meta',
+    apiKey: EmptyApiKey,
+    defaultmodel: 'muse-spark-1.3',
+    endpoint: 'https://api.meta.ai/v1',
+    getapiKey: 'https://dev.meta.ai',
+  },
+  {
     name: 'Anthropic',
     apiKey: EmptyApiKey,
     defaultmodel: 'claude-3-7-sonnet-20250219',
@@ -222,8 +229,33 @@ export const DEFAULT_SETTINGS: PureChatLLMSettings = {
     djsMemoryLimitMb: 64,
   },
   orchestrator: {
-    voiceRole: 'orchestrator',
-    subAgentModel: '',
+    voiceRole: 'layered',
+    layers: {
+      // GPT-6.1 Sol on medium effort; with ChatGPT sign-in it runs on the user's ChatGPT plan.
+      orchestrator: { endpoint: 'OpenAI', model: 'gpt-6.1-sol', effort: 'medium', api: 'auto' },
+      // Meta's model list has no "Muse Ember 1.0 contributor"; this is the closest listed
+      // cheap Contributor model. Change it in settings when your account lists Ember.
+      worker: {
+        endpoint: 'Meta',
+        model: 'muse-spark-1.3-contributor',
+        effort: 'xhigh',
+        api: 'auto',
+      },
+      // Off by default. "Gemini 4 Hydrogen" has no public model id; Gemini 4 Argon is the
+      // released model.
+      evaluator: {
+        enabled: false,
+        endpoint: 'Gemini',
+        model: 'gemini-4-argon',
+        effort: 'high',
+        api: 'auto',
+      },
+    },
+    voiceContext: 'full',
+    relayTranscriptLines: 6,
+    taskSummaryChars: 600,
+    orchestratorMaxMessages: 80,
+    voiceSeesActivity: true,
     subAgentInstructions:
       'You are a background agent working inside the user’s Obsidian vault for an orchestrator that talks with the user. Complete the brief end to end with the tools, skills and code mode you have. Prefer code mode when a task needs several tool calls. To explore connections use traverse_graph (multi-hop, both directions, and it can follow only the vault’s typed relations with edge_types); read vault_ontology before relying on relation names; graph_cli has path, hubs and related commands, and when a code-mode traversal script works well, save it with graph_cli so it becomes a reusable command; for the notes in a folder use list_vault_folders with the folder name; search_vault can be limited to a folder. Before saying something is not in the vault, try another wording, the folder listing and the link graph. If you are blocked or a decision belongs to the user, call ask_orchestrator with one clear question. Use report_progress after major steps. Finish with a short, factual report: what you found or changed, with note paths, and anything left open.',
     maxSteps: 40,

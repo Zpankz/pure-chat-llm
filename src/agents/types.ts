@@ -48,6 +48,8 @@ export interface SubAgentEvent {
   at: number;
   /** Short text for the orchestrator (a question, a result summary, a reason). */
   text: string;
+  /** A periodic progress summary the user asked for ("keep me posted"), not a task event. */
+  tick?: boolean;
 }
 
 /**

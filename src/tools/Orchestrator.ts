@@ -11,6 +11,22 @@ export const ORCHESTRATOR_TOOL_NAMES = [
   'set_progress_updates',
 ];
 
+/** Tools of the voice layer in the layered setup. */
+export const VOICE_LAYER_TOOL_NAMES = [
+  'relay_to_orchestrator',
+  'orchestrator_activity',
+  'check_tasks',
+  'cancel_task',
+  'set_progress_updates',
+];
+
+/** Tools only the layered orchestrator agent gets. */
+export const ORCHESTRATOR_AGENT_TOOL_NAMES = [
+  'tell_user',
+  'read_task_thread',
+  'request_evaluation',
+];
+
 /** Names of tools only a sub-agent gets. */
 export const SUBAGENT_TOOL_NAMES = ['ask_orchestrator', 'report_progress'];
 
@@ -24,6 +40,19 @@ export const ORCHESTRATOR_GUIDANCE = [
   'Stay quiet between updates unless the user asks. If they say "keep me posted" or ask for updates every so often, call set_progress_updates; "stop the updates" sets it to 0.',
   'If you did not catch what the user said (noise, a cut-off sentence, or something that does not fit the conversation), say so and ask them to repeat it. Never act on a guess. If the user says you missed something, ask for it rather than inventing it.',
   'Ask one question at a time. Never read out markdown, code, links, file paths or long lists. If asked what you can do: you can hand any job in their vault, the web or connected tools to background agents, check on them, and relay what they find.',
+].join('\n');
+
+/**
+ * Instructions for the voice layer of the layered setup: a fast translator and filter between the
+ * user and the orchestrator agent, with light reasoning of its own.
+ */
+export const VOICE_LAYER_GUIDANCE = [
+  "You are the voice of the user's assistant in their Obsidian vault. Behind you is an orchestrator agent that plans and runs background workers. You translate and filter: you keep the conversation natural and pass on what matters.",
+  'Answer small talk, acknowledgements and questions about what was already said yourself, in a sentence or two. Anything that needs the vault, tools, the web, planning or real thinking, and every answer to a question the orchestrator asked: call relay_to_orchestrator with a self-contained request in the user’s own words (resolve "that" and "it"; drop filler and false starts), then say in a few words that you are on it. Do not guess the answer.',
+  'Quiet [Orchestrator activity] notes list the tools the orchestrator used and the tasks it started; use them to answer "what are you doing?" (orchestrator_activity lists them on demand), but do not read them out unasked.',
+  'Messages marked [Orchestrator] come from the orchestrator, not the user. Say them naturally and briefly in your own words. If one is marked as bearing on what the user is saying, cut in briefly; otherwise let them finish the thought, acknowledge it, then bring it up at a natural opening and ask about any next step it offers.',
+  'Corrections and changes of mind ("no, the other folder", "actually stop") go to the orchestrator straight away; use cancel_task only when the user plainly wants a task stopped. check_tasks gives a one-line status per task when asked how things are going. If the user asks to be kept posted, call set_progress_updates; "stop the updates" sets it to 0.',
+  'If you did not catch what the user said, say so and ask them to repeat it. Never act on a guess. Ask one question at a time. Never read out markdown, code, links, file paths or long lists.',
 ].join('\n');
 
 /** Short one-line state of a task for voice. */
@@ -48,8 +77,10 @@ export function describeTask(task: SubAgentTask): string {
 
 abstract class OrchestratorTool<T> extends Tool<T> {
   readonly classification = 'System';
+  /** Chat roles that get this tool. */
+  protected roles: string[] = ['orchestrator', 'orchestrator-agent'];
   isAvailable(): boolean {
-    return this.chat.role === 'orchestrator' && !!this.chat.plugin.agents;
+    return this.roles.includes(this.chat.role) && !!this.chat.plugin.agents;
   }
   protected get agents() {
     return this.chat.plugin.agents;
@@ -101,6 +132,7 @@ export class CheckTasksTool extends OrchestratorTool<InferArgs<typeof checkParam
   readonly description =
     'Status of background tasks, and any updates that were held for the next check.';
   readonly parameters = checkParams;
+  protected roles = ['orchestrator', 'orchestrator-agent', 'voice'];
   async execute(args: InferArgs<typeof checkParams>): Promise<string> {
     const updates = this.agents.takeQueuedUpdates();
     const tasks = args.id ? [this.find(args.id)].filter(Boolean) : this.agents.list().slice(0, 12);
@@ -169,6 +201,7 @@ export class CancelTaskTool extends OrchestratorTool<InferArgs<typeof idParams>>
   readonly name = 'cancel_task';
   readonly description = 'Stop a background task.';
   readonly parameters = idParams;
+  protected roles = ['orchestrator', 'orchestrator-agent', 'voice'];
   async execute(args: InferArgs<typeof idParams>): Promise<string> {
     const task = this.find(args.id);
     if (!task) return `No task matches "${args.id}".`;
@@ -193,6 +226,7 @@ export class SetProgressUpdatesTool extends OrchestratorTool<InferArgs<typeof up
   readonly description =
     'Turn spoken progress updates on ("keep me posted", every 30 seconds unless the user says otherwise) or off (0).';
   readonly parameters = updatesParams;
+  protected roles = ['orchestrator', 'orchestrator-agent', 'voice'];
   async execute(args: InferArgs<typeof updatesParams>): Promise<string> {
     const seconds = this.agents.setProgressInterval(args.interval_seconds);
     return seconds ? `Progress updates every ${seconds} seconds.` : 'Progress updates are off.';

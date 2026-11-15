@@ -1,6 +1,7 @@
 import { normalizePath, TFile } from 'obsidian';
 import type PureChatLLM from '../main';
 import { LocalSubAgentBackend } from './LocalSubAgentBackend';
+import { resolveLayer } from './layers';
 import { AUTO_ROUTES } from './types';
 import type {
   NoticeMode,
@@ -121,7 +122,7 @@ export class SubAgentManager {
       prompt,
       status: 'queued',
       createdAt: Date.now(),
-      model: this.settings.subAgentModel.trim() || this.defaultModel(),
+      model: resolveLayer(this.plugin, 'worker').model,
       steps: [],
       messages: [],
       origin,
@@ -266,6 +267,7 @@ export class SubAgentManager {
       title: active.length === 1 ? active[0].title : `${active.length} tasks`,
       at: Date.now(),
       text,
+      tick: true,
     };
     for (const listener of this.listeners) listener(event, 'pause');
   }
@@ -281,11 +283,6 @@ export class SubAgentManager {
     }
     this.listeners.clear();
     this.changeListeners.clear();
-  }
-
-  private defaultModel(): string {
-    const s = this.plugin.settings;
-    return s.endpoints[s.endpoint]?.defaultmodel ?? '';
   }
 
   private running(): number {

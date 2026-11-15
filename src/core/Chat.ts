@@ -26,6 +26,7 @@ import { ActivateSkillTool, ReadSkillFileTool } from '../tools/Skills';
 import { McpTool } from '../tools/McpTool';
 import { TemplatesTool } from '../tools/Templates';
 import { AGENT_TOOLS } from '../tools/Orchestrator';
+import { LAYER_TOOLS } from '../tools/LayerTools';
 import {
   ChatMessage,
   ChatOptions,
@@ -83,11 +84,12 @@ export class PureChatLLMChat {
   toolregistry: ToolRegistry = new ToolRegistry(this);
   llmService: LLMService;
   /**
-   * What this chat's model is for: `agent` (ordinary chat with tools), `orchestrator` (talks with
-   * the user and delegates to background sub-agents) or `subagent` (a background task).
-   * Orchestrator and sub-agent tools are only offered in their role.
+   * What this chat's model is for: `agent` (ordinary chat with tools), `orchestrator` (a voice
+   * model that delegates to background sub-agents itself), `voice` (the voice layer of the
+   * layered setup, which relays to the orchestrator agent), `orchestrator-agent` (the layered
+   * orchestrator) or `subagent` (a background task). Layer tools are only offered in their role.
    */
-  role: 'agent' | 'orchestrator' | 'subagent' = 'agent';
+  role: 'agent' | 'orchestrator' | 'voice' | 'orchestrator-agent' | 'subagent' = 'agent';
   /** Task id when this chat runs a sub-agent. */
   subAgentTaskId?: string;
 
@@ -197,7 +199,7 @@ export class PureChatLLMChat {
   registerAvailableTools() {
     if (this.toolsRegistered) return;
     this.toolsRegistered = true;
-    for (const tool of AGENT_TOOLS) this.toolregistry.registerTool(tool);
+    for (const tool of [...AGENT_TOOLS, ...LAYER_TOOLS]) this.toolregistry.registerTool(tool);
     this.toolregistry
       .registerTool(ImageGenerationTool)
       .registerTool(CreateNoteTool)

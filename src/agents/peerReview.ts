@@ -1,8 +1,10 @@
 import { createPatch } from 'diff';
 import { normalizePath, TFile } from 'obsidian';
-import { PureChatLLMChat } from '../core/Chat';
+import type { PureChatLLMChat } from '../core/Chat';
 import type PureChatLLM from '../main';
 import type { SubAgentWritePolicy } from '../types';
+import { layerFetch, parseModelRef, resolveLayer } from './layers';
+import type { ResolvedLayer } from './layers';
 
 export type WriteAction = 'create' | 'edit' | 'delete';
 
@@ -86,27 +88,28 @@ export async function peerReview(
     .split(',')
     .map(m => m.trim())
     .filter(Boolean);
-  const base = new PureChatLLMChat(plugin);
-  const fallback = settings.subAgentModel.trim() || base.endpoint.defaultmodel;
-  const models = [named[0] ?? fallback, named[1] ?? named[0] ?? fallback];
+  const worker = settings.layers.worker;
+  // `model@Endpoint name` picks another provider; a bare model runs on the worker's endpoint.
+  const layerFor = (ref: string | undefined): ResolvedLayer => {
+    if (!ref) return resolveLayer(plugin, 'worker');
+    const { model, endpoint } = parseModelRef(ref);
+    return resolveLayer(plugin, { ...worker, endpoint: endpoint || worker.endpoint }, model);
+  };
+  const layers = [layerFor(named[0]), layerFor(named[1] ?? named[0])];
   const question = describe(proposal);
 
-  const ask = async (model: string, n: number): Promise<{ ok: boolean; line: string }> => {
+  const ask = async (layer: ResolvedLayer, n: number): Promise<{ ok: boolean; line: string }> => {
     try {
-      const chat = new PureChatLLMChat(plugin);
-      const answer = chat.llmService
-        .fetchResponse(chat.endpoint, {
-          model,
-          stream: false,
-          max_completion_tokens: 200,
-          messages: [
-            { role: 'system', content: REVIEWER_PROMPT },
-            { role: 'user', content: question },
-          ],
-        })
-        .then(r => (r.content ?? '').trim());
+      // A fresh request each time: the reviewer sees only its instructions and the change.
+      const answer = layerFetch(plugin, layer, {
+        max_completion_tokens: 200,
+        messages: [
+          { role: 'system', content: REVIEWER_PROMPT },
+          { role: 'user', content: question },
+        ],
+      }).then(r => (r.content ?? '').trim());
       const timeout = new Promise<string>(resolve =>
-        window.setTimeout(() => resolve('REJECT\nNo answer in time.'), 60_000),
+        window.setTimeout(() => resolve('REJECT\nNo answer in time.'), 120_000),
       );
       const text = await Promise.race([answer, timeout]);
       const ok = /^\W*approve\b/i.test(text);
@@ -121,7 +124,7 @@ export async function peerReview(
     }
   };
 
-  const results = await Promise.all(models.map((m, i) => ask(m, i + 1)));
+  const results = await Promise.all(layers.map((l, i) => ask(l, i + 1)));
   return { approved: results.every(r => r.ok), verdicts: results.map(r => r.line) };
 }
 

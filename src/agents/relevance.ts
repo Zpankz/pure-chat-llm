@@ -1,4 +1,4 @@
-import { PureChatLLMChat } from '../core/Chat';
+import { layerFetch, resolveLayer } from './layers';
 import type PureChatLLM from '../main';
 
 const STOP = new Set(
@@ -36,7 +36,7 @@ export function keywordRelevant(update: string, userText: string): boolean {
  *
  * Hani's rule, on top of GPT-Live's duplex timing: interrupt only when the update would overrule
  * or drastically change the point the user is making; otherwise let them finish the thought and
- * mention it at the next natural opening. `model` asks the sub-agent model for a one-word verdict
+ * mention it at the next natural opening. `model` asks the worker model for a one-word verdict
  * (with a short timeout and the keyword check as fallback); `keywords` is deterministic.
  * @param plugin - Plugin.
  * @param update - Update text.
@@ -53,26 +53,24 @@ export async function shouldInterrupt(
   const fallback = keywordRelevant(update, userText);
   if (mode === 'keywords') return fallback;
   try {
-    const chat = new PureChatLLMChat(plugin);
-    const model = plugin.settings.orchestrator.subAgentModel.trim() || chat.endpoint.defaultmodel;
-    const verdict = chat.llmService
-      .fetchResponse(chat.endpoint, {
-        model,
-        stream: false,
-        max_completion_tokens: 16,
-        messages: [
-          {
-            role: 'system',
-            content:
-              'You decide whether a background update should interrupt a person mid-sentence. Answer INTERRUPT only if the update would overrule, contradict or drastically change the point they are making right now. Otherwise answer WAIT. Reply with one word.',
-          },
-          {
-            role: 'user',
-            content: `They are saying: "${userText.slice(-600)}"\n\nUpdate: "${update.slice(0, 900)}"`,
-          },
-        ],
-      })
-      .then(r => /interrupt/i.test(r.content ?? ''));
+    // Fast check on the worker model, without its reasoning effort (this must answer in seconds).
+    const layer = { ...resolveLayer(plugin, 'worker'), effort: '' as const };
+    const verdict = layerFetch(plugin, layer, {
+      max_completion_tokens: 16,
+      messages: [
+        {
+          role: 'system',
+          content:
+            'You decide whether a background update should interrupt a person mid-sentence. Answer INTERRUPT only if the update would overrule, contradict or drastically change the point they are making right now. Otherwise answer WAIT. Reply with one word.',
+        },
+        {
+          role: 'user',
+          content: `They are saying: "${userText.slice(-600)}"\n\nUpdate: "${update.slice(0, 900)}"`,
+        },
+      ],
+    })
+      .then(r => /interrupt/i.test(r.content ?? ''))
+      .catch(() => fallback);
     const timeout = new Promise<boolean>(resolve =>
       window.setTimeout(() => resolve(fallback), 3500),
     );

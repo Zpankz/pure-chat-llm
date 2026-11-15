@@ -39,7 +39,7 @@ export interface PureChatLLMSettings {
   voice: VoiceSettings;
   /** Remote MCP servers (Streamable HTTP). */
   mcpServers: McpServerConfig[];
-  /** Vault folder that holds Agent Skills (one sub-folder per skill with a SKILL.md). */
+  /** Vault folder that holds Agent Skills (one sub-folder per skill, with `<name>.md` or SKILL.md). */
   skillsFolder: string;
   /** Code mode tool configuration. */
   codeMode: CodeModeSettings;
@@ -174,13 +174,32 @@ export interface McpOAuthState {
 export interface OrchestratorSettings {
   /**
    * How voice models work.
-   * - `orchestrator`: the voice model only talks, delegates to background sub-agents, checks on
+   * - `layered`: four layers. The voice model translates and filters, and relays requests to a
+   *   separate orchestrator agent, which plans, writes briefs and runs worker sub-agents in the
+   *   background (with an optional evaluator). Each layer keeps its own context.
+   * - `orchestrator`: the voice model itself delegates to background sub-agents, checks on
    *   them and relays results.
    * - `direct`: the voice model calls tools itself.
    */
-  voiceRole: 'orchestrator' | 'direct';
-  /** Model for sub-agents on the default provider. Empty uses the provider's default model. */
-  subAgentModel: string;
+  voiceRole: 'layered' | 'orchestrator' | 'direct';
+  /** Model, provider and reasoning effort for each layer. */
+  layers: LayerSettings;
+  /**
+   * What the orchestrator sees of the call: `full` passes every transcript line once (its
+   * context holds the whole conversation); `recent` passes only the last few lines per request.
+   */
+  voiceContext: 'full' | 'recent';
+  /** With `recent`, transcript lines passed along with each request. */
+  relayTranscriptLines: number;
+  /** Characters of a worker's result or event the orchestrator gets as its summary. */
+  taskSummaryChars: number;
+  /** Messages the orchestrator keeps before older turns are dropped (its own context only). */
+  orchestratorMaxMessages: number;
+  /**
+   * The voice model is told quietly which tools the orchestrator used and which tasks it started
+   * (not their outputs), and can list them with orchestrator_activity.
+   */
+  voiceSeesActivity: boolean;
   /** System instructions for sub-agents. */
   subAgentInstructions: string;
   /** Model responses per task before it stops. */
@@ -211,12 +230,40 @@ export interface OrchestratorSettings {
   /** What happens when a sub-agent creates, edits or deletes a note. */
   writes: Record<'create' | 'edit' | 'delete', SubAgentWritePolicy>;
   /**
-   * Models for the two independent reviewers, comma separated. Empty uses the sub-agent model
-   * for both. Different models make the two verdicts more independent.
+   * Models for the two independent reviewers, comma separated, each optionally `model@Endpoint
+   * name`. Empty uses the worker layer for both. Different models make the verdicts more
+   * independent.
    */
   reviewerModels: string;
   /** Copy a note into the task folder before a reviewed edit changes it. */
   backupEdits: boolean;
+}
+
+/** Reasoning effort levels sent to providers that accept them. Empty sends none. */
+export type ReasoningEffort = '' | 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+
+/** Which API a layer calls. `auto` uses Responses for OpenAI and ChatGPT sign-in. */
+export type LayerApi = 'auto' | 'chat' | 'responses';
+
+/** Endpoint name meaning "the ChatGPT account you signed in with". */
+export const CHATGPT_SIGN_IN = 'ChatGPT sign-in';
+
+export interface LayerModel {
+  /** Endpoint name from the endpoint list, `ChatGPT sign-in`, or empty for the default endpoint. */
+  endpoint: string;
+  /** Model id. Empty uses the endpoint's default model. */
+  model: string;
+  effort: ReasoningEffort;
+  api: LayerApi;
+}
+
+export interface LayerSettings {
+  /** The agent that plans, writes briefs and runs workers. */
+  orchestrator: LayerModel;
+  /** Background sub-agents, and by default the two write reviewers. */
+  worker: LayerModel;
+  /** Optional advisor that checks plans and results when the orchestrator asks. */
+  evaluator: LayerModel & { enabled: boolean };
 }
 
 /**

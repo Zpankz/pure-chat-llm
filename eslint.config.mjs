@@ -54,6 +54,8 @@ export default defineConfig([
             'QuickJS',
             'WebAssembly',
             'Web Worker',
+            'Meta',
+            'Muse',
           ],
           acronyms: ['OK', 'MCP', 'VAD', 'HTTP', 'SKILL.md'],
           enforceCamelCaseLower: true,

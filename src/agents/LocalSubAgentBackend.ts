@@ -5,6 +5,7 @@ import { ORCHESTRATOR_TOOL_NAMES } from '../tools/Orchestrator';
 import type { SubAgentBackend, SubAgentRunContext, SubAgentTask } from './types';
 import { VaultGraph } from '../graph/VaultGraph';
 import { ontologySummary } from '../graph/ontology';
+import { layerFetch, resolveLayer } from './layers';
 
 /** Tools a sub-agent may not use (orchestration belongs to the orchestrator). */
 const ORCHESTRATOR_ONLY = new Set(ORCHESTRATOR_TOOL_NAMES);
@@ -72,6 +73,8 @@ export class LocalSubAgentBackend implements SubAgentBackend {
       );
     }
 
+    // Workers run on the worker layer; each task keeps the model it started with.
+    const layer = resolveLayer(this.plugin, 'worker', task.model);
     const threshold = Math.max(2, settings.stuckThreshold || 3);
     let lastSignature = '';
     let repeats = 0;
@@ -85,11 +88,9 @@ export class LocalSubAgentBackend implements SubAgentBackend {
         ctx.log({ kind: 'message', text: message });
       }
 
-      const response: ChatResponse = await chat.llmService.fetchResponse(chat.endpoint, {
-        model: task.model,
+      const response: ChatResponse = await layerFetch(this.plugin, layer, {
         messages: task.messages,
         max_completion_tokens: this.plugin.settings.defaultmaxTokens,
-        stream: false,
         ...(tools.length ? { tools } : {}),
       });
       if (ctx.isCancelled()) throw new Error('cancelled');

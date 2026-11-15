@@ -1,4 +1,8 @@
 import { Notice, Setting } from 'obsidian';
+import { layerProblem, resolveLayer } from '../agents/layers';
+import type { LayerId } from '../agents/layers';
+import { ChatGPTAuth } from '../auth/ChatGPTAuth';
+import { persistentSecrets } from '../auth/secrets';
 import type PureChatLLM from '../main';
 import { DEFAULT_MCP_SERVER } from '../mcp/McpManager';
 import { signIn } from '../mcp/McpOAuth';
@@ -10,8 +14,12 @@ import {
   geminiSupportsScheduling,
   geminiSupportsThinking,
 } from '../realtime/voiceCatalog';
+import { CHATGPT_SIGN_IN } from '../types';
 import type {
+  LayerApi,
   McpServerConfig,
+  OrchestratorSettings,
+  ReasoningEffort,
   SubAgentWritePolicy,
   VoiceProviderId,
   VoiceToolExposure,
@@ -62,9 +70,12 @@ export function renderOrchestratorSettings(
     new Setting(el)
       .setName('Voice model role')
       .setDesc(
-        'Orchestrator: the voice model only talks with you and hands work to background agents, then relays what they find. Direct: the voice model calls tools itself (the previous behaviour).',
+        'Layered: the voice model translates and filters, and passes requests to a separate orchestrator agent that plans and runs background workers (each layer keeps its own context). Orchestrator: the voice model hands work to background agents itself. Direct: the voice model calls tools itself.',
       ),
-    { orchestrator: 'Orchestrator', direct: 'Direct' } as Record<'orchestrator' | 'direct', string>,
+    { layered: 'Layered', orchestrator: 'Orchestrator', direct: 'Direct' } as Record<
+      OrchestratorSettings['voiceRole'],
+      string
+    >,
     o.voiceRole,
     async value => {
       o.voiceRole = value;
@@ -72,19 +83,86 @@ export function renderOrchestratorSettings(
       redraw();
     },
   );
-  if (o.voiceRole !== 'orchestrator') return;
+  if (o.voiceRole === 'direct') return;
 
-  suggestText(
+  if (o.voiceRole === 'layered') {
+    renderLayer(el, plugin, 'orchestrator', redraw);
+    choose(
+      new Setting(el)
+        .setName('Orchestrator sees the call')
+        .setDesc(
+          'Whole conversation: every line of the call reaches the orchestrator once, with the requests. Recent lines only: just the last few lines go with each request.',
+        ),
+      { full: 'Whole conversation', recent: 'Recent lines only' } as Record<
+        OrchestratorSettings['voiceContext'],
+        string
+      >,
+      o.voiceContext,
+      async v => {
+        o.voiceContext = v;
+        await save();
+        redraw();
+      },
+    );
+    if (o.voiceContext === 'recent') {
+      numberInput(
+        new Setting(el).setName('Lines per request'),
+        o.relayTranscriptLines,
+        async n => {
+          o.relayTranscriptLines = n;
+          await save();
+        },
+        { min: 0, max: 40, fallback: 6 },
+      );
+    }
+    numberInput(
+      new Setting(el)
+        .setName('Worker summary length')
+        .setDesc(
+          'Characters of each worker update the orchestrator gets. It opens the full thread only when it needs to.',
+        ),
+      o.taskSummaryChars,
+      async n => {
+        o.taskSummaryChars = n;
+        await save();
+      },
+      { min: 100, max: 5000, fallback: 600 },
+    );
+    numberInput(
+      new Setting(el)
+        .setName('Orchestrator memory (messages)')
+        .setDesc('Older turns of the orchestrator’s own conversation are dropped after this.'),
+      o.orchestratorMaxMessages,
+      async n => {
+        o.orchestratorMaxMessages = n;
+        await save();
+      },
+      { min: 20, max: 400, fallback: 80 },
+    );
     new Setting(el)
-      .setName('Sub-agent model')
-      .setDesc('Model on your default provider. Empty uses that provider’s default model.'),
-    o.subAgentModel,
-    [],
-    async value => {
-      o.subAgentModel = value;
-      await save();
-    },
-  );
+      .setName('Voice sees the orchestrator’s activity')
+      .setDesc(
+        'The voice model is told quietly which tools the orchestrator used and which tasks it started, so it can say what is going on. It never gets their outputs or the tasks’ threads.',
+      )
+      .addToggle(t =>
+        t.setValue(o.voiceSeesActivity).onChange(async v => {
+          o.voiceSeesActivity = v;
+          await save();
+        }),
+      );
+    new Setting(el)
+      .setName('Clear orchestrator memory')
+      .setDesc('Starts the orchestrator’s conversation afresh. Running tasks continue.')
+      .addButton(b =>
+        b.setButtonText('Clear').onClick(() => {
+          plugin.orchestrator.reset();
+          new Notice('Orchestrator memory cleared.');
+        }),
+      );
+  }
+  renderLayer(el, plugin, 'worker', redraw);
+  if (o.voiceRole === 'layered') renderLayer(el, plugin, 'evaluator', redraw);
+  renderChatGPTSignIn(el, plugin, redraw);
   new Setting(el)
     .setName('Sub-agent instructions')
     .setDesc('System prompt every background agent starts with.')
@@ -309,6 +387,167 @@ export function renderGraphSettings(el: HTMLElement, plugin: PureChatLLM): void 
  */
 
 type Save = () => Promise<void>;
+
+const LAYER_TEXT: Record<LayerId, { name: string; desc: string }> = {
+  orchestrator: {
+    name: 'Orchestrator layer',
+    desc: 'Plans, writes briefs for workers and decides what you hear. Needs strong reasoning and tool calls.',
+  },
+  worker: {
+    name: 'Worker layer',
+    desc: 'Background sub-agents, and the two write reviewers unless reviewer models are set. A cheap, efficient model fits.',
+  },
+  evaluator: {
+    name: 'Evaluator layer',
+    desc: 'Optional advisor the orchestrator asks to check plans and results. It sees only what it is sent.',
+  },
+};
+
+const EFFORTS: Record<ReasoningEffort, string> = {
+  '': 'Provider default',
+  none: 'None',
+  minimal: 'Minimal',
+  low: 'Low',
+  medium: 'Medium',
+  high: 'High',
+  xhigh: 'Extra high',
+  max: 'Max',
+};
+
+/**
+ * Endpoint, model, reasoning effort and API for one layer.
+ * @param el - Container.
+ * @param plugin - Plugin.
+ * @param id - Layer.
+ * @param redraw - Re-renders the tab.
+ */
+function renderLayer(el: HTMLElement, plugin: PureChatLLM, id: LayerId, redraw: () => void): void {
+  const layer = plugin.settings.orchestrator.layers[id];
+  const save: Save = () => plugin.saveSettings();
+  const text = LAYER_TEXT[id];
+  const resolved = resolveLayer(plugin, id);
+  const problem = layerProblem(plugin, resolved);
+  new Setting(el).setName(text.name).setHeading();
+  if (id === 'evaluator') {
+    const ev = plugin.settings.orchestrator.layers.evaluator;
+    new Setting(el)
+      .setName('Use an evaluator')
+      .setDesc(text.desc)
+      .addToggle(t =>
+        t.setValue(ev.enabled).onChange(async v => {
+          ev.enabled = v;
+          await save();
+          redraw();
+        }),
+      );
+    if (!ev.enabled) return;
+  }
+  const endpoints: Record<string, string> = { '': 'Default endpoint' };
+  for (const e of plugin.settings.endpoints) endpoints[e.name] = e.name;
+  endpoints[CHATGPT_SIGN_IN] = 'ChatGPT sign-in (your ChatGPT plan)';
+  choose(
+    new Setting(el)
+      .setName('Provider')
+      .setDesc(
+        `${id === 'evaluator' ? '' : `${text.desc} `}Now: ${resolved.label}.${problem ? ` ${problem}` : ''}`,
+      ),
+    endpoints,
+    layer.endpoint in endpoints ? layer.endpoint : '',
+    async v => {
+      layer.endpoint = v;
+      await save();
+      redraw();
+    },
+  );
+  const known = resolved.endpoint
+    ? (plugin.settings.ModelsOnEndpoint[resolved.endpoint.name] ?? [])
+    : ['gpt-6.1-sol'];
+  suggestText(
+    new Setting(el).setName('Model').setDesc('Empty uses the provider’s default model.'),
+    layer.model,
+    known,
+    async v => {
+      layer.model = v;
+      await save();
+    },
+  );
+  choose(
+    new Setting(el)
+      .setName('Reasoning effort')
+      .setDesc('Sent as the reasoning effort. Not every model accepts every level.'),
+    EFFORTS,
+    layer.effort,
+    async v => {
+      layer.effort = v;
+      await save();
+    },
+  );
+  if (layer.endpoint !== CHATGPT_SIGN_IN) {
+    choose(
+      new Setting(el)
+        .setName('API')
+        .setDesc(
+          'Automatic uses the responses API for OpenAI (newer models need it for tool calls) and chat completions elsewhere.',
+        ),
+      { auto: 'Automatic', chat: 'Chat completions', responses: 'Responses' } as Record<
+        LayerApi,
+        string
+      >,
+      layer.api,
+      async v => {
+        layer.api = v;
+        await save();
+      },
+    );
+  }
+}
+
+/**
+ * Sign in with ChatGPT (desktop only).
+ * @param el - Container.
+ * @param plugin - Plugin.
+ * @param redraw - Re-renders the tab.
+ */
+function renderChatGPTSignIn(el: HTMLElement, plugin: PureChatLLM, redraw: () => void): void {
+  const auth = plugin.chatgpt;
+  const setting = new Setting(el).setName('Sign in with ChatGPT');
+  if (!ChatGPTAuth.supported) {
+    setting.setDesc(
+      'Needs the desktop app, because sign-in uses a local page on this computer. On this device, set those layers to an API key provider.',
+    );
+    return;
+  }
+  const where = persistentSecrets(plugin.app)
+    ? 'Tokens are kept in Obsidian’s secret storage, not in the vault.'
+    : 'This Obsidian version has no secret storage, so the sign-in lasts until Obsidian closes.';
+  if (auth.signedIn) {
+    setting.setDesc(`Signed in${auth.email ? ` as ${auth.email}` : ''}. ${where}`).addButton(b =>
+      b.setButtonText('Sign out').onClick(async () => {
+        new Notice(await auth.signOut());
+        redraw();
+      }),
+    );
+  } else {
+    setting
+      .setDesc(
+        `Runs layers set to ChatGPT sign-in on your ChatGPT plan, through OpenAI’s official sign-in for local apps. Your browser opens; approve, then come back. ${where}`,
+      )
+      .addButton(b =>
+        b
+          .setButtonText('Sign in')
+          .setCta()
+          .onClick(async () => {
+            try {
+              await auth.signIn();
+              new Notice('Signed in with ChatGPT.');
+            } catch (error) {
+              new Notice(error instanceof Error ? error.message : String(error));
+            }
+            redraw();
+          }),
+      );
+  }
+}
 
 let datalistSeq = 0;
 
@@ -1184,7 +1423,7 @@ export function renderSkillsAndCodeMode(
   new Setting(el)
     .setName('Skills folder')
     .setDesc(
-      `Each skill is a folder with a SKILL.md file (agentskills.io format). Found ${skills.length} skill${skills.length === 1 ? '' : 's'}${warnings ? `, ${warnings} warning${warnings === 1 ? '' : 's'}` : ''}.`,
+      `Each skill is a folder whose main note is named after it (for example review/review.md), or SKILL.md as in the agentskills.io format. Found ${skills.length} skill${skills.length === 1 ? '' : 's'}${warnings ? `, ${warnings} warning${warnings === 1 ? '' : 's'}` : ''}.`,
     )
     .addText(t =>
       t
