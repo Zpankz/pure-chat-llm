@@ -171,18 +171,99 @@ export function folderRefError(app: App, ref: string): string {
     : [];
   return toolError('FolderNotFound', `No folder named or at "${ref}".`, [
     ...(near.length ? [`Similar folders: ${near.join(', ')}.`] : []),
-    'list_vault_folders(path="/", recursive=true, include_notes=false) lists every folder.',
+    'list_vault_folders(path="/", include_notes=false) lists every folder.',
   ]);
 }
 
 /**
- * True when a file sits inside any of the folders (at any depth).
+ * True when a file sits inside any of the folders: at any depth, or with `recursive` false
+ * only directly in one of them.
  * @param file - File.
  * @param folders - Folders.
+ * @param recursive - Include subfolders (default true).
  */
-export function inFolders(file: TFile, folders: TFolder[]): boolean {
-  return folders.some(f => f.isRoot() || file.path.startsWith(`${f.path}/`));
+export function inFolders(file: TFile, folders: TFolder[], recursive = true): boolean {
+  return pathInFolders(file.path, folders, recursive);
 }
+
+/**
+ * `inFolders` for a path string (such as a search index key).
+ * @param path - File path.
+ * @param folders - Folders.
+ * @param recursive - Include subfolders (default true).
+ */
+export function pathInFolders(path: string, folders: TFolder[], recursive = true): boolean {
+  const dir = parentPath(path);
+  return folders.some(f => {
+    if (!recursive) return f.isRoot() ? dir === '' : dir === f.path;
+    return f.isRoot() || path.startsWith(`${f.path}/`);
+  });
+}
+
+/**
+ * The folder part of a path ('' at the vault root).
+ * @param path - File path.
+ */
+export function parentPath(path: string): string {
+  const i = path.lastIndexOf('/');
+  return i < 0 ? '' : path.slice(0, i);
+}
+
+/**
+ * A folder's folder note, by the convention that `X/X.md` is the note for folder X.
+ * @param folder - Folder.
+ */
+export function folderNote(folder: TFolder): TFile | null {
+  if (folder.isRoot()) return null;
+  const name = folder.name.toLowerCase();
+  for (const child of folder.children) {
+    if (child instanceof TFile && child.extension === 'md' && child.basename.toLowerCase() === name)
+      return child;
+  }
+  return null;
+}
+
+/**
+ * Whether a note is its folder's folder note (`X/X.md`).
+ * @param file - Note.
+ */
+export function isFolderNote(file: TFile): boolean {
+  const dir = parentPath(file.path);
+  if (!dir || file.extension !== 'md') return false;
+  return dir.split('/').pop()?.toLowerCase() === file.basename.toLowerCase();
+}
+
+/**
+ * Resolves a tool's `folder` argument: null for no scope (empty or "/"), the matching folders,
+ * or a FolderNotFound tool error.
+ * @param app - Obsidian app.
+ * @param folder - Folder path or bare name, or undefined.
+ */
+export function folderScope(
+  app: App,
+  folder: string | undefined,
+): { folders: TFolder[] | null; error?: string } {
+  const ref = (folder ?? '').trim();
+  if (!ref || ref === '/') return { folders: null };
+  const folders = resolveFolders(app, ref);
+  if (!folders.length) return { folders: null, error: folderRefError(app, ref) };
+  return { folders };
+}
+
+/** The shared `folder` and `recursive` parameters of the search and listing tools. */
+export const FOLDER_SCOPE_PARAMETERS = {
+  folder: {
+    type: 'string',
+    description:
+      'Only look inside this folder: a path ("Uni/ANZCA/LO") or just a folder name ("LO"), found wherever it sits. Omit for the whole vault.',
+  },
+  recursive: {
+    type: 'boolean',
+    description:
+      'With folder: include its subfolders at every depth (default true); false keeps to the folder itself, one level.',
+    default: true,
+  },
+} as const;
 
 /** Default character caps for reads: voice output is spoken and clipped, workers share a budget. */
 export const READ_CHAR_CAPS = { voice: 5000, other: 20000, min: 500, max: 100000 } as const;
