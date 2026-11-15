@@ -1,7 +1,28 @@
 import { defineToolParameters, InferArgs, Tool } from '../tools';
-import { CODEMODE_WORKER_SOURCE } from './codemode/sandboxSource';
-import { CodeModeHost, CodeModeRunResult, loadDjsModule, runWithDjs } from './codemode/djsEngine';
-import { allowedIn, isToolError, offersJson, toolErrorMessage } from './toolContract';
+import {
+  CodeModeHost,
+  CodeModeRunResult,
+  djsProblem,
+  loadDjsModule,
+  runWithDjs,
+} from './codemode/djsEngine';
+import { runWithWorker, WorkerLike } from './codemode/workerEngine';
+import { ScriptDeadline } from './codemode/deadline';
+import {
+  AbortHost,
+  allowedIn,
+  callWithSignal,
+  cancelledError,
+  clipToolText,
+  formatSeconds,
+  isToolError,
+  offersJson,
+  toolError,
+  toolErrorLine,
+  toolTimeoutMs,
+  WAITS_FOR_USER,
+  withToolTimeout,
+} from './toolContract';
 
 const codeModeParameters = defineToolParameters({
   type: 'object',
@@ -14,7 +35,7 @@ const codeModeParameters = defineToolParameters({
     timeout_ms: {
       type: 'integer',
       description:
-        'Hard deadline for the whole script in milliseconds. Defaults to the plugin setting.',
+        'Deadline for the whole script in milliseconds (time waiting for the user to approve a change does not count). Defaults to the plugin setting.',
     },
     max_output_chars: {
       type: 'integer',
@@ -26,25 +47,6 @@ const codeModeParameters = defineToolParameters({
 
 export type CodeModeArgs = InferArgs<typeof codeModeParameters>;
 
-interface WorkerDone extends CodeModeRunResult {
-  type: 'done';
-}
-
-interface WorkerCall {
-  type: 'call';
-  id: number;
-  name: string;
-  args: Record<string, unknown>;
-}
-
-interface WorkerStore {
-  type: 'store';
-  key: string;
-  value: string;
-}
-
-type WorkerMessage = WorkerDone | WorkerCall | WorkerStore;
-
 /** Converts a tool name to a JavaScript identifier (as pi's code mode does). */
 export function toIdentifier(name: string): string {
   const id = name.replace(/[^A-Za-z0-9_$]/g, '_');
@@ -52,15 +54,12 @@ export function toIdentifier(name: string): string {
 }
 
 /**
- * Keeps the start and end of long text.
+ * Keeps the start and end of long text (and an error's type, reason and recovery lines whole).
  * @param text - Text to clip.
  * @param max - Maximum characters.
  */
 export function clipMiddle(text: string, max: number): string {
-  if (text.length <= max) return text;
-  const head = Math.floor(max * 0.6);
-  const tail = max - head;
-  return `${text.slice(0, head)}\n…[${text.length - max} characters omitted]…\n${text.slice(-tail)}`;
+  return clipToolText(text, max, 0.6);
 }
 
 /**
@@ -94,6 +93,66 @@ export function parseInlineOptions(code: string): {
   }
 }
 
+/** Why a run stopped before the script ended. */
+type StopReason = 'timeout' | 'cancelled';
+
+/**
+ * Turns an engine result into the tool's output: a `toolError` header when the script failed,
+ * then the stats line, the script's text, console and return value.
+ * @param done - Engine result.
+ * @param info - Run facts.
+ * @param info.stop - Why the run was stopped, if it was.
+ * @param info.timeoutMs - The script's deadline.
+ * @param info.stats - The stats line.
+ * @param info.partial - Output streamed before the run ended.
+ * @param info.partial.outputs - `text()` values.
+ * @param info.partial.console - Console lines.
+ */
+export function formatRun(
+  done: CodeModeRunResult,
+  info: {
+    stop?: StopReason;
+    timeoutMs: number;
+    stats: string;
+    partial: { outputs: string[]; console: string[] };
+  },
+): string {
+  const outputs = done.outputs.length ? done.outputs : info.partial.outputs;
+  const consoleLines = done.console.length ? done.console : info.partial.console;
+  const body: string[] = [info.stats];
+  outputs.forEach((out, i) => body.push(`==> text ${i + 1}/${outputs.length} <==\n${out}`));
+  if (consoleLines.length)
+    body.push(`<console_output>\n${consoleLines.join('\n')}\n</console_output>`);
+  if (done.ret !== undefined) body.push(`Return value:\n${done.ret}`);
+
+  let head: string | undefined;
+  if (info.stop === 'timeout') {
+    head = toolError(
+      'Timeout',
+      `The script did not finish within ${formatSeconds(info.timeoutMs)} (time waiting for the user not counted).`,
+      [
+        'Tool calls still running were cancelled; changes they had not made were not made.',
+        'Print progress with text() so partial results come back, split the work, or raise timeout_ms.',
+      ],
+    );
+  } else if (info.stop === 'cancelled') {
+    head = cancelledError('codemode');
+  } else if (!done.ok && done.limit) {
+    head = toolError('ResourceLimit', done.error ?? 'The script hit an engine limit.', [
+      'Process less data per run, or raise the djs limits in settings.',
+    ]);
+  } else if (!done.ok && done.errorType === 'ToolError') {
+    head = toolError('ScriptError', `Uncaught tool failure: ${done.error ?? ''}`, [
+      'Catch tool failures with try/catch (the error has .tool and .type) or Promise.allSettled.',
+    ]);
+  } else if (!done.ok) {
+    const [first, ...frames] = (done.error ?? 'The script failed.').split('\n');
+    head = toolError('ScriptError', first, ['Fix the script and run it again.']);
+    if (frames.length) body.splice(1, 0, `Stack:\n${frames.join('\n')}`);
+  }
+  return head ? `${head}\n\n${body.join('\n\n')}` : body.join('\n\n');
+}
+
 /**
  * Code mode: the model writes one JavaScript program that calls many tools, instead of making
  * one tool call per step. Modelled on pi's built-in `codemode` tool
@@ -102,21 +161,27 @@ export function parseInlineOptions(code: string): {
  * header and the same result layout.
  *
  * Scripts run in djs (https://github.com/earendil-works/djs), the WebAssembly engine built to
- * replace QuickJS in pi's code mode, when its module is available, and otherwise in a locked-down
- * Web Worker. With djs, scripts may also be TypeScript.
+ * replace QuickJS in pi's code mode, when its module is available (in the plugin folder, or
+ * downloaded from a configured URL and checked against a pinned sha256), and otherwise in a
+ * locked-down Web Worker, a weaker sandbox the result names. With djs, scripts may also be
+ * TypeScript.
+ *
+ * Every run has its own abort signal: the deadline, a cancelled request or the end of the script
+ * aborts it, and every tool call the script makes gets a signal tied to it (through
+ * `chat.abortSignal`), so a write still in review when the script stops does not land later.
  */
-
 export class CodeModeTool extends Tool<CodeModeArgs> {
   readonly name = 'codemode';
   readonly classification = 'System';
   static _name = 'codemode';
   readonly parameters = codeModeParameters;
 
+  /** Creates the Web Worker engine's worker (tests replace it). */
+  static makeWorker: ((source: string) => WorkerLike) | undefined;
+
   /**
-   * Callable tools, excluding code mode itself and tools that reach the internet other than
-   * through MCP servers or change plugin settings (Hani's sandbox rule: scripts read anything
-   * and create notes; edits and deletes go through the same tools, so the same review applies;
-   * no network beyond MCP). The sandboxes themselves have no fetch or sockets.
+   * Callable tools, excluding code mode itself and tools the code mode layer may not use
+   * (see TOOL_LAYERS). The sandboxes themselves have no fetch or sockets.
    */
   private callable() {
     return this.registry.tools.filter(t => t.name !== this.name && allowedIn(t.name, 'codemode'));
@@ -124,22 +189,29 @@ export class CodeModeTool extends Tool<CodeModeArgs> {
 
   /** Description lists the callable tools within an inline budget. */
   get description(): string {
+    const settings = this.chat.plugin.settings.codeMode;
     const tools = this.callable();
     const budget = 6000;
     let listing = '';
+    let listed = 0;
     for (const t of tools) {
-      const line = `- tools.${toIdentifier(t.name)}: ${t.description.split('\n')[0].slice(0, 140)}\n`;
+      const json = offersJson(t.parameters) ? ' (json)' : '';
+      const line = `- tools.${toIdentifier(t.name)}${json}: ${t.description.split('\n')[0].slice(0, 140)}\n`;
       if (listing.length + line.length > budget) {
-        listing += `- …and ${tools.length - listing.split('\n').length + 1} more; use searchTools(query) or describeTool(name).\n`;
+        listing += `- …and ${tools.length - listed} more; use searchTools(query) or describeTool(name).\n`;
         break;
       }
       listing += line;
+      listed++;
     }
     return [
-      'Run a JavaScript program that orchestrates several tools in one step. Prefer this over many separate calls when a task needs loops, filtering, joins or more than two tool calls.',
-      'The code runs as an async function body (JavaScript, or TypeScript when the djs engine is active) in a sandbox with no DOM, network, file system or Node APIs. Every tool is `await tools.<name>(argsObject)`; results are strings, or parsed JSON when a tool returns JSON. Failed calls throw, so use try/catch or Promise.allSettled.',
-      'Globals: text(v), console.log(...), return v, exit(), store(key, json) and load(key) (persist small values across calls), ALL_TOOLS, searchTools(query, {limit, namespace}), describeTool(name) (returns JSON Schema), describeNamespace(prefix).',
-      'Optional first line: // @options: {"timeout_ms": 60000, "max_output_tokens": 2000}',
+      'Run a JavaScript program that calls several tools in one step. Prefer it over separate calls when a task needs loops, filtering, joins or more than two tool calls.',
+      'The code is the body of an async function, in a sandbox with no DOM, network, file system or Node APIs. Call tools as `await tools.<name>({...})`.',
+      'Results: tools marked (json) are called with format:"json" unless you pass a format, and return parsed objects; other tools return text.',
+      'Errors: a failed call throws a ToolError with .tool, .type (such as NotFound or Timeout) and the reason and fixes in .message. Catch it with try/catch or use Promise.allSettled; uncaught, it ends the script and the result starts with "Error:".',
+      'Output: return a value, text(v) or console.log(...). Also: store(key, value)/load(key) keep small values across runs; ALL_TOOLS, searchTools(query, {limit, namespace}), describeTool(name) (JSON Schema), describeNamespace(prefix), exit().',
+      `Limits: ${formatSeconds(settings?.timeoutMs ?? 60000)} per script (time waiting for the user to approve a change does not count) and ${settings?.maxOutputChars ?? 40000} characters of output; change them with a first line like // @options: {"timeout_ms": 120000, "max_output_tokens": 2000}. Each tool call also has its own time limit.`,
+      'Engine: djs (JavaScript or TypeScript) when its module is loaded, otherwise a Web Worker fallback (JavaScript only); the result says which.',
       'Tool calls are real: anything a script changes stays changed.',
       `Callable tools:\n${listing}`,
     ].join('\n');
@@ -155,6 +227,11 @@ export class CodeModeTool extends Tool<CodeModeArgs> {
    * @param args - Tool arguments.
    */
   async execute(args: CodeModeArgs): Promise<string> {
+    // Taken before any await: this call's signal (see AbortHost).
+    const host = this.chat as unknown as AbortHost;
+    const parent = host.abortSignal;
+    if (parent?.aborted) return cancelledError(this.name);
+
     const settings = this.chat.plugin.settings.codeMode;
     const inline = parseInlineOptions(args.code ?? '');
     const timeout = Math.max(
@@ -174,13 +251,45 @@ export class CodeModeTool extends Tool<CodeModeArgs> {
     }));
     const store = Object.fromEntries(this.chat.plugin.codeModeStore);
 
+    // One signal for the run: the deadline, the parent request or the end of the script aborts it.
+    const run = new AbortController();
+    let stop: StopReason | undefined;
+    const onParentAbort = () => {
+      stop ??= 'cancelled';
+      run.abort();
+    };
+    parent?.addEventListener('abort', onParentAbort, { once: true });
+    const deadline = new ScriptDeadline(timeout, () => {
+      stop ??= 'timeout';
+      run.abort();
+    });
+
+    // Tools that read `chat.abortSignal` late still see this run's signal while calls are running.
+    const previousSignal = host.abortSignal;
+    host.abortSignal = run.signal;
+    let inFlight = 0;
+    let ended = false;
+    const release = () => {
+      if (ended && inFlight === 0 && host.abortSignal === run.signal) {
+        host.abortSignal = previousSignal;
+      }
+    };
+
     void this.status('Running code mode script...');
     const started = performance.now();
     let toolCalls = 0;
-    const host: CodeModeHost = {
+    const partial = { outputs: [] as string[], console: [] as string[] };
+    const scriptHost: CodeModeHost = {
       call: (name, callArgs) => {
         toolCalls++;
-        return this.callTool(name, callArgs);
+        // Counts the tool's own promise, which may outlive a timed-out or cancelled call.
+        return this.callTool(name, callArgs, run.signal, deadline, running => {
+          inFlight++;
+          void running.finally(() => {
+            inFlight--;
+            release();
+          });
+        });
       },
       store: (key, value) => {
         const total = [...this.chat.plugin.codeModeStore.values()].reduce(
@@ -191,109 +300,99 @@ export class CodeModeTool extends Tool<CodeModeArgs> {
           this.chat.plugin.codeModeStore.set(key, value);
         }
       },
+      out: (kind, text) => (kind === 'text' ? partial.outputs : partial.console).push(text),
     };
 
-    let engine = 'worker';
+    let engine = 'djs';
     let done: CodeModeRunResult;
-    const djsModule = settings.engine === 'worker' ? null : await loadDjsModule(this.chat.plugin);
-    if (djsModule) {
-      engine = 'djs';
-      done = await runWithDjs(djsModule, inline.code, { tools, store }, host, {
-        timeoutMs: timeout,
-        maxFuel: settings.djsMaxFuel || 2_000_000_000,
-        memoryLimitBytes: (settings.djsMemoryLimitMb || 64) * 1024 * 1024,
-      });
-    } else if (settings.engine === 'djs') {
-      return 'Error: Code mode is set to djs, but the djs module (djs.wasm) was not found. Set its path in settings or switch the engine to auto.';
-    } else {
-      done = await this.runInWorker(inline.code, tools, store, host, timeout);
+    try {
+      const djsModule = settings.engine === 'worker' ? null : await loadDjsModule(this.chat.plugin);
+      if (djsModule) {
+        done = await runWithDjs(djsModule, inline.code, { tools, store }, scriptHost, run.signal, {
+          maxFuel: settings.djsMaxFuel || 2_000_000_000,
+          memoryLimitBytes: (settings.djsMemoryLimitMb || 64) * 1024 * 1024,
+        });
+      } else if (settings.engine === 'djs') {
+        return toolError(
+          'EngineUnavailable',
+          `Code mode is set to djs, but ${djsProblem() ?? 'the djs module was not found.'}`,
+          [
+            'Set the djs module path, or its download URL and sha256, in settings.',
+            'Or switch the engine to auto to use the Web Worker.',
+          ],
+        );
+      } else {
+        const why = settings.engine === 'worker' ? 'set in settings' : djsProblem();
+        engine = `Web Worker fallback, a weaker sandbox with no instruction or memory limits${why ? `; djs not used: ${why}` : ''}`;
+        done = await runWithWorker(
+          inline.code,
+          { tools, store },
+          scriptHost,
+          run.signal,
+          CodeModeTool.makeWorker,
+        );
+      }
+    } finally {
+      deadline.stop();
+      parent?.removeEventListener('abort', onParentAbort);
+      // Calls the script left running belong to a script that is over.
+      run.abort();
+      ended = true;
+      release();
     }
 
     const seconds = ((performance.now() - started) / 1000).toFixed(2);
-    const parts: string[] = [
-      `Script ${done.ok ? 'completed' : 'failed'} in ${seconds}s (${toolCalls} tool call${toolCalls === 1 ? '' : 's'}, ${engine})`,
-    ];
-    done.outputs.forEach((out, i) =>
-      parts.push(`==> text ${i + 1}/${done.outputs.length} <==\n${out}`),
-    );
-    if (done.console.length)
-      parts.push(`<console_output>\n${done.console.join('\n')}\n</console_output>`);
-    if (done.ret !== undefined) parts.push(`Return value:\n${done.ret}`);
-    if (!done.ok && done.error) parts.push(`Script error: ${done.error}`);
-    return clipMiddle(parts.join('\n\n'), maxChars);
+    const stats = `Script ${done.ok && !stop ? 'completed' : stop === 'timeout' ? 'timed out' : stop === 'cancelled' ? 'was cancelled' : 'failed'} in ${seconds}s (${toolCalls} tool call${toolCalls === 1 ? '' : 's'}, ${engine})`;
+    return clipMiddle(formatRun(done, { stop, timeoutMs: timeout, stats, partial }), maxChars);
   }
 
   /**
-   * Runs a script in the Web Worker engine.
-   * @param code - Script.
-   * @param tools - Tool metadata.
-   * @param store - Persisted values.
-   * @param host - Tool calls and store writes.
-   * @param timeout - Deadline in ms.
-   */
-  private runInWorker(
-    code: string,
-    tools: unknown[],
-    store: Record<string, string>,
-    host: CodeModeHost,
-    timeout: number,
-  ): Promise<CodeModeRunResult> {
-    const blobUrl = URL.createObjectURL(
-      new Blob([CODEMODE_WORKER_SOURCE], { type: 'application/javascript' }),
-    );
-    const worker = new Worker(blobUrl);
-    URL.revokeObjectURL(blobUrl);
-
-    return new Promise<CodeModeRunResult>(resolve => {
-      const timer = window.setTimeout(() => {
-        worker.terminate();
-        resolve({ ok: false, error: `Timed out after ${timeout} ms`, outputs: [], console: [] });
-      }, timeout);
-
-      worker.onerror = event => {
-        window.clearTimeout(timer);
-        worker.terminate();
-        resolve({ ok: false, error: event.message, outputs: [], console: [] });
-      };
-
-      worker.onmessage = (event: MessageEvent<WorkerMessage>) => {
-        const msg = event.data;
-        if (msg.type === 'done') {
-          window.clearTimeout(timer);
-          worker.terminate();
-          resolve(msg);
-        } else if (msg.type === 'store') {
-          host.store(msg.key, msg.value);
-        } else if (msg.type === 'call') {
-          void host.call(msg.name, msg.args).then(
-            value => worker.postMessage({ type: 'reply', id: msg.id, value }),
-            (error: unknown) =>
-              worker.postMessage({
-                type: 'reply',
-                id: msg.id,
-                error: error instanceof Error ? error.message : String(error),
-              }),
-          );
-        }
-      };
-
-      worker.postMessage({ type: 'run', code, tools, store });
-    });
-  }
-
-  /**
-   * Executes one tool for a script, refusing recursion and unknown tools.
+   * Executes one tool for a script, refusing recursion and unknown tools. Asks for JSON when the
+   * tool offers it and the script did not choose a format, parses JSON results, and throws on a
+   * failed call with its type, reason and recovery on one line.
    * @param name - Tool name or identifier.
    * @param args - Arguments.
+   * @param runSignal - The run's signal.
+   * @param deadline - The script's deadline (paused while a tool waits for the user).
+   * @param track - Told about the tool's own promise once the call has started.
    */
-  private async callTool(name: string, args: Record<string, unknown>): Promise<unknown> {
+  private async callTool(
+    name: string,
+    args: Record<string, unknown>,
+    runSignal: AbortSignal,
+    deadline: ScriptDeadline,
+    track: (running: Promise<unknown>) => void,
+  ): Promise<unknown> {
     const tool = this.callable().find(t => t.name === name || toIdentifier(t.name) === name);
-    if (!tool) throw new Error(`Unknown tool "${name}". Use searchTools() to find tools.`);
+    if (!tool) {
+      throw new Error(
+        `UnknownTool: there is no callable tool "${name}". Try: searchTools(query) to find one.`,
+      );
+    }
     const callArgs = { ...(args ?? {}) };
     // Scripts get data, not prose: ask for JSON when the tool offers it and the script didn't say.
     if (callArgs.format === undefined && offersJson(tool.parameters)) callArgs.format = 'json';
-    const output = await this.registry.executeTool(tool.name, callArgs);
-    if (isToolError(output)) throw new Error(toolErrorMessage(output));
+    const host = this.chat as unknown as AbortHost;
+    const waits = WAITS_FOR_USER.has(tool.name);
+    if (waits) deadline.pause();
+    let output: string;
+    try {
+      output = await withToolTimeout(
+        tool.name,
+        toolTimeoutMs(tool.name),
+        signal => {
+          const running = callWithSignal(host, signal, () =>
+            this.registry.executeTool(tool.name, callArgs),
+          );
+          track(running);
+          return running;
+        },
+        runSignal,
+      );
+    } finally {
+      if (waits) deadline.resume();
+    }
+    if (isToolError(output)) throw new Error(toolErrorLine(output));
     const trimmed = output.trim();
     if (/^[[{]/.test(trimmed)) {
       try {
