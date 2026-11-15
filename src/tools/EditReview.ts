@@ -1,4 +1,4 @@
-import { createPatch } from 'diff';
+import { applyPatch, createPatch } from 'diff';
 import { App, Modal, normalizePath, Setting, TextAreaComponent, TFile, TFolder } from 'obsidian';
 import type { PureChatLLMChat } from '../core/Chat';
 import { backupNote, buildProposal, peerReview, writeRoute } from '../agents/peerReview';
@@ -57,6 +57,8 @@ export interface WriteOutcome {
   linesAfter?: number;
   /** The user changed the content in the window before approving. */
   edited?: boolean;
+  /** The note changed during review and the edit was applied on top of those changes. */
+  merged?: boolean;
   /** Tool error text when `ok` is false. */
   error?: string;
 }
@@ -72,7 +74,8 @@ interface Decision {
 const lines = (text: string | null | undefined): number => (text ? text.split('\n').length : 0);
 
 /**
- * Decides and makes one write.
+ * Decides and makes one write. Writes to the same note take turns: a second one waits until
+ * the first has been reviewed and applied, so two reviews of one note are never in flight.
  * @param chat - Chat the tool runs in (its role picks the review route).
  * @param request - The change.
  */
@@ -80,6 +83,39 @@ export async function submitWrite(
   chat: PureChatLLMChat,
   request: WriteRequest,
 ): Promise<WriteOutcome> {
+  return withNoteLock(normalizePath(request.path), () => decideAndWrite(chat, request));
+}
+
+/** Per-note queue of writes in review. */
+const noteLocks = new Map<string, Promise<void>>();
+
+/**
+ * Runs `fn` once earlier writes to the same note have finished.
+ * @param path - Note path.
+ * @param fn - The write.
+ */
+async function withNoteLock<T>(path: string, fn: () => Promise<T>): Promise<T> {
+  const key = path.toLowerCase();
+  const before = noteLocks.get(key) ?? Promise.resolve();
+  let release = () => {};
+  const mine = new Promise<void>(resolve => (release = resolve));
+  const chain = before.then(() => mine);
+  noteLocks.set(key, chain);
+  try {
+    await before;
+    return await fn();
+  } finally {
+    release();
+    if (noteLocks.get(key) === chain) noteLocks.delete(key);
+  }
+}
+
+/**
+ * Routes one write and makes it.
+ * @param chat - Chat the tool runs in.
+ * @param request - The change.
+ */
+async function decideAndWrite(chat: PureChatLLMChat, request: WriteRequest): Promise<WriteOutcome> {
   const plugin = chat.plugin;
   const app = plugin.app;
   const path = normalizePath(request.path);
@@ -177,8 +213,9 @@ export async function submitWrite(
       path,
       review: 'user',
       linesBefore: lines(original),
-      linesAfter: action === 'delete' ? 0 : lines(approved),
+      linesAfter: action === 'delete' ? 0 : lines(result.content ?? approved),
       ...(approved !== content ? { edited: true } : {}),
+      ...(result.merged ? { merged: true } : {}),
     };
   }
 
@@ -212,9 +249,10 @@ export async function submitWrite(
     path,
     review,
     linesBefore: lines(original),
-    linesAfter: action === 'delete' ? 0 : lines(content),
+    linesAfter: action === 'delete' ? 0 : lines(result.content ?? content),
     ...(backup ? { backup } : {}),
     ...(verdicts ? { verdicts } : {}),
+    ...(result.merged ? { merged: true } : {}),
   };
 }
 
@@ -265,6 +303,7 @@ export function renderWrite(
     ...(outcome.backup ? { backup: outcome.backup } : {}),
     ...(outcome.proposal ? { proposal: outcome.proposal } : {}),
     ...(outcome.edited ? { edited: true } : {}),
+    ...(outcome.merged ? { merged: true } : {}),
     ...(outcome.applied && outcome.action !== 'delete'
       ? { lines_before: outcome.linesBefore ?? 0, lines_after: outcome.linesAfter ?? 0 }
       : {}),
@@ -300,7 +339,45 @@ export function renderWrite(
 }
 
 /** Result of making a change. */
-export type ApplyResult = { ok: true } | { ok: false; error: string };
+export type ApplyResult =
+  | {
+      ok: true;
+      /** The text written, when it was a note write. */
+      content?: string;
+      /** The note had changed and the edit was applied on top of the changes. */
+      merged?: boolean;
+    }
+  | { ok: false; error: string };
+
+/**
+ * Two lines of context: enough to place a hunk, few enough that edits to nearby sections
+ * (two lines apart) still merge.
+ */
+const PATCH = { context: 2 };
+
+/**
+ * The text to write when an edit computed from `original` meets the note's `current` text:
+ * the edit as is when nothing changed, the edit applied as a patch on top of the changes when
+ * it applies cleanly, otherwise null (a conflict).
+ * @param path - Note path, for the patch header.
+ * @param original - Text the edit was computed from; undefined or null replaces outright.
+ * @param content - Edited text.
+ * @param current - The note's text now.
+ */
+export function rebase(
+  path: string,
+  original: string | null | undefined,
+  content: string,
+  current: string,
+): string | null {
+  if (original === undefined || original === null || current === original) return content;
+  if (current === content) return content;
+  const patched = applyPatch(
+    current,
+    createPatch(path, original, content, undefined, undefined, PATCH),
+  );
+  return patched === false ? null : patched;
+}
 
 /** A write to make. */
 export interface NoteWrite {
@@ -320,6 +397,8 @@ export interface NoteWrite {
  */
 export async function applyNoteWrite(app: App, write: NoteWrite): Promise<ApplyResult> {
   const path = normalizePath(write.path);
+  let written = write.content;
+  let merged = false;
   try {
     const folders = path.split('/').slice(0, -1);
     let current = '';
@@ -350,7 +429,30 @@ export async function applyNoteWrite(app: App, write: NoteWrite): Promise<ApplyR
           ]),
         };
       }
-      await app.vault.process(existing, () => write.content);
+      // The note may have changed while the edit was in review (the user typing, another
+      // tool). Apply the edit as a patch against the text it was made from; if that patch no
+      // longer applies cleanly, refuse rather than overwrite the newer text.
+      let conflict = false;
+      await app.vault.process(existing, current => {
+        const next = rebase(path, write.original, write.content, current);
+        if (next === null) {
+          conflict = true;
+          return current;
+        }
+        if (next !== write.content) merged = true;
+        written = next;
+        return next;
+      });
+      if (conflict) {
+        return {
+          ok: false,
+          error: toolError(
+            'Conflict',
+            `"${path}" changed during review and the edit no longer fits. Nothing was written.`,
+            ['Read the note again and redo the change.'],
+          ),
+        };
+      }
       file = existing;
     } else {
       file = await app.vault.create(path, write.content);
@@ -360,7 +462,7 @@ export async function applyNoteWrite(app: App, write: NoteWrite): Promise<ApplyR
         Object.assign(frontmatter, write.properties);
       });
     }
-    return { ok: true };
+    return { ok: true, content: written, ...(merged ? { merged } : {}) };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     return {
@@ -436,7 +538,10 @@ async function queueProposal(
       '',
       '## Diff',
       '',
-      fenced(createPatch(request.path, original ?? '', content), 'diff'),
+      fenced(
+        createPatch(request.path, original ?? '', content, undefined, undefined, PATCH),
+        'diff',
+      ),
     );
   }
   if (action !== 'delete') {
@@ -485,11 +590,25 @@ export async function reviewProposal(app: App, proposalPath: string): Promise<Wr
     };
   }
   const path = String(JSON.parse(targetLine));
-  const content = /## Proposed content\n\n(`{3,})markdown\n([\s\S]*)\n\1\s*$/.exec(text)?.[2] ?? '';
+  let content = /## Proposed content\n\n(`{3,})markdown\n([\s\S]*)\n\1\s*$/.exec(text)?.[2] ?? '';
   const propsText = /## Properties\n\n(`{3,})json\n([\s\S]*?)\n\1/.exec(text)?.[2];
   const properties = propsText ? (JSON.parse(propsText) as Record<string, unknown>) : undefined;
   const target = app.vault.getAbstractFileByPath(path);
   const original = target instanceof TFile ? await app.vault.read(target) : null;
+  const diff = /## Diff\n\n(`{3,})diff\n([\s\S]*?)\n\1/.exec(text)?.[2];
+  if (action === 'edit' && diff && original !== null) {
+    // The note may have changed since the proposal was saved: replay the diff on today's text.
+    const patched = applyPatch(original, `${diff}\n`);
+    if (patched === false) {
+      return {
+        ...base,
+        action,
+        path,
+        error: toolError('Conflict', `"${path}" has changed and the proposal no longer fits.`),
+      };
+    }
+    content = patched;
+  }
   const instruction = /^What it does: (.*)$/m.exec(text)?.[1] ?? 'Proposed by a background task';
   const decision = await new Promise<Decision>(resolve => {
     const modal =
