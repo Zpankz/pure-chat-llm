@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.0-beta.1] - 2026-11-15
+
+Test build of Voice Agent 2.0 for installing with BRAT. It holds everything listed under Unreleased below, plus:
+
+- **Settings tab no longer freezes Obsidian** when Agent settings render the code mode section.
+- **Groundwork for a durable engine** (Pi Durable). It is not switched on in this build: calls run on the Classic engine as before.
+
+This is a pre-release: settings move from Pure Chat LLM to the new `voice-agent` id on first load, and hotkeys need binding again.
+
 ## [Unreleased]
 
 ### Added
