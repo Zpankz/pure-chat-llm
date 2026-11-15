@@ -94,9 +94,75 @@ export class Modal {
   }
   close(): void {}
 }
-export class Setting {}
-export class SettingGroup {}
-export class PluginSettingTab {}
+/**
+ * A stand-in for any UI object (element, setting row, component): every property read is a method
+ * that returns another stand-in, and `add*` methods call their builder callback at once, as
+ * Obsidian's do (`addText(cb)`, `addSetting(cb)`). Callbacks given to other methods (`onChange`,
+ * `onClick`, `addEventListener`) are kept, not called. Enough to render a settings tab and see it
+ * finish; nothing is drawn.
+ */
+/**
+ * Obsidian's `Setting` has `then(cb) { cb(this); return this }`, so a promise resolved with a
+ * Setting (an `await` of one, or a `.then()` callback that returns one) never settles and freezes
+ * the window in an endless microtask loop. The stand-in settles instead and records each such
+ * resolution here, so a test can fail on it.
+ */
+export const settingsResolvedAsPromise: string[] = [];
+const settingRoots = new WeakSet<object>();
+
+export function uiStub(key?: string | symbol, parent?: any): any {
+  const store: Record<string | symbol, unknown> = {};
+  const self: any = new Proxy(function () {}, {
+    // Calling a member runs it as a method of its parent: `add*` builders get a fresh stand-in.
+    apply(_t, _this, args: unknown[]) {
+      if (typeof key === 'string' && key.startsWith('add') && typeof args[0] === 'function') {
+        (args[0] as (c: unknown) => void)(uiStub());
+      }
+      if (key === 'then' && typeof args[0] === 'function') {
+        // `await stub` calls then(resolve, reject): settle with undefined, so awaiting ends.
+        if (args.length >= 2) {
+          if (parent && settingRoots.has(parent)) {
+            settingsResolvedAsPromise.push(new Error('A Setting resolved a promise').stack ?? '');
+          }
+          return void (args[0] as (c: unknown) => void)(undefined);
+        }
+        // Setting.then(cb) calls cb with the setting itself.
+        (args[0] as (c: unknown) => void)(parent);
+      }
+      return parent ?? self;
+    },
+    get(_t, k) {
+      if (k === Symbol.toPrimitive) return () => '';
+      if (k === Symbol.iterator) return function* () {};
+      if (!(k in store)) store[k] = uiStub(k, self);
+      return store[k];
+    },
+    set(_t, k, value) {
+      store[k] = value;
+      return true;
+    },
+  });
+  return self;
+}
+export class Setting {
+  constructor() {
+    const setting = uiStub();
+    settingRoots.add(setting);
+    return setting as Setting;
+  }
+}
+export class SettingGroup {
+  constructor() {
+    return uiStub() as SettingGroup;
+  }
+}
+export class PluginSettingTab {
+  containerEl: any = uiStub();
+  constructor(
+    public app?: unknown,
+    public plugin?: unknown,
+  ) {}
+}
 export class MarkdownRenderer {}
 export class EditorSuggest {}
 export class FuzzySuggestModal {}

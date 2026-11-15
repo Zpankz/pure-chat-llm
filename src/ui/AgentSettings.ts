@@ -1659,15 +1659,17 @@ export function renderSkillsAndCodeMode(
         ? `Leave empty to use the built-in module (djs ${builtIn.commit.slice(0, 7) || 'source build'}, sha256 ${builtIn.sha256.slice(0, 12)}…).`
         : `Leave empty to use ${builtIn ? 'the built-in module' : djsModulePath(plugin)}.`;
     pathSetting.setDesc(`Vault path of your own djs.wasm. ${pathHint} Checking…`);
-    void loadDjsModule(plugin).then(module =>
+    // A block body, not an arrow that returns the Setting: Setting has a `then`, so a promise
+    // resolved with it loops forever and freezes Obsidian.
+    void loadDjsModule(plugin).then(module => {
       pathSetting.setDesc(
         `Vault path of your own djs.wasm. ${pathHint} ${
           module
             ? 'Module loaded: scripts run in djs.'
             : `${djsProblem() ?? 'Module not found.'} Scripts run in the Web Worker, a weaker sandbox.`
         }`,
-      ),
-    );
+      );
+    });
     new Setting(el)
       .setName('djs download address')
       .setDesc(

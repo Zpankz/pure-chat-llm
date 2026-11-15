@@ -195,6 +195,13 @@ export interface OrchestratorSettings {
   voiceRole: 'layered' | 'orchestrator' | 'direct';
   /** Shows the orchestrator and direct voice roles in settings (layered is the default). */
   advancedVoiceRoles: boolean;
+  /**
+   * Agent engine.
+   * - `classic`: the orchestrator and workers keep their state in memory (the validated engine).
+   * - `durable`: Pi Durable keeps every conversation, tool call and task in IndexedDB, so a reload
+   *   or crash resumes mid-turn. Desktop only; in development until its validation run is green.
+   */
+  engine: 'classic' | 'durable';
   /** Model, provider and reasoning effort for each layer. */
   layers: LayerSettings;
   /**
