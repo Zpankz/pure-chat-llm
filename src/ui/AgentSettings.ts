@@ -14,7 +14,8 @@ import {
   geminiSupportsScheduling,
   geminiSupportsThinking,
 } from '../realtime/voiceCatalog';
-import { CHATGPT_SIGN_IN } from '../types';
+import { CHATGPT_SIGN_IN, GOOGLE_SIGN_IN } from '../types';
+import { GoogleAuth } from '../auth/GoogleAuth';
 import type {
   LayerApi,
   McpServerConfig,
@@ -306,6 +307,7 @@ export function renderOrchestratorSettings(
     { min: 10, max: 3600, fallback: 300 },
   );
   renderChatGPTSignIn(el, plugin, redraw);
+  renderGoogleSignIn(el, plugin, redraw);
 
   new Setting(el)
     .setName('Sub-agent vault writes')
@@ -467,6 +469,7 @@ function renderLayer(el: HTMLElement, plugin: PureChatLLM, id: LayerId, redraw: 
   const endpoints: Record<string, string> = { '': 'Default endpoint' };
   for (const e of plugin.settings.endpoints) endpoints[e.name] = e.name;
   endpoints[CHATGPT_SIGN_IN] = 'ChatGPT sign-in (your ChatGPT plan)';
+  endpoints[GOOGLE_SIGN_IN] = 'Google sign-in (your Cloud project)';
   choose(
     new Setting(el)
       .setName('Provider')
@@ -483,7 +486,9 @@ function renderLayer(el: HTMLElement, plugin: PureChatLLM, id: LayerId, redraw: 
   );
   const known = resolved.endpoint
     ? (plugin.settings.ModelsOnEndpoint[resolved.endpoint.name] ?? [])
-    : ['gpt-6.1-sol'];
+    : layer.endpoint === GOOGLE_SIGN_IN
+      ? ['gemini-4-argon']
+      : ['gpt-6.1-sol'];
   suggestText(
     new Setting(el).setName('Model').setDesc('Empty uses the provider’s default model.'),
     layer.model,
@@ -504,7 +509,7 @@ function renderLayer(el: HTMLElement, plugin: PureChatLLM, id: LayerId, redraw: 
       await save();
     },
   );
-  if (layer.endpoint !== CHATGPT_SIGN_IN) {
+  if (layer.endpoint !== CHATGPT_SIGN_IN && layer.endpoint !== GOOGLE_SIGN_IN) {
     choose(
       new Setting(el)
         .setName('API')
@@ -569,6 +574,65 @@ function renderChatGPTSignIn(el: HTMLElement, plugin: PureChatLLM, redraw: () =>
           }),
       );
   }
+}
+
+/**
+ * Sign in with Google for Gemini layers (desktop only), with the user's own OAuth client.
+ * @param el - Container.
+ * @param plugin - Plugin.
+ * @param redraw - Re-renders the tab.
+ */
+function renderGoogleSignIn(el: HTMLElement, plugin: PureChatLLM, redraw: () => void): void {
+  const auth = plugin.google;
+  const setting = new Setting(el).setName('Sign in with Google (Gemini)');
+  if (!GoogleAuth.supported) {
+    setting.setDesc(
+      'Needs the desktop app, because sign-in uses a local page on this computer. On this device, use a Gemini API key.',
+    );
+    return;
+  }
+  if (auth.signedIn) {
+    setting
+      .setDesc(
+        `Signed in. Gemini calls are billed to Cloud project ${auth.projectId}. Tokens are kept in Obsidian’s secret storage.`,
+      )
+      .addButton(b =>
+        b.setButtonText('Sign out').onClick(async () => {
+          new Notice(await auth.signOut());
+          redraw();
+        }),
+      );
+    return;
+  }
+  setting.setDesc(
+    'Google’s official route for apps: create a desktop app OAuth client in your own Google Cloud project, with the Generative Language API on and yourself as a test user. Usage is billed to that project, not to a Gemini subscription. These three values are kept in secret storage, not in the settings file.',
+  );
+  const draft = { clientId: '', clientSecret: '', projectId: '', ...(auth.client ?? {}) };
+  const field = (name: string, key: keyof typeof draft, secret = false) =>
+    new Setting(el).setName(name).addText(t => {
+      if (secret) t.inputEl.type = 'password';
+      t.setValue(draft[key]).onChange(v => {
+        draft[key] = v.trim();
+      });
+    });
+  field('Client ID', 'clientId');
+  field('Client secret', 'clientSecret', true);
+  field('Project ID', 'projectId');
+  new Setting(el).addButton(b =>
+    b
+      .setButtonText('Sign in with Google')
+      .setCta()
+      .onClick(async () => {
+        try {
+          auth.setClient(draft);
+          await auth.signIn();
+          new Notice('Signed in with Google.');
+        } catch (error) {
+          new Notice(error instanceof Error ? error.message : String(error));
+        }
+        redraw();
+      }),
+  );
 }
 
 let datalistSeq = 0;

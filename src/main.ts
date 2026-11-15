@@ -26,6 +26,7 @@ import { OrchestratorAgent } from './agents/OrchestratorAgent';
 import { CallRecorder } from './agents/CallRecorder';
 import { mergeLayers } from './agents/layers';
 import { ChatGPTAuth } from './auth/ChatGPTAuth';
+import { GoogleAuth } from './auth/GoogleAuth';
 import { hydrateMcpTokens, withoutSecrets } from './auth/mcpTokens';
 
 /** The id this fork was installed under before it became Voice Agent. */
@@ -104,6 +105,8 @@ export default class PureChatLLM extends Plugin {
   calls: CallRecorder;
   /** Sign in with ChatGPT for layers that run on the user's ChatGPT plan. */
   chatgpt: ChatGPTAuth;
+  /** Google sign-in for Gemini layers (the user's own Cloud OAuth client). */
+  google: GoogleAuth;
   /** Agent Skills discovered in the vault. */
   skills: SkillsCatalog;
   /** Small key/value store that persists code mode `store()` values for this session. */
@@ -137,6 +140,7 @@ export default class PureChatLLM extends Plugin {
     this.orchestrator = new OrchestratorAgent(this);
     this.calls = new CallRecorder(this);
     this.chatgpt = new ChatGPTAuth(this.app);
+    this.google = new GoogleAuth(this.app);
     // OAuth sign-in for remote MCP servers returns to obsidian://pure-chat-llm-oauth.
     this.registerObsidianProtocolHandler(OAUTH_ACTION, params => handleOAuthCallback(params));
     this.app.workspace.onLayoutReady(() => void this.mcp.refreshAll(false));

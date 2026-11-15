@@ -251,6 +251,8 @@ export type LayerApi = 'auto' | 'chat' | 'responses';
 
 /** Endpoint name meaning "the ChatGPT account you signed in with". */
 export const CHATGPT_SIGN_IN = 'ChatGPT sign-in';
+/** Layer provider value that runs a layer on Gemini with the user's Google sign-in. */
+export const GOOGLE_SIGN_IN = 'Google sign-in';
 
 export interface LayerModel {
   /** Endpoint name from the endpoint list, `ChatGPT sign-in`, or empty for the default endpoint. */
@@ -379,6 +381,8 @@ export interface ToolCall {
     name: string;
     arguments: string;
   };
+  /** Gemini 3+: signature returned with a function call, sent back with it. */
+  thought_signature?: string;
 }
 
 export interface StreamDelta {

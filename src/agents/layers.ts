@@ -2,7 +2,8 @@ import { DEFAULT_SETTINGS, EmptyApiKey } from '../assets/constants';
 import { LLMService } from '../core/LLMService';
 import { callResponses } from '../core/ResponsesClient';
 import type PureChatLLM from '../main';
-import { CHATGPT_SIGN_IN } from '../types';
+import { callGemini } from '../core/GeminiClient';
+import { CHATGPT_SIGN_IN, GOOGLE_SIGN_IN } from '../types';
 import type {
   ChatRequestOptions,
   ChatResponse,
@@ -56,8 +57,10 @@ export interface ResolvedLayer {
   endpoint: PureChatLLMAPI | null;
   model: string;
   effort: LayerModel['effort'];
-  api: 'chat' | 'responses';
+  api: 'chat' | 'responses' | 'gemini';
   chatgpt: boolean;
+  /** Runs on Gemini with the Google sign-in. */
+  google?: boolean;
   /** Short description for settings and logs. */
   label: string;
 }
@@ -87,6 +90,19 @@ export function resolveLayer(
       api: 'responses',
       chatgpt: true,
       label: `${model} (ChatGPT sign-in)`,
+    };
+  }
+  if (cfg.endpoint === GOOGLE_SIGN_IN) {
+    const model = modelOverride?.trim() || cfg.model.trim() || 'gemini-4-argon';
+    return {
+      layer: name,
+      endpoint: null,
+      model,
+      effort: cfg.effort,
+      api: 'gemini',
+      chatgpt: false,
+      google: true,
+      label: `${model} (Google sign-in)`,
     };
   }
   const endpoint =
@@ -124,6 +140,9 @@ export function layerProblem(plugin: PureChatLLM, resolved: ResolvedLayer): stri
   if (resolved.chatgpt) {
     return plugin.chatgpt?.signedIn ? '' : 'Sign in with ChatGPT in settings first.';
   }
+  if (resolved.google) {
+    return plugin.google?.signedIn ? '' : 'Sign in with Google in settings first.';
+  }
   const ep = resolved.endpoint;
   if (!ep) return 'No endpoint.';
   if ((!ep.apiKey || ep.apiKey === EmptyApiKey) && !/localhost|127\.0\.0\.1/.test(ep.endpoint))
@@ -155,6 +174,15 @@ export async function layerFetch(
   const problem = layerProblem(plugin, resolved);
   if (problem) throw new Error(problem);
   const request: ChatRequestOptions = { ...options, model: resolved.model, stream: false };
+  if (resolved.google) {
+    return callGemini({
+      model: resolved.model,
+      token: retry => (retry ? plugin.google.refresh() : plugin.google.accessToken()),
+      projectId: plugin.google.projectId,
+      options: request,
+      effort: resolved.effort,
+    });
+  }
   if (resolved.api === 'responses') {
     if (resolved.chatgpt) {
       return callResponses({

@@ -49,7 +49,7 @@ interface TokenResponse {
 }
 
 /** Minimal Node types used through `window.require` on desktop. */
-interface NodeHttp {
+export interface NodeHttp {
   createServer(
     handler: (
       req: { url?: string },
@@ -314,14 +314,14 @@ async function tokenRequest(params: Record<string, string>): Promise<TokenRespon
 }
 
 /** @param length - Characters. */
-function randomString(length: number): string {
+export function randomString(length: number): string {
   const bytes = new Uint8Array(length);
   crypto.getRandomValues(bytes);
   return base64Url(bytes).slice(0, length);
 }
 
 /** @param text - Verifier. */
-async function sha256Base64Url(text: string): Promise<string> {
+export async function sha256Base64Url(text: string): Promise<string> {
   const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
   return base64Url(new Uint8Array(digest));
 }
