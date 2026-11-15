@@ -1,13 +1,15 @@
 import { defineToolParameters, InferArgs, Tool } from '../tools';
 import { normalizePath, TFile } from 'obsidian';
 import { ToolOutputBuilder } from './ToolOutputBuilder';
+import { resolveNote } from '../utils/vaultResolve';
 
 const backlinksParameters = defineToolParameters({
   type: 'object',
   properties: {
     path: {
       type: 'string',
-      description: 'The path of the note to find backlinks for.',
+      description:
+        'The note: a path, its name, a [[wikilink]] or "active" for the note the user has open.',
     },
   },
   required: ['path'],
@@ -39,9 +41,13 @@ export class BacklinksTool extends Tool<BacklinksArgs> {
   async execute(args: BacklinksArgs): Promise<string> {
     const { path } = args;
     const app = this.chat.plugin.app;
-    const normalizedPath = normalizePath(path);
+    const resolved = resolveNote(app, path);
+    if (!resolved.file && resolved.candidates.length) {
+      return `Several notes match "${path}": ${resolved.candidates.map(f => f.path).join(', ')}. Call again with the full path.`;
+    }
+    const normalizedPath = resolved.file?.path ?? normalizePath(path);
 
-    const targetFile = app.vault.getAbstractFileByPath(normalizedPath);
+    const targetFile = resolved.file;
     if (!targetFile || !(targetFile instanceof TFile)) {
       const parentDir = normalizedPath.split('/').slice(0, -1).join('/');
       const similarGlob = parentDir ? `${parentDir}/*.md` : '*.md';
@@ -71,7 +77,8 @@ export class BacklinksTool extends Tool<BacklinksArgs> {
         .addKeyValue('Status', 'No backlinks found')
         .addSeparator()
         .addSuggestions(
-          `search_vault("[[${targetFile.basename}]]") - Find unresolved links`,
+          `traverse_graph("${normalizedPath}") - Follow its outgoing links and the wider local graph`,
+          `search_vault("${targetFile.basename}") - Find plain-text mentions`,
           'This note is not linked from any other notes yet',
         )
         .build();

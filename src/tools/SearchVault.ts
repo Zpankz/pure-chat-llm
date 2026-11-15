@@ -1,6 +1,7 @@
 import { defineToolParameters, InferArgs, Tool } from '../tools';
 import { ToolOutputBuilder } from './ToolOutputBuilder';
 import { BooleanSearchParser, ParsedQuery } from '../utils/BooleanSearchParser';
+import { inFolders, resolveFolders } from '../utils/vaultResolve';
 
 const searchVaultParameters = defineToolParameters({
   type: 'object',
@@ -26,6 +27,11 @@ const searchVaultParameters = defineToolParameters({
       description: 'Number of lines of context to include around the match. Defaults to 1.',
       default: 1,
     },
+    folder: {
+      type: 'string',
+      description:
+        'Only search notes inside this folder, at any depth. A path ("Med/ANZCA/LO") or just a folder name ("LO"), which matches that folder wherever it sits.',
+    },
   },
   required: ['query'],
 } as const);
@@ -39,7 +45,7 @@ export class SearchVaultTool extends Tool<SearchVaultArgs> {
   readonly name = 'search_vault';
   readonly classification = 'Vault';
   readonly description =
-    'Performs a content search with boolean logic (AND, OR, NOT, parentheses) across all markdown notes in the vault.';
+    'Searches note contents and note titles with boolean logic (AND, OR, NOT, parentheses), optionally inside one folder. A plain phrase with no hits is retried as all of its words. To list the notes in a folder, use list_vault_folders with include_notes.';
   readonly parameters = searchVaultParameters;
 
   /**
@@ -54,12 +60,59 @@ export class SearchVaultTool extends Tool<SearchVaultArgs> {
    * @param args
    */
   async execute(args: SearchVaultArgs): Promise<string> {
-    const { query, regex = false, limit = 20, context_lines = 1 } = args;
+    const { query, regex = false, limit = 20, context_lines = 1, folder } = args;
     const app = this.chat.plugin.app;
 
     void this.status(`Searching vault for "${query}"...`);
 
-    const files = app.vault.getMarkdownFiles();
+    let files = app.vault.getMarkdownFiles();
+    if (folder) {
+      const folders = resolveFolders(app, folder);
+      if (!folders.length) {
+        return new ToolOutputBuilder()
+          .addError('FolderNotFoundError', `No folder named or at "${folder}"`, [
+            'list_vault_folders("/", recursive=true) - See every folder',
+          ])
+          .build();
+      }
+      files = files.filter(f => inFolders(f, folders));
+    }
+    // A plain phrase with no hits is retried as "all of its words".
+    if (!regex && !BooleanSearchParser.isBooleanQuery(query) && /\s/.test(query.trim())) {
+      const phrase = query.toLowerCase();
+      let any = false;
+      for (const f of files) {
+        if (
+          f.path.toLowerCase().includes(phrase) ||
+          (await app.vault.cachedRead(f)).toLowerCase().includes(phrase)
+        ) {
+          any = true;
+          break;
+        }
+      }
+      if (!any) {
+        const words = query
+          .trim()
+          .split(/\s+/)
+          .map(w => w.replace(/"/g, ''));
+        return this.execute({ ...args, query: words.join(' AND ') });
+      }
+    }
+    // Notes whose title or path matches come first, so a search for a note's name finds it.
+    const titleHits = regex
+      ? []
+      : files
+          .filter(f => {
+            const words = query
+              .toLowerCase()
+              .replace(/\b(and|or|not)\b|[()"]/gi, ' ')
+              .split(/\s+/)
+              .filter(Boolean);
+            const p = f.path.toLowerCase();
+            return words.length > 0 && words.every(w => p.includes(w));
+          })
+          .slice(0, 10)
+          .map(f => f.path);
     const results: Array<{ file: string; lineNum: number; context: string }> = [];
     let matchCount = 0;
     const searchStartTime = Date.now();
@@ -144,6 +197,15 @@ export class SearchVaultTool extends Tool<SearchVaultArgs> {
 
     const searchTime = ((Date.now() - searchStartTime) / 1000).toFixed(2);
 
+    if (results.length === 0 && titleHits.length) {
+      return new ToolOutputBuilder()
+        .addHeader(`SEARCH RESULTS: "${query}"`)
+        .addKeyValue('Content matches', 'none')
+        .addKeyValue('Notes whose title or path matches', titleHits.join(', '))
+        .addSuggestions(`read_file("${titleHits[0]}")`)
+        .build();
+    }
+
     if (results.length === 0) {
       return new ToolOutputBuilder()
         .addHeader(`SEARCH RESULTS: "${query}"`)
@@ -153,7 +215,8 @@ export class SearchVaultTool extends Tool<SearchVaultArgs> {
         .addSeparator()
         .addSuggestions(
           'Try a different search term or use regex: true for pattern matching',
-          'Use glob_vault_files() to explore file structure',
+          'Use list_vault_folders(path, include_notes=true) to list the notes in a folder',
+          'Use traverse_graph(note) to follow links from a note',
           'Try boolean operators: "term1 OR term2 AND term3"',
         )
         .build();
@@ -172,6 +235,8 @@ export class SearchVaultTool extends Tool<SearchVaultArgs> {
     );
     builder.addKeyValue('Files searched', files.length.toString());
     builder.addKeyValue('Time taken', `${searchTime}s`);
+    if (titleHits.length)
+      builder.addKeyValue('Notes whose title or path matches', titleHits.join(', '));
     builder.addSeparator();
 
     results.forEach((result, idx) => {

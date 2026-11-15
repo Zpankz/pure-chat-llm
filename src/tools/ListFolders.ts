@@ -1,14 +1,22 @@
 import { defineToolParameters, InferArgs, Tool } from '../tools';
 import { TFolder, TFile } from 'obsidian';
 import { ToolOutputBuilder } from './ToolOutputBuilder';
+import { resolveFolders } from '../utils/vaultResolve';
 
 const listFoldersParameters = defineToolParameters({
   type: 'object',
   properties: {
     path: {
       type: 'string',
-      description: 'The root path to start listing folders from. Defaults to the vault root (/).',
+      description:
+        'Folder path, or just a folder name ("LO"), which is found wherever it sits. Defaults to the vault root (/).',
       default: '/',
+    },
+    include_notes: {
+      type: 'boolean',
+      description:
+        'Also list the notes in the folder (and, with recursive, in its subfolders). Defaults to true.',
+      default: true,
     },
     recursive: {
       type: 'boolean',
@@ -28,7 +36,7 @@ export class ListFoldersTool extends Tool<ListFoldersArgs> {
   readonly name = 'list_vault_folders';
   readonly classification = 'Vault';
   readonly description =
-    'Lists folders in the vault to understand the directory structure and suggest locations for new notes.';
+    'Lists a folder\'s subfolders and the notes inside it. Accepts a full path or just a folder name. Use it for "the notes under folder X".';
   readonly parameters = listFoldersParameters;
 
   /**
@@ -43,11 +51,20 @@ export class ListFoldersTool extends Tool<ListFoldersArgs> {
    * @param args
    */
   async execute(args: ListFoldersArgs): Promise<string> {
-    const { path = '/', recursive = false } = args;
+    const { path = '/', recursive = false, include_notes = true } = args;
     const app = this.chat.plugin.app;
 
-    const targetPath = String(path);
-    const rootFolder = app.vault.getAbstractFileByPath(targetPath === '' ? '/' : targetPath);
+    const requested = String(path);
+    const matches = resolveFolders(app, requested === '/' ? '' : requested);
+    if (matches.length > 1) {
+      return new ToolOutputBuilder()
+        .addHeader(`FOLDERS NAMED "${requested}"`)
+        .addKeyValue('Matches', matches.map(f => f.path).join(', '))
+        .addSuggestions('Call again with the full path of the one you mean')
+        .build();
+    }
+    const rootFolder = matches[0];
+    const targetPath = rootFolder?.path ?? requested;
 
     if (!rootFolder || !(rootFolder instanceof TFolder)) {
       return new ToolOutputBuilder()
@@ -92,6 +109,30 @@ export class ListFoldersTool extends Tool<ListFoldersArgs> {
 
     walk(rootFolder, 0);
 
+    // Notes in the folder (and subfolders when recursive), capped for the model.
+    const notes: string[] = [];
+    if (include_notes) {
+      const collect = (folder: TFolder) => {
+        for (const child of folder.children) {
+          if (child instanceof TFile && child.extension === 'md') notes.push(child.path);
+          else if (recursive && child instanceof TFolder) collect(child);
+        }
+      };
+      collect(rootFolder);
+    }
+    const noteLimit = 80;
+    const notesBlock = notes.length
+      ? `${notes.slice(0, noteLimit).join('\n')}${notes.length > noteLimit ? `\n…and ${notes.length - noteLimit} more` : ''}`
+      : '';
+
+    if (folderStats.length === 0 && notes.length) {
+      return new ToolOutputBuilder()
+        .addHeader(`NOTES IN: "${targetPath}"`)
+        .addKeyValue('Notes', String(notes.length))
+        .addSection('Notes', notesBlock)
+        .build();
+    }
+
     if (folderStats.length === 0) {
       const builder = new ToolOutputBuilder()
         .addHeader(`FOLDERS IN: "${targetPath}"`)
@@ -133,6 +174,7 @@ export class ListFoldersTool extends Tool<ListFoldersArgs> {
     const totalSize = folderStats.reduce((sum, f) => sum + f.totalSize, 0);
     builder.addKeyValue('STATISTICS - Total files', totalFiles.toString());
     builder.addKeyValue('Total size', formatSize(totalSize));
+    if (notesBlock) builder.addSection(`Notes (${notes.length})`, notesBlock);
 
     // Add suggestions
     const suggestions = [];
