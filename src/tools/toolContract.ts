@@ -68,6 +68,8 @@ export const TOOL_LAYERS: Record<string, ToolLayer[]> = {
   generate_image: FOREGROUND,
   suno_music_gen: FOREGROUND,
   run_obsidian_command: FOREGROUND,
+  // Only the voice marks topics in a call.
+  new_topic: ['voice'],
 };
 
 /**

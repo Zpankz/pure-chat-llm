@@ -826,6 +826,20 @@ export function renderVoiceSettings(
             await save();
           }),
       );
+    new Setting(el)
+      .setName('Call layout')
+      .setDesc(
+        'Topics: the voice starts a linked note for each new concept, step or idea, with an index note mapping the branches. Transcript: one note with the whole conversation.',
+      )
+      .addDropdown(d =>
+        d
+          .addOptions({ topics: 'Topic notes with an index', transcript: 'One transcript note' })
+          .setValue(v.callNotes ?? 'topics')
+          .onChange(async value => {
+            v.callNotes = value === 'transcript' ? 'transcript' : 'topics';
+            await save();
+          }),
+      );
   }
 
   switch (v.provider) {

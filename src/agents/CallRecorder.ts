@@ -19,6 +19,14 @@ import type { SubAgentTask } from './types';
  *   orchestrator's conversation links each thread where it started it. Lists of children sit in
  *   frontmatter and a "Threads" section as well, for the graph and for Dataview.
  *
+ * - **Topics (Zettelkasten calls, decision 16b).** By default the voice layer splits the call into
+ *   topic notes as it goes (`new_topic`): each new concept, step, idea, aspect or alternative gets
+ *   its own note in the call folder, with the user's words that opened it, linked to the topics it
+ *   follows from (several, for a branch that joins earlier ones) and to those that follow it. The
+ *   call's folder note becomes an index that maps the topics as a tree. Relays to the orchestrator
+ *   and threads started link back to the topic they came from. With topics off, the folder note
+ *   holds the whole transcript.
+ *
  * Calls go in the calls folder setting ("Voice Agent" by default), one folder per call. Work that
  * finishes after the call ends is still written to that call's notes, until the next call starts.
  */
@@ -38,6 +46,8 @@ export interface OrchestratorEntry {
   fromUser?: boolean;
   /** For `spawn`: the task started. */
   taskId?: string;
+  /** Topic of the call this came from. */
+  topicId?: number;
 }
 
 /** A point in the call transcript where it handed off to a child node. */
@@ -47,6 +57,20 @@ interface HandOff {
   target: string;
   /** Block id in the child's note, if the link should land on that exact point. */
   anchor?: string;
+  /** Topic the call was on. */
+  topicId?: number;
+}
+
+/** One topic note of a call. */
+export interface CallTopic {
+  id: number;
+  title: string;
+  kind: string;
+  /** Topics this one builds on (the first is its place in the index tree). */
+  followsFrom: number[];
+  /** When it opened: the user's words that started it. */
+  at: number;
+  path: string;
 }
 
 export interface TimingEntry {
@@ -75,7 +99,17 @@ export interface CallRecord {
   taskIds: string[];
   handOffs: HandOff[];
   timings: TimingEntry[];
+  /** `topics`: one note per topic plus an index; `transcript`: one transcript note. */
+  structure: 'topics' | 'transcript';
+  topics: CallTopic[];
+  /** When the call moved to each topic, in order (a topic can be returned to). */
+  topicSwitches: { at: number; id: number }[];
 }
+
+/** Title of the first topic until the voice names it. */
+const OPENING = 'Start of the call';
+/** A new topic takes the user's last words with it when they were said this recently. */
+const OPENING_WORDS_MS = 60_000;
 
 /** Characters of one tool output kept in the orchestrator note. */
 const MAX_TOOL_OUTPUT = 4000;
@@ -190,7 +224,23 @@ export class CallRecorder {
       taskIds: [],
       handOffs: [],
       timings: [],
+      structure:
+        (this.plugin.settings.voice.callNotes ?? 'topics') === 'topics' ? 'topics' : 'transcript',
+      topics: [],
+      topicSwitches: [],
     };
+    if (this.current.structure === 'topics') {
+      const first: CallTopic = {
+        id: 1,
+        title: OPENING,
+        kind: 'opening',
+        followsFrom: [],
+        at,
+        path: this.topicPath(this.current, 1, OPENING),
+      };
+      this.current.topics.push(first);
+      this.current.topicSwitches.push({ at, id: 1 });
+    }
     // Save now and then while the call runs, so a crash loses little.
     this.autosave = window.setInterval(() => void this.saveCall(), 60_000);
     void this.saveCall();
@@ -238,6 +288,143 @@ export class CallRecorder {
     if (record.timings.length > MAX_TIMINGS) record.timings.shift();
   }
 
+  /** The topic the call is on now, if the call is split into topics. */
+  currentTopic(): CallTopic | undefined {
+    const record = this.current;
+    if (!record || record.structure !== 'topics') return undefined;
+    return this.topicAt(record, Number.MAX_SAFE_INTEGER);
+  }
+
+  /**
+   * Starts a new topic note (the voice's `new_topic`).
+   * @param title - Short title.
+   * @param kind - Concept, step, idea, aspect, alternative, question or decision.
+   * @param followsFrom - Earlier topics it builds on, by title or number; empty means the current one.
+   */
+  newTopic(title: string, kind: string, followsFrom: string[] = []): string {
+    const record = this.current;
+    if (!record || !this.live || record.structure !== 'topics') {
+      return 'Error: NoCall: this call is not being split into topics.';
+    }
+    const current = this.currentTopic() as CallTopic;
+    const parents: number[] = [];
+    const unknown: string[] = [];
+    for (const ref of followsFrom) {
+      const found = this.findTopic(record, ref);
+      if (found) {
+        if (!parents.includes(found.id)) parents.push(found.id);
+      } else unknown.push(ref);
+    }
+    if (!parents.length) parents.push(current.id);
+    const at = this.openingAt(record);
+    const clean = safeName(title) || 'Untitled';
+    // The opening topic takes the first real title if nothing was said under it yet.
+    if (current.kind === 'opening' && !this.userLinesIn(record, current.id, at)) {
+      const path = this.topicPath(record, current.id, clean);
+      if (path !== current.path) this.move(current.path, path, p => (current.path = p));
+      current.title = clean;
+      current.kind = kind;
+      void this.saveCall();
+      return `Topic 1 is now "${clean}". Carry on; do not mention this.`;
+    }
+    const id = record.topics.length + 1;
+    record.topics.push({
+      id,
+      title: clean,
+      kind,
+      followsFrom: parents.filter(p => p !== id),
+      at,
+      path: this.topicPath(record, id, clean),
+    });
+    record.topicSwitches.push({ at, id });
+    void this.saveCall();
+    const from = parents.map(p => `${p} "${record.topics[p - 1].title}"`).join(' and ');
+    return `Topic ${id} "${clean}" started, following ${from}.${
+      unknown.length ? ` No earlier topic matched ${unknown.map(u => `"${u}"`).join(', ')}.` : ''
+    } Carry on; do not mention this.`;
+  }
+
+  /**
+   * Carries on in an earlier topic.
+   * @param ref - Its title or number.
+   */
+  returnToTopic(ref: string): string {
+    const record = this.current;
+    if (!record || !this.live || record.structure !== 'topics') {
+      return 'Error: NoCall: this call is not being split into topics.';
+    }
+    const topic = this.findTopic(record, ref);
+    if (!topic) {
+      const titles = record.topics.map(t => `${t.id} "${t.title}"`).join(', ');
+      return `Error: NotFound: no topic matches "${ref}".\nTry: one of ${titles}, or start a new topic.`;
+    }
+    record.topicSwitches.push({ at: this.openingAt(record), id: topic.id });
+    void this.saveCall();
+    return `Back on topic ${topic.id} "${topic.title}". Carry on; do not mention this.`;
+  }
+
+  /** @param record - Call. @param ref - Title or number. */
+  private findTopic(record: CallRecord, ref: string): CallTopic | undefined {
+    const n = Number(ref.replace(/^#/, ''));
+    if (Number.isInteger(n) && n >= 1) return record.topics[n - 1];
+    const key = ref
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, ' ')
+      .trim();
+    if (!key) return undefined;
+    const norm = (t: CallTopic) =>
+      t.title
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, ' ')
+        .trim();
+    return (
+      [...record.topics].reverse().find(t => norm(t) === key) ??
+      [...record.topics].reverse().find(t => norm(t).includes(key) || key.includes(norm(t)))
+    );
+  }
+
+  /**
+   * When a new topic opens: at the user's last words, if they came after the last switch and
+   * recently, so the words that raised the topic open its note.
+   */
+  private openingAt(record: CallRecord): number {
+    const now = Date.now();
+    const lastSwitch = record.topicSwitches[record.topicSwitches.length - 1]?.at ?? 0;
+    const lines = this.transcriptSource?.() ?? [];
+    for (let i = lines.length - 1; i >= 0; i--) {
+      const l = lines[i];
+      if (l.role !== 'user' || !l.at || !l.text.trim()) continue;
+      const at = l.at > lastSwitch && now - l.at <= OPENING_WORDS_MS ? l.at : now;
+      // Switches never go back in time, so each line belongs to exactly one topic.
+      return Math.max(at, lastSwitch + 1);
+    }
+    return Math.max(now, lastSwitch + 1);
+  }
+
+  /** Whether the user said anything under a topic before a time. */
+  private userLinesIn(record: CallRecord, id: number, before: number): boolean {
+    return (this.transcriptSource?.() ?? []).some(
+      l =>
+        l.role === 'user' &&
+        !!l.text.trim() &&
+        (l.at ?? 0) < before &&
+        this.topicAt(record, l.at ?? 0)?.id === id,
+    );
+  }
+
+  /** The topic the call was on at a time. */
+  private topicAt(record: CallRecord, at: number): CallTopic | undefined {
+    let id = record.topicSwitches[0]?.id;
+    for (const s of record.topicSwitches) if (s.at <= at) id = s.id;
+    return id ? record.topics[id - 1] : undefined;
+  }
+
+  private topicPath(record: CallRecord, id: number, title: string): string {
+    return normalizePath(
+      `${record.folder}/${record.stamp} ${String(id).padStart(2, '0')} ${title}.md`,
+    );
+  }
+
   /**
    * Places a new sub-agent task's note in the call's tree.
    * @param task - New task.
@@ -248,11 +435,15 @@ export class CallRecorder {
     record.taskIds.push(task.id);
     const name = `${record.stamp} ${task.id}${safeName(task.title) ? ` ${safeName(task.title)}` : ''}`;
     const anchor = `spawn-${task.id}`;
+    const topic = this.currentTopic();
+    if (topic) task.topicNote = topic.path;
     if (record.orchestratorPath) {
       // The orchestrator now has a child, so it becomes a folder note.
       const orchestratorName = baseName(record.orchestratorPath);
       const target = normalizePath(`${record.folder}/${orchestratorName}/${orchestratorName}.md`);
-      if (record.orchestratorPath !== target) this.move(record, record.orchestratorPath, target);
+      if (record.orchestratorPath !== target) {
+        this.move(record.orchestratorPath, target, p => (record.orchestratorPath = p));
+      }
       task.notePath = normalizePath(`${record.folder}/${orchestratorName}/${name}.md`);
       task.parentNote = target;
       task.parentAnchor = anchor;
@@ -262,12 +453,14 @@ export class CallRecorder {
         text: task.title,
         anchor,
         taskId: task.id,
+        topicId: topic?.id,
       });
     } else {
+      // The voice started it directly: its parent is the topic it came from, or the call.
       task.notePath = normalizePath(`${record.folder}/${name}.md`);
-      task.parentNote = record.callPath;
+      task.parentNote = topic?.path ?? record.callPath;
       task.parentAnchor = anchor;
-      record.handOffs.push({ at: Date.now(), target: task.id });
+      record.handOffs.push({ at: Date.now(), target: task.id, anchor, topicId: topic?.id });
     }
     task.callNote = record.callPath;
     void this.saveCall();
@@ -291,7 +484,13 @@ export class CallRecorder {
     if (kind === 'input' && fromUser) {
       entry.fromUser = true;
       entry.anchor = `relay-${++this.anchorSeq}`;
-      record.handOffs.push({ at: entry.at, target: 'orchestrator', anchor: entry.anchor });
+      entry.topicId = this.currentTopic()?.id;
+      record.handOffs.push({
+        at: entry.at,
+        target: 'orchestrator',
+        anchor: entry.anchor,
+        topicId: entry.topicId,
+      });
     }
     record.orchestratorLog.push(entry);
   }
@@ -314,13 +513,13 @@ export class CallRecorder {
   }
 
   /**
-   * Moves a node's note (it gained children), keeping links elsewhere in the vault working.
-   * @param record - Call.
+   * Moves a node's note (it gained children, or was renamed), keeping links elsewhere working.
    * @param from - Old path.
    * @param to - New path.
+   * @param apply - Records the new path at once, so later writes go there.
    */
-  private move(record: CallRecord, from: string, to: string): void {
-    if (record.orchestratorPath === from) record.orchestratorPath = to;
+  private move(from: string, to: string, apply: (path: string) => void): void {
+    apply(to);
     void this.enqueue(async () => {
       const file = this.plugin.app.vault.getAbstractFileByPath(from);
       if (!(file instanceof TFile)) return;
@@ -348,8 +547,9 @@ export class CallRecorder {
     return task.notePath ? linkTo(task.notePath, label) : label;
   }
 
-  /** Renders the call note: the root of the tree. */
+  /** Renders the call note: the root of the tree (the index, when the call has topics). */
   renderCall(record: CallRecord, lines: CallLine[]): string {
+    if (record.structure === 'topics') return this.renderIndex(record);
     const started = new Date(record.startedAt);
     const tasks = this.tasks(record);
     const orch = record.orchestratorPath;
@@ -380,9 +580,21 @@ export class CallRecorder {
       '',
       '## Transcript',
       '',
+      ...this.renderLines(record, lines, record.handOffs),
     ];
-    // Hand-offs are linked inline, right after what was said before them.
-    const handOffs = [...record.handOffs].sort((a, b) => a.at - b.at);
+    if (record.timings.length) out.push(...this.renderTimings(record));
+    return out.join('\n');
+  }
+
+  /**
+   * A transcript with hand-offs linked inline, right after what was said before them.
+   * @param record - Call.
+   * @param lines - Lines to render.
+   * @param handOffs - Hand-offs among them.
+   */
+  private renderLines(record: CallRecord, lines: CallLine[], handOffs: HandOff[]): string[] {
+    const out: string[] = [];
+    handOffs = [...handOffs].sort((a, b) => a.at - b.at);
     let h = 0;
     const flush = (until: number) => {
       while (h < handOffs.length && handOffs[h].at <= until) {
@@ -407,7 +619,108 @@ export class CallRecorder {
     }
     flush(Number.MAX_SAFE_INTEGER);
     if (!said) out.push('Nothing was said.', '');
+    return out;
+  }
+
+  private topicLink(topic: CallTopic, alias?: string): string {
+    return linkTo(topic.path, alias ?? topic.title);
+  }
+
+  /** Topics that follow from one. */
+  private children(record: CallRecord, id: number): CallTopic[] {
+    return record.topics.filter(t => t.followsFrom.includes(id));
+  }
+
+  /** Renders the index note: the call's folder note when it has topics. */
+  renderIndex(record: CallRecord): string {
+    const tasks = this.tasks(record);
+    const orch = record.orchestratorPath;
+    const out = [
+      '---',
+      'type: voice-call',
+      `started: ${new Date(record.startedAt).toISOString()}`,
+      ...(record.endedAt ? [`ended: ${new Date(record.endedAt).toISOString()}`] : []),
+      `provider: ${yaml(record.provider)}`,
+      `voice_role: ${record.voiceRole}`,
+      ...(orch ? [`orchestrator: ${yaml(linkTo(orch))}`] : []),
+      'topics:',
+      ...record.topics.map(t => `  - ${yaml(linkTo(t.path))}`),
+      ...(tasks.some(t => t.notePath)
+        ? [
+            'threads:',
+            ...tasks.filter(t => t.notePath).map(t => `  - ${yaml(linkTo(t.notePath as string))}`),
+          ]
+        : []),
+      '---',
+      '',
+      `# Voice call ${record.stamp}`,
+      '',
+      ...(record.endedAt ? [] : ['_Call in progress._', '']),
+      '## Map',
+      '',
+    ];
+    // A tree by each topic's first parent; a topic with more parents notes the others.
+    const placed = new Set<number>();
+    const walk = (topic: CallTopic, depth: number) => {
+      if (placed.has(topic.id)) return;
+      placed.add(topic.id);
+      const also = topic.followsFrom.slice(1).map(p => record.topics[p - 1]);
+      out.push(
+        `${'  '.repeat(depth)}- ${this.topicLink(topic)} _${topic.kind}_${
+          also.length ? `, also from ${also.map(a => this.topicLink(a)).join(', ')}` : ''
+        }`,
+      );
+      for (const child of record.topics.filter(t => t.followsFrom[0] === topic.id)) {
+        walk(child, depth + 1);
+      }
+    };
+    for (const root of record.topics.filter(t => !t.followsFrom.length)) walk(root, 0);
+    for (const t of record.topics) walk(t, 0);
+    const flow = record.topicSwitches.map(s => this.topicLink(record.topics[s.id - 1]));
+    out.push('', '## Flow', '', flow.join(' → '), '', '## Threads', '');
+    out.push(
+      ...(orch ? [`- ${linkTo(orch, 'Orchestrator')}`] : []),
+      ...tasks.map(t => `${orch ? '  ' : ''}- ${this.taskLink(t)}`),
+      ...(!orch && !tasks.length ? ['None.'] : []),
+      '',
+    );
     if (record.timings.length) out.push(...this.renderTimings(record));
+    return out.join('\n');
+  }
+
+  /** Renders one topic note: the user's words on it, linked to the topics around it. */
+  renderTopic(record: CallRecord, topic: CallTopic, lines: CallLine[]): string {
+    const parents = topic.followsFrom.map(p => record.topics[p - 1]);
+    const next = this.children(record, topic.id);
+    const tasks = this.tasks(record).filter(t => t.topicNote === topic.path && t.notePath);
+    const mine = lines.filter(l => this.topicAt(record, l.at ?? 0)?.id === topic.id);
+    const handOffs = record.handOffs.filter(h => h.topicId === topic.id);
+    const out = [
+      '---',
+      'type: voice-topic',
+      `kind: ${topic.kind}`,
+      `call: ${yaml(linkTo(record.callPath))}`,
+      `started: ${new Date(topic.at).toISOString()}`,
+      ...(parents.length
+        ? ['follows_from:', ...parents.map(p => `  - ${yaml(linkTo(p.path))}`)]
+        : []),
+      ...(next.length ? ['leads_to:', ...next.map(n => `  - ${yaml(linkTo(n.path))}`)] : []),
+      ...(tasks.length
+        ? ['threads:', ...tasks.map(t => `  - ${yaml(linkTo(t.notePath as string))}`)]
+        : []),
+      '---',
+      '',
+      `# ${topic.title}`,
+      '',
+      `Part of ${linkTo(record.callPath, `Voice call ${record.stamp}`)}.${
+        parents.length ? ` Follows from ${parents.map(p => this.topicLink(p)).join(' and ')}.` : ''
+      }`,
+      '',
+      ...this.renderLines(record, mine, handOffs),
+    ];
+    if (next.length) {
+      out.push('## Leads to', '', ...next.map(n => `- ${this.topicLink(n)} _${n.kind}_`), '');
+    }
     return out.join('\n');
   }
 
@@ -473,7 +786,11 @@ export class CallRecorder {
     for (const e of record.orchestratorLog) {
       out.push(`### ${clock(e.at)} ${e.fromUser ? 'From the call' : heads[e.kind]}`, '');
       if (e.kind === 'input' && e.fromUser && e.anchor) {
-        out.push(`Relayed from ${linkTo(record.callPath, 'the voice call')}. ^${e.anchor}`, '');
+        const topic = e.topicId ? record.topics[e.topicId - 1] : undefined;
+        out.push(
+          `Relayed from ${topic ? `${this.topicLink(topic)} in ` : ''}${linkTo(record.callPath, 'the voice call')}. ^${e.anchor}`,
+          '',
+        );
       }
       if (e.kind === 'spawn') {
         const task = e.taskId ? this.plugin.agents?.find(e.taskId) : undefined;
@@ -515,9 +832,13 @@ export class CallRecorder {
   saveCall(): Promise<void> {
     const record = this.current;
     if (!record) return Promise.resolve();
-    return this.enqueue(() =>
-      this.write(record.callPath, this.renderCall(record, this.transcriptSource?.() ?? [])),
-    );
+    return this.enqueue(async () => {
+      const lines = this.transcriptSource?.() ?? [];
+      await this.write(record.callPath, this.renderCall(record, lines));
+      for (const topic of record.topics) {
+        await this.write(topic.path, this.renderTopic(record, topic, lines));
+      }
+    });
   }
 
   /** Writes the orchestrator note. */

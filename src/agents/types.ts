@@ -114,6 +114,8 @@ export interface SubAgentTask {
   notePath?: string;
   /** Note of the thread that started this one (the orchestrator's, or the call's), when saved. */
   parentNote?: string;
+  /** Topic note of the call this thread came from. */
+  topicNote?: string;
   /** Block id in the parent note where this thread was started, without the caret. */
   parentAnchor?: string;
   /** Note of the voice call this task belongs to. */

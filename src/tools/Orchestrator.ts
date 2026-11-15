@@ -3,6 +3,7 @@ import type { SubAgentTask } from '../agents/types';
 
 /** Names of tools only an orchestrator gets. */
 export const ORCHESTRATOR_TOOL_NAMES = [
+  'new_topic',
   'delegate_task',
   'check_tasks',
   'get_task_result',
@@ -13,6 +14,7 @@ export const ORCHESTRATOR_TOOL_NAMES = [
 
 /** Tools of the voice layer in the layered setup. */
 export const VOICE_LAYER_TOOL_NAMES = [
+  'new_topic',
   'relay_to_orchestrator',
   'orchestrator_activity',
   'check_tasks',

@@ -9,13 +9,13 @@ import type { SubAgentTask } from '../../../src/agents/types';
 /**
  * @param voiceRole - Orchestrator voice role.
  */
-function setup(voiceRole: string) {
+function setup(voiceRole: string, callNotes: 'topics' | 'transcript' = 'transcript') {
   const app = createApp();
   const tasks = new Map<string, SubAgentTask>();
   const plugin = {
     app,
     settings: {
-      voice: { saveCalls: true, callsFolder: 'Voice Agent' },
+      voice: { saveCalls: true, callsFolder: 'Voice Agent', callNotes },
       orchestrator: { voiceRole },
     },
     agents: { find: (id: string) => tasks.get(id) },
@@ -118,3 +118,73 @@ test('recent user words are verbatim and only while live', async () => {
 function escape(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
+
+test('a call split into topics: notes per topic, branching links, an index', async () => {
+  const { app, recorder, task } = setup('layered', 'topics');
+  const t0 = Date.now();
+  const lines: CallLine[] = [];
+  const record = recorder.start('GPT Live', () => lines);
+  assert.ok(record);
+  const say = (role: 'user' | 'assistant', text: string, at: number) =>
+    lines.push({ role, text, at });
+
+  // The first named topic takes over the opening note, since nothing was said under it yet.
+  say('user', 'Let us talk about folder notes for calls', t0 + 10);
+  assert.match(recorder.newTopic('Folder notes', 'concept'), /Topic 1 is now/);
+  say('assistant', 'Sure.', t0 + 20);
+  recorder.logOrchestrator('input', 'Plan folder notes', true);
+  const t1 = task('t1', 'Plan');
+  recorder.attachTask(t1);
+
+  // A new idea, then a branch back from topic 1, joining topic 2.
+  say('user', 'What about Zettelkasten notes', Date.now() + 1);
+  assert.match(recorder.newTopic('Zettelkasten notes', 'idea'), /Topic 2/);
+  say('user', 'Or an alternative using canvases', Date.now() + 2);
+  const msg = recorder.newTopic('Canvas layout', 'alternative', ['1', 'zettelkasten', 'nope']);
+  assert.match(msg, /Topic 3 "Canvas layout" started, following 1 "Folder notes" and 2/);
+  assert.match(msg, /No earlier topic matched "nope"/);
+  assert.match(recorder.returnToTopic('Folder notes'), /Back on topic 1/);
+  assert.match(recorder.returnToTopic('missing'), /^Error: NotFound/);
+
+  await recorder.finish();
+  await recorder.flush();
+
+  const [one, two, three] = record.topics;
+  assert.equal(one.path, `${record.folder}/${record.stamp} 01 Folder notes.md`);
+  assert.equal(
+    app.vault.getAbstractFileByPath(`${record.folder}/${record.stamp} 01 Start of the call.md`),
+    null,
+  );
+  assert.deepEqual(three.followsFrom, [1, 2]);
+  assert.equal(t1.topicNote, one.path);
+
+  const index = app.vault.contents.get(record.callPath) ?? '';
+  assert.match(index, /## Map/);
+  assert.ok(index.indexOf('01 Folder notes') < index.indexOf('02 Zettelkasten notes'));
+  assert.match(index, /also from \[\[[^\]]*02 Zettelkasten notes\|Zettelkasten notes\]\]/);
+  assert.match(index, /## Flow/);
+
+  const n1 = app.vault.contents.get(one.path) ?? '';
+  const n2 = app.vault.contents.get(two.path) ?? '';
+  const n3 = app.vault.contents.get(three.path) ?? '';
+  // The words that opened each topic are in its note, with hand-offs inline.
+  assert.match(n1, /folder notes for calls/);
+  assert.match(n1, /Passed to the \[\[.*#\^relay-1\|orchestrator\]\]/);
+  assert.match(n2, /Zettelkasten notes/);
+  assert.match(n3, /alternative using canvases/);
+  // Links both ways between topics.
+  assert.match(n3, /follows_from:/);
+  assert.ok(n1.includes('## Leads to') && n1.includes('02 Zettelkasten notes'));
+  assert.ok(n2.includes('03 Canvas layout'));
+  assert.match(n1, /type: voice-topic/);
+  // The orchestrator's relay links back to the topic it came from.
+  const orch = app.vault.contents.get(record.orchestratorPath as string) ?? '';
+  assert.match(orch, /Relayed from \[\[[^\]]*01 Folder notes\|Folder notes\]\] in/);
+});
+
+test('topics are refused when the call is laid out as one transcript', () => {
+  const { recorder } = setup('layered', 'transcript');
+  recorder.start('x', () => []);
+  assert.match(recorder.newTopic('Anything', 'idea'), /^Error: NoCall/);
+  void recorder.finish();
+});

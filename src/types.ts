@@ -128,6 +128,11 @@ export interface VoiceSettings {
   saveCalls: boolean;
   /** Vault folder for saved calls; each call gets its own folder inside. */
   callsFolder: string;
+  /**
+   * How a saved call is laid out: `topics` (one linked note per topic the voice marks, with an
+   * index note) or `transcript` (the whole transcript in the call's folder note).
+   */
+  callNotes: 'topics' | 'transcript';
   openai: OpenAIRealtimeVoiceSettings;
   live: OpenAILiveVoiceSettings;
   gemini: GeminiLiveVoiceSettings;

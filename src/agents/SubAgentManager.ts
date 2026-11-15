@@ -502,13 +502,26 @@ export class SubAgentManager {
       ...(task.finishedAt ? [`finished: ${time(task.finishedAt)}`] : []),
       ...(task.parentNote ? [`parent: ${JSON.stringify(linkTo(task.parentNote))}`] : []),
       ...(task.callNote ? [`call: ${JSON.stringify(linkTo(task.callNote))}`] : []),
+      ...(task.topicNote ? [`topic: ${JSON.stringify(linkTo(task.topicNote))}`] : []),
       '---',
       '',
       `# ${task.title}`,
       '',
       ...(task.parentNote
         ? [
-            `Started by ${linkTo(task.parentNote, task.parentNote === task.callNote ? 'the voice call' : 'the orchestrator', task.parentAnchor ? `#^${task.parentAnchor}` : '')}${
+            `Started by ${linkTo(
+              task.parentNote,
+              task.parentNote === task.callNote
+                ? 'the voice call'
+                : task.parentNote === task.topicNote
+                  ? 'the voice call'
+                  : 'the orchestrator',
+              task.parentAnchor ? `#^${task.parentAnchor}` : '',
+            )}${
+              task.topicNote && task.topicNote !== task.parentNote
+                ? `, on ${linkTo(task.topicNote, 'this topic of the call')}`
+                : ''
+            }${
               task.callNote && task.callNote !== task.parentNote
                 ? ` during ${linkTo(task.callNote, 'the voice call')}`
                 : ''

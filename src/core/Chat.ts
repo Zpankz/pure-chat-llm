@@ -29,6 +29,7 @@ import { McpTool } from '../tools/McpTool';
 import { TemplatesTool } from '../tools/Templates';
 import { AGENT_TOOLS } from '../tools/Orchestrator';
 import { LAYER_TOOLS } from '../tools/LayerTools';
+import { NewTopicTool } from '../tools/TopicTool';
 import {
   ChatMessage,
   ChatOptions,
@@ -210,7 +211,9 @@ export class PureChatLLMChat {
   registerAvailableTools() {
     if (this.toolsRegistered) return;
     this.toolsRegistered = true;
-    for (const tool of [...AGENT_TOOLS, ...LAYER_TOOLS]) this.toolregistry.registerTool(tool);
+    for (const tool of [...AGENT_TOOLS, ...LAYER_TOOLS, NewTopicTool]) {
+      this.toolregistry.registerTool(tool);
+    }
     this.toolregistry
       .registerTool(ImageGenerationTool)
       .registerTool(CreateNoteTool)

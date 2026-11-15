@@ -34,6 +34,7 @@ import {
 } from '../tools/Orchestrator';
 import { voiceUnsupportedReason } from '../realtime/support';
 import type { NoticeMode, SubAgentEvent } from '../agents/types';
+import { TOPIC_GUIDANCE } from '../tools/TopicTool';
 import { shouldInterrupt } from '../agents/relevance';
 
 /**
@@ -642,6 +643,7 @@ export class VoiceCallSideView extends ItemView {
       if (layered) instructions += `\n\n${VOICE_LAYER_GUIDANCE}`;
       else if (orchestrator) instructions += `\n\n${ORCHESTRATOR_GUIDANCE}`;
       else if (tools.length || nativeMcp.length) instructions += `\n\n${VOICE_TOOL_GUIDANCE}`;
+      if (tools.some(t => t.function.name === 'new_topic')) instructions += `\n\n${TOPIC_GUIDANCE}`;
 
       const config: VoiceCallConfig = {
         apiKey: providerEndpoint.apiKey,

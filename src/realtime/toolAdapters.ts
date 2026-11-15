@@ -18,7 +18,7 @@ export const NATIVE_MCP_PROVIDERS: VoiceProviderId[] = [
 ];
 
 /** Tools kept when voice tool exposure is "code mode only". */
-const CODEMODE_CORE = ['codemode', 'activate_skill', 'read_skill_file'];
+const CODEMODE_CORE = ['codemode', 'activate_skill', 'read_skill_file', 'new_topic'];
 
 /** Hard cap for one tool description sent to a voice model. */
 const MAX_DESCRIPTION = 4000;

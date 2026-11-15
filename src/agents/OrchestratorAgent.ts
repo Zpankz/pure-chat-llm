@@ -276,7 +276,7 @@ export class OrchestratorAgent {
     // Only the orchestrator's own tools and read-only vault tools; code mode sees the same set.
     // Spoken progress updates are the voice layer's business.
     const allowed = new Set([
-      ...ORCHESTRATOR_TOOL_NAMES.filter(n => n !== 'set_progress_updates'),
+      ...ORCHESTRATOR_TOOL_NAMES.filter(n => n !== 'set_progress_updates' && n !== 'new_topic'),
       ...ORCHESTRATOR_AGENT_TOOL_NAMES,
       ...ORCHESTRATOR_READ_TOOLS,
     ]);
