@@ -1,5 +1,6 @@
 import { Notice } from 'obsidian';
 import { CallState } from '../types';
+import type { NoticeMode } from '../agents/types';
 import { IVoiceCallProvider, VoiceCallConfig, VoiceEvent } from './providers/IVoiceCallProvider';
 
 /**
@@ -100,6 +101,14 @@ export class VoiceCall {
     if (this.state.status === 'connected') {
       this.provider.send(event);
     }
+  }
+
+  /**
+   * Passes a background update (from a sub-agent) to the voice model.
+   * @param text - Update text.
+   */
+  notify(text: string, mode: NoticeMode = 'pause'): void {
+    if (this.state.status === 'connected') this.provider.notify?.(text, mode);
   }
 
   /**

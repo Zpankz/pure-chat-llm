@@ -4,6 +4,7 @@ import PureChatLLM, { StreamNotice } from '../main';
 import { ToolRegistry } from '../tools';
 import { ActiveContextTool } from '../tools/ActiveContext';
 import { BacklinksTool } from '../tools/Backlinks';
+import { GraphCliTool, TraverseGraphTool, VaultOntologyTool } from '../tools/TraverseGraph';
 import { CreateNoteTool } from '../tools/CreateNote';
 import { DeleteNoteTool } from '../tools/DeleteNote';
 import { GlobFilesTool } from '../tools/GlobFiles';
@@ -24,6 +25,7 @@ import { CodeModeTool } from '../tools/CodeMode';
 import { ActivateSkillTool, ReadSkillFileTool } from '../tools/Skills';
 import { McpTool } from '../tools/McpTool';
 import { TemplatesTool } from '../tools/Templates';
+import { AGENT_TOOLS } from '../tools/Orchestrator';
 import {
   ChatMessage,
   ChatOptions,
@@ -80,6 +82,14 @@ export class PureChatLLMChat {
   file: TFile;
   toolregistry: ToolRegistry = new ToolRegistry(this);
   llmService: LLMService;
+  /**
+   * What this chat's model is for: `agent` (ordinary chat with tools), `orchestrator` (talks with
+   * the user and delegates to background sub-agents) or `subagent` (a background task).
+   * Orchestrator and sub-agent tools are only offered in their role.
+   */
+  role: 'agent' | 'orchestrator' | 'subagent' = 'agent';
+  /** Task id when this chat runs a sub-agent. */
+  subAgentTaskId?: string;
 
   /**
    *
@@ -178,10 +188,16 @@ export class PureChatLLMChat {
     this.session.validChat = value;
   }
 
+  private toolsRegistered = false;
+
   /**
-   *
+   * Registers every tool once. Runs in the constructor when agent mode is on; voice orchestrators
+   * and sub-agents call it themselves because they always need tools.
    */
-  private registerAvailableTools() {
+  registerAvailableTools() {
+    if (this.toolsRegistered) return;
+    this.toolsRegistered = true;
+    for (const tool of AGENT_TOOLS) this.toolregistry.registerTool(tool);
     this.toolregistry
       .registerTool(ImageGenerationTool)
       .registerTool(CreateNoteTool)
@@ -192,6 +208,9 @@ export class PureChatLLMChat {
       .registerTool(SearchVaultTool)
       .registerTool(PatchNoteTool)
       .registerTool(BacklinksTool)
+      .registerTool(TraverseGraphTool)
+      .registerTool(VaultOntologyTool)
+      .registerTool(GraphCliTool)
       .registerTool(ListFoldersTool)
       .registerTool(DeleteNoteTool)
       .registerTool(TemplatesTool)

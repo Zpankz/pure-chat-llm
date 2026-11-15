@@ -2,6 +2,7 @@ import { nativeMcpToolDefinition } from '../../mcp/McpManager';
 import { toRealtimeFunctionTool } from '../toolAdapters';
 import { BaseVoiceProvider } from './BaseVoiceProvider';
 import type { VoiceCallConfig } from './IVoiceCallProvider';
+import type { NoticeMode } from '../../agents/types';
 
 interface RealtimeItem {
   type: string;
@@ -38,6 +39,10 @@ export class OpenAIRealtimeProvider extends BaseVoiceProvider {
   private dataChannel: RTCDataChannel | null = null;
   private handledCalls = new Set<string>();
   private assistantText = '';
+  private responseActive = false;
+  private modelSpeaking = false;
+  private micTrack: MediaStreamTrack | null = null;
+  private micSender: RTCRtpSender | null = null;
 
   /** Display name. */
   getName(): string {
@@ -58,12 +63,12 @@ export class OpenAIRealtimeProvider extends BaseVoiceProvider {
               type: 'semantic_vad',
               eagerness: s.eagerness,
               create_response: true,
-              interrupt_response: true,
+              interrupt_response: config.settings.fullDuplex,
             }
           : {
               type: 'server_vad',
               create_response: true,
-              interrupt_response: true,
+              interrupt_response: config.settings.fullDuplex,
               ...(s.idleTimeoutMs > 0 ? { idle_timeout_ms: s.idleTimeoutMs } : {}),
             };
 
@@ -101,7 +106,13 @@ export class OpenAIRealtimeProvider extends BaseVoiceProvider {
     this.config = config;
     try {
       this.peerConnection = new RTCPeerConnection();
-      localStream.getTracks().forEach(track => this.peerConnection?.addTrack(track, localStream));
+      for (const track of localStream.getTracks()) {
+        const sender = this.peerConnection.addTrack(track, localStream);
+        if (track.kind === 'audio' && !this.micSender) {
+          this.micSender = sender;
+          this.micTrack = track;
+        }
+      }
       this.peerConnection.ontrack = event => {
         if (event.streams?.[0]) this.onRemoteTrackCallback?.(event.streams[0]);
       };
@@ -142,6 +153,11 @@ export class OpenAIRealtimeProvider extends BaseVoiceProvider {
     this.dataChannel = null;
     this.peerConnection = null;
     this.handledCalls.clear();
+    this.clearNotices();
+    this.micTrack = null;
+    this.micSender = null;
+    this.responseActive = false;
+    this.modelSpeaking = false;
     return Promise.resolve();
   }
 
@@ -187,13 +203,25 @@ export class OpenAIRealtimeProvider extends BaseVoiceProvider {
         this.assistantText = '';
         break;
       case 'output_audio_buffer.started':
-        this.emit({ type: 'speaking', active: true });
+        this.setSpeaking(true);
         break;
       case 'output_audio_buffer.stopped':
       case 'output_audio_buffer.cleared':
-        this.emit({ type: 'speaking', active: false });
+        this.setSpeaking(false);
+        break;
+      case 'response.created':
+        this.responseActive = true;
+        break;
+      case 'input_audio_buffer.speech_started':
+        this.userSpeaking = true;
+        this.lastUserSpeech = Date.now();
+        break;
+      case 'input_audio_buffer.speech_stopped':
+        this.userSpeaking = false;
+        this.lastUserSpeech = Date.now();
         break;
       case 'response.done':
+        this.responseActive = false;
         void this.handleResponseDone(event);
         break;
       case 'mcp_list_tools.failed':
@@ -204,6 +232,41 @@ export class OpenAIRealtimeProvider extends BaseVoiceProvider {
         this.emit({ type: 'status', text: `OpenAI: ${event.error?.message ?? 'unknown error'}` });
         break;
     }
+  }
+
+  /**
+   * Tracks model speech; in half duplex the microphone is not sent while the model speaks.
+   * @param active - Whether the model's audio is playing.
+   */
+  private setSpeaking(active: boolean): void {
+    this.modelSpeaking = active;
+    this.emit({ type: 'speaking', active });
+    if (this.fullDuplex || !this.micSender) return;
+    void this.micSender.replaceTrack(active ? null : this.micTrack).catch(() => undefined);
+  }
+
+  /** Busy while a response is generating or audio is playing. */
+  protected isBusy(): boolean {
+    return this.responseActive || this.modelSpeaking;
+  }
+
+  /** Cancels the response in progress and clears audio not yet played. */
+  protected interruptSpeech(): void {
+    if (this.responseActive) this.send({ type: 'response.cancel' });
+    if (this.modelSpeaking) this.send({ type: 'output_audio_buffer.clear' });
+  }
+
+  /**
+   * Adds the update as a system message; asks for a spoken response unless it is quiet context.
+   * @param text - Update text.
+   * @param mode - How it should land.
+   */
+  protected deliverNotice(text: string, mode: NoticeMode): void {
+    this.send({
+      type: 'conversation.item.create',
+      item: { type: 'message', role: 'system', content: [{ type: 'input_text', text }] },
+    });
+    if (mode !== 'silent') this.send({ type: 'response.create' });
   }
 
   /**

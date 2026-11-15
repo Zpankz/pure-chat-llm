@@ -1,3 +1,4 @@
+import type { SubAgentEventKind, SubAgentEventRoute } from './agents/types';
 export interface PureChatLLMSettings {
   AutogenerateTitle: number;
   SystemPrompt: string;
@@ -42,6 +43,8 @@ export interface PureChatLLMSettings {
   skillsFolder: string;
   /** Code mode tool configuration. */
   codeMode: CodeModeSettings;
+  orchestrator: OrchestratorSettings;
+  graph: GraphSettings;
 }
 
 export type VoiceProviderId = 'openai-realtime' | 'openai-live' | 'gemini-live' | 'xai-voice';
@@ -113,6 +116,12 @@ export interface VoiceSettings {
   toolExposure: VoiceToolExposure;
   /** Maximum characters of a tool result sent back to a voice model. */
   maxToolOutputChars: number;
+  /**
+   * Full duplex: you can talk over the voice model and cut it off (barge-in). Off keeps your
+   * microphone closed while the model speaks, which suits speakers without headphones.
+   * GPT-Live is always full duplex.
+   */
+  fullDuplex: boolean;
   openai: OpenAIRealtimeVoiceSettings;
   live: OpenAILiveVoiceSettings;
   gemini: GeminiLiveVoiceSettings;
@@ -137,12 +146,118 @@ export interface McpServerConfig {
   mode: 'bridge' | 'native';
   /** Optional comma-separated allow-list of tool names. */
   allowedTools: string;
+  /**
+   * How the plugin authenticates: `token` sends `bearerToken` when set (also for servers with no
+   * auth); `oauth` signs in through the browser (MCP authorization spec) and refreshes tokens.
+   */
+  auth?: 'token' | 'oauth';
+  /** OAuth client and tokens, kept after sign-in. */
+  oauth?: McpOAuthState;
+}
+
+export interface McpOAuthState {
+  /** Client id: entered by the user or from dynamic registration. */
+  clientId: string;
+  clientSecret?: string;
+  /** Space-separated scopes requested (empty uses the server's advertised scopes). */
+  scope: string;
+  /** Resource indicator sent with requests (RFC 8707). */
+  resource: string;
+  issuer: string;
+  tokenEndpoint: string;
+  accessToken: string;
+  refreshToken: string;
+  /** Epoch ms when the access token expires; 0 when unknown. */
+  expiresAt: number;
+}
+
+export interface OrchestratorSettings {
+  /**
+   * How voice models work.
+   * - `orchestrator`: the voice model only talks, delegates to background sub-agents, checks on
+   *   them and relays results.
+   * - `direct`: the voice model calls tools itself.
+   */
+  voiceRole: 'orchestrator' | 'direct';
+  /** Model for sub-agents on the default provider. Empty uses the provider's default model. */
+  subAgentModel: string;
+  /** System instructions for sub-agents. */
+  subAgentInstructions: string;
+  /** Model responses per task before it stops. */
+  maxSteps: number;
+  /** Tasks that run at the same time; the rest wait in a queue. */
+  maxConcurrent: number;
+  /** Minutes between timed check-ins on a running task. 0 turns them off. */
+  checkInMinutes: number;
+  /** Identical tool calls in a row, or failed tool calls in a row, that count as stuck. */
+  stuckThreshold: number;
+  /** Seconds a sub-agent waits for advice before it carries on alone. */
+  adviceTimeoutSeconds: number;
+  /**
+   * Seconds between spoken progress updates while tasks run, from the start of each call.
+   * 0 keeps the voice model quiet until something happens or you ask ("keep me posted").
+   */
+  progressUpdateSeconds: number;
+  /**
+   * When a result or question arrives while you are talking: `model` asks the sub-agent model
+   * whether it overrules or changes what you are saying (then the voice model cuts in), `keywords`
+   * compares words, `off` always waits for a pause.
+   */
+  relevanceCheck: 'model' | 'keywords' | 'off';
+  /** Vault folder for task transcripts. Empty saves nothing to the vault. */
+  taskFolder: string;
+  /** How each event reaches the orchestrator. */
+  routes: Record<SubAgentEventKind, SubAgentEventRoute>;
+  /** What happens when a sub-agent creates, edits or deletes a note. */
+  writes: Record<'create' | 'edit' | 'delete', SubAgentWritePolicy>;
+  /**
+   * Models for the two independent reviewers, comma separated. Empty uses the sub-agent model
+   * for both. Different models make the two verdicts more independent.
+   */
+  reviewerModels: string;
+  /** Copy a note into the task folder before a reviewed edit changes it. */
+  backupEdits: boolean;
+}
+
+/**
+ * - `allow`: the sub-agent writes straight away.
+ * - `peer`: two independent reviewer agents see only the proposed change; it is made only if both
+ *   approve.
+ * - `review`: the Edit Review window asks you.
+ * - `deny`: sub-agents can't do it.
+ */
+export type SubAgentWritePolicy = 'allow' | 'peer' | 'review' | 'deny';
+
+/** Typed graph and traversal settings. */
+export interface GraphSettings {
+  /**
+   * Folder of Typed Graph schema notes (frontmatter with `tgs:`, such as `_types` or `Types`).
+   * Empty finds every note whose frontmatter has `tgs:`.
+   */
+  typesFolder: string;
+  /** Add a short summary of the vault's ontology to every sub-agent's instructions. */
+  ontologyInPrompt: boolean;
+  /** Vault folder of saved graph commands (scripts promoted into the graph CLI). */
+  commandsFolder: string;
 }
 
 export interface CodeModeSettings {
   enabled: boolean;
   timeoutMs: number;
   maxOutputChars: number;
+  /**
+   * Script engine.
+   * - `auto`: djs when its WebAssembly module is found, otherwise the Web Worker.
+   * - `djs`: djs only (fails when the module is missing).
+   * - `worker`: the built-in Web Worker sandbox.
+   */
+  engine: 'auto' | 'djs' | 'worker';
+  /** Vault path of djs.wasm. Empty means djs.wasm in the plugin folder. */
+  djsModulePath: string;
+  /** djs instruction budget per script. */
+  djsMaxFuel: number;
+  /** djs heap cap per script, in MB. */
+  djsMemoryLimitMb: number;
 }
 
 export interface PureChatLLMAPI {

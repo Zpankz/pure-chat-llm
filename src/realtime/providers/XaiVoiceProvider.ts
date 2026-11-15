@@ -1,4 +1,5 @@
 import { requestUrl } from 'obsidian';
+import type { NoticeMode } from '../../agents/types';
 import { nativeMcpToolDefinition } from '../../mcp/McpManager';
 import { arrayBufferToBase64, base64ToArrayBuffer, PcmCapture, PcmPlayer } from '../audio/pcm';
 import { toRealtimeFunctionTool } from '../toolAdapters';
@@ -46,6 +47,7 @@ export class XaiVoiceProvider extends BaseVoiceProvider {
   private handledCalls = new Set<string>();
   private pendingCalls: Promise<{ call_id: string; output: string }>[] = [];
   private assistantText = '';
+  private responseActive = false;
 
   /** Display name. */
   getName(): string {
@@ -143,7 +145,8 @@ export class XaiVoiceProvider extends BaseVoiceProvider {
       });
 
       this.capture = new PcmCapture(SAMPLE_RATE, pcm => {
-        if (!this.muted)
+        // Half duplex: keep the microphone closed while the model's audio plays.
+        if (!this.muted && (this.fullDuplex || !this.player.isPlaying))
           this.send({ type: 'input_audio_buffer.append', audio: arrayBufferToBase64(pcm) });
       });
       await this.capture.start(localStream);
@@ -163,6 +166,39 @@ export class XaiVoiceProvider extends BaseVoiceProvider {
     await this.player.close();
     this.handledCalls.clear();
     this.pendingCalls = [];
+    this.clearNotices();
+  }
+
+  /** Busy while a response is generating or audio is playing. */
+  protected isBusy(): boolean {
+    return this.responseActive || this.player.isPlaying;
+  }
+
+  /** Cancels the response in progress and stops local playback. */
+  protected interruptSpeech(): void {
+    if (this.responseActive) this.send({ type: 'response.cancel' });
+    this.player.flush();
+    this.emit({ type: 'speaking', active: false });
+  }
+
+  /**
+   * Grok takes the update as a user-role text message (system items are not documented);
+   * quiet context is added without asking for a response.
+   * @param text - Update text.
+   * @param mode - How it should land.
+   */
+  protected deliverNotice(text: string, mode: NoticeMode): void {
+    this.send({
+      type: 'conversation.item.create',
+      item: {
+        type: 'message',
+        role: 'user',
+        content: [
+          { type: 'input_text', text: mode === 'silent' ? `${text} (No reply needed.)` : text },
+        ],
+      },
+    });
+    if (mode !== 'silent') this.send({ type: 'response.create' });
   }
 
   /** @param event - Client event. */
@@ -189,10 +225,21 @@ export class XaiVoiceProvider extends BaseVoiceProvider {
       case 'session.updated':
         this.emit({ type: 'ready' });
         break;
+      case 'input_audio_buffer.speech_stopped':
+        this.userSpeaking = false;
+        this.lastUserSpeech = Date.now();
+        break;
       case 'input_audio_buffer.speech_started':
-        // Barge-in: stop the assistant as soon as the user talks.
-        this.player.flush();
-        this.emit({ type: 'speaking', active: false });
+        this.userSpeaking = true;
+        this.lastUserSpeech = Date.now();
+        // Barge-in: stop the assistant as soon as the user talks (full duplex only).
+        if (this.fullDuplex) {
+          this.player.flush();
+          this.emit({ type: 'speaking', active: false });
+        }
+        break;
+      case 'response.created':
+        this.responseActive = true;
         break;
       case 'response.output_audio.delta':
       case 'response.audio.delta':
@@ -231,6 +278,7 @@ export class XaiVoiceProvider extends BaseVoiceProvider {
         this.queueCall(event.call_id, event.name, event.arguments);
         break;
       case 'response.done':
+        this.responseActive = false;
         for (const item of event.response?.output ?? []) {
           if (item.type === 'function_call')
             this.queueCall(item.call_id, item.name, item.arguments);

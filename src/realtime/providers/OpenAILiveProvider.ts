@@ -3,6 +3,7 @@ import { nativeMcpToolDefinition } from '../../mcp/McpManager';
 import { toResponsesFunctionTool } from '../toolAdapters';
 import { BaseVoiceProvider } from './BaseVoiceProvider';
 import type { VoiceCallConfig } from './IVoiceCallProvider';
+import type { NoticeMode } from '../../agents/types';
 
 const LIVE_SESSIONS_ENDPOINT = 'https://api.openai.com/v1/live/sessions';
 
@@ -160,6 +161,29 @@ export class OpenAILiveProvider extends BaseVoiceProvider {
     this.pendingCalls.clear();
     this.submittedCalls.clear();
     this.transcript = [];
+    this.clearNotices();
+  }
+
+  /**
+   * GPT-Live times its own speech, so updates go out at once as session-wide appends
+   * (`delegation_id: null`): `instructions` can interrupt current speech, `commentary` is
+   * paraphrased aloud, and `thinking` is quiet context the model can use later.
+   * @param text - Update text.
+   * @param mode - How it should land.
+   */
+  protected deliverNotice(text: string, mode: NoticeMode): void {
+    const type =
+      mode === 'interrupt'
+        ? 'session.instructions.append'
+        : mode === 'silent'
+          ? 'session.thinking.append'
+          : 'session.commentary.append';
+    this.send({
+      type,
+      event_id: this.nextEventId('update'),
+      delegation_id: null,
+      content: text.length > APPEND_LIMIT_CHARS ? `${text.slice(0, APPEND_LIMIT_CHARS)}…` : text,
+    });
   }
 
   /** @param event - Client event. */

@@ -57,6 +57,7 @@ export class GeminiLiveProvider extends BaseVoiceProvider {
   private cancelled = new Set<string>();
   private closing = false;
   private muted = false;
+  private generating = false;
   private reconnecting = false;
   private userText = '';
   private assistantText = '';
@@ -110,8 +111,16 @@ export class GeminiLiveProvider extends BaseVoiceProvider {
         generationConfig,
         systemInstruction: { parts: [{ text: config.instructions }] },
         ...(tools.length ? { tools } : {}),
-        ...(Object.keys(activityDetection).length
-          ? { realtimeInputConfig: { automaticActivityDetection: activityDetection } }
+        ...(Object.keys(activityDetection).length || !config.settings.fullDuplex
+          ? {
+              realtimeInputConfig: {
+                ...(Object.keys(activityDetection).length
+                  ? { automaticActivityDetection: activityDetection }
+                  : {}),
+                // Half duplex: the user's speech does not cut the model off.
+                ...(config.settings.fullDuplex ? {} : { activityHandling: 'NO_INTERRUPTION' }),
+              },
+            }
           : {}),
         ...(g.transcription ? { inputAudioTranscription: {}, outputAudioTranscription: {} } : {}),
         ...(g.contextCompression ? { contextWindowCompression: { slidingWindow: {} } } : {}),
@@ -213,6 +222,35 @@ export class GeminiLiveProvider extends BaseVoiceProvider {
     await this.player.close();
     this.resumeHandle = null;
     this.cancelled.clear();
+    this.clearNotices();
+    this.generating = false;
+  }
+
+  /** Busy while the model generates or its audio plays. */
+  protected isBusy(): boolean {
+    return this.generating || this.player.isPlaying;
+  }
+
+  /**
+   * Gemini Live has no documented way to add context mid-session without a reply, so quiet
+   * updates are left for check_tasks.
+   */
+  protected get supportsSilentNotices(): boolean {
+    return false;
+  }
+
+  /** Stops local playback so an urgent update can go first. */
+  protected interruptSpeech(): void {
+    this.player.flush();
+    this.emit({ type: 'speaking', active: false });
+  }
+
+  /**
+   * Sends the update as realtime text input, which Gemini Live answers like a spoken turn.
+   * @param text - Update text.
+   */
+  protected deliverNotice(text: string): void {
+    this.send({ realtimeInput: { text } });
   }
 
   /** @param event - Client message. */
@@ -232,6 +270,8 @@ export class GeminiLiveProvider extends BaseVoiceProvider {
   /** @param pcm - 16 kHz PCM16 frame. */
   private sendAudio(pcm: ArrayBuffer): void {
     if (this.muted || this.reconnecting) return;
+    // Half duplex: keep the microphone closed while the model's audio plays.
+    if (!this.fullDuplex && this.player.isPlaying) return;
     this.send({
       realtimeInput: {
         audio: { data: arrayBufferToBase64(pcm), mimeType: 'audio/pcm;rate=16000' },
@@ -258,6 +298,7 @@ export class GeminiLiveProvider extends BaseVoiceProvider {
         this.player.flush();
         this.emit({ type: 'speaking', active: false });
       }
+      if (content.modelTurn) this.generating = true;
       for (const part of content.modelTurn?.parts ?? []) {
         const inline = part.inlineData;
         if (inline?.data && inline.mimeType.startsWith('audio/pcm')) {
@@ -283,6 +324,7 @@ export class GeminiLiveProvider extends BaseVoiceProvider {
           final: false,
         });
       }
+      if (content.turnComplete || content.interrupted) this.generating = false;
       if (content.turnComplete) {
         if (this.assistantText) {
           this.emit({

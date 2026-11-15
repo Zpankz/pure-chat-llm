@@ -117,4 +117,6 @@ export const VOICE_TOOL_GUIDANCE = [
   'Before a tool that may take a moment, say a brief phrase such as "Let me check" so the user is not left in silence.',
   'Summarise tool results conversationally. If a tool fails, say so plainly and suggest what to try next.',
   'Ask before deleting or overwriting notes.',
+  "For a note's connections or local graph use traverse_graph; for the notes in a folder use list_vault_folders with the folder name; search_vault can be limited to a folder.",
+  'If you did not catch what the user said, or it does not fit the conversation, ask them to repeat it. Never act on a guess.',
 ].join(' ');

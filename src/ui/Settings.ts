@@ -11,7 +11,13 @@ import PureChatLLM, {
 import { PURE_CHAT_LLM_ICON_NAME, PureChatLLMSettings, TOOL_CLASSIFICATIONS } from '../types';
 import { BrowserConsole } from '../utils/BrowserConsole';
 import { AskForAPI, EditModalProviders } from './Modals';
-import { renderMcpSettings, renderSkillsAndCodeMode, renderVoiceSettings } from './AgentSettings';
+import {
+  renderMcpSettings,
+  renderGraphSettings,
+  renderOrchestratorSettings,
+  renderSkillsAndCodeMode,
+  renderVoiceSettings,
+} from './AgentSettings';
 
 /**
  * Represents the settings tab for the PureChatLLM plugin in Obsidian.
@@ -264,6 +270,8 @@ export class PureChatLLMSettingTab extends PluginSettingTab {
     renderSkillsAndCodeMode(containerEl, this.plugin, redraw);
     renderMcpSettings(containerEl, this.plugin, redraw);
     renderVoiceSettings(containerEl, this.plugin, redraw);
+    renderOrchestratorSettings(containerEl, this.plugin, redraw);
+    renderGraphSettings(containerEl, this.plugin);
 
     new SettingGroup(containerEl)
       .setHeading('Prompts & templates')

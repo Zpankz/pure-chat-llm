@@ -25,11 +25,46 @@ import { EmptyApiKey } from 'src/assets/constants';
 import { ChatToolExecutor } from '../realtime/ChatToolExecutor';
 import { VOICE_PROVIDERS } from '../realtime/voiceCatalog';
 import { selectVoiceTools, VOICE_TOOL_GUIDANCE } from '../realtime/toolAdapters';
+import {
+  describeTask,
+  ORCHESTRATOR_GUIDANCE,
+  ORCHESTRATOR_TOOL_NAMES,
+} from '../tools/Orchestrator';
+import type { NoticeMode, SubAgentEvent } from '../agents/types';
+import { shouldInterrupt } from '../agents/relevance';
+
+/**
+ * Turns a sub-agent event into the message the voice model receives.
+ * @param event - Event.
+ */
+export function formatAgentUpdate(event: SubAgentEvent): string {
+  const head = `[Agent update] ${event.title} (${event.taskId})`;
+  const text = event.text.replace(/\s+/g, ' ').trim();
+  switch (event.kind) {
+    case 'finished':
+      return `${head} finished. Result: ${text.slice(0, 700)}${text.length > 700 ? '… (call get_task_result for the rest)' : ''}`;
+    case 'needs_advice':
+      return `${head} needs advice: ${text} Ask the user unless the answer is already clear, then reply with message_task.`;
+    case 'stuck':
+      return `${head} looks stuck: ${text} Decide whether to steer it with message_task, cancel it, or ask the user.`;
+    case 'checkpoint':
+      return `${head} check-in: ${text} If it is heading the wrong way, steer it with message_task.`;
+    case 'failed':
+      return `${head} failed: ${text}`;
+    case 'cancelled':
+      return `${head} was cancelled.`;
+    case 'started':
+      return `${head} started.`;
+    default:
+      return `${head} progress: ${text}`;
+  }
+}
 
 interface TranscriptLine {
   role: 'user' | 'assistant' | 'tool';
   text: string;
   final: boolean;
+  at?: number;
 }
 
 /**
@@ -48,6 +83,8 @@ export class VoiceCallSideView extends ItemView {
     remoteParticipants: [],
   };
   private remoteAudioElement: HTMLAudioElement | null = null;
+  private tasksEl: HTMLElement | null = null;
+  private stopAgentWatch: Array<() => void> = [];
 
   /**
    *
@@ -98,6 +135,8 @@ export class VoiceCallSideView extends ItemView {
     this.createRemoteAudioElement(contentEl);
     this.transcriptEl = contentEl.createDiv({ cls: 'voice-call-transcript' });
     this.renderTranscript();
+    this.tasksEl = contentEl.createDiv({ cls: 'voice-call-tasks' });
+    this.renderTasks();
 
     if (this.callState.status === 'idle') {
       this.renderInstructions(contentEl);
@@ -264,9 +303,10 @@ export class VoiceCallSideView extends ItemView {
    * Get default system prompt based on agent mode
    */
   private getDefaultSystemPrompt(): string {
-    return this.plugin.settings.agentMode
-      ? 'You are a helpful AI assistant with access to tools in Obsidian.'
-      : 'You are a helpful assistant.';
+    return this.plugin.settings.agentMode ||
+      this.plugin.settings.orchestrator.voiceRole === 'orchestrator'
+      ? "You are a voice assistant for the user's Obsidian vault, a personal knowledge base of linked Markdown notes. Talk naturally and briefly."
+      : 'You are a helpful voice assistant. Talk naturally and briefly.';
   }
 
   /**
@@ -354,6 +394,112 @@ export class VoiceCallSideView extends ItemView {
   }
 
   /**
+   * GPT-Live client delegation in orchestrator mode: the hand-off becomes a background task, and
+   * the voice model hears back when it finishes.
+   * @param transcript - Recent conversation.
+   */
+  private delegateFromTranscript(transcript: string): Promise<string> {
+    const lines = transcript.split('\n').filter(Boolean);
+    const lastUser =
+      [...lines].reverse().find(l => l.startsWith('User:')) ?? lines[lines.length - 1] ?? '';
+    const title =
+      lastUser
+        .replace(/^User:\s*/, '')
+        .split(/\s+/)
+        .slice(0, 6)
+        .join(' ') || 'Voice request';
+    const task = this.plugin.agents.spawn(
+      title,
+      `The user asked this in a voice conversation. Do what the latest request asks.\n\nConversation so far:\n${transcript || '(empty)'}`,
+      'voice',
+    );
+    return Promise.resolve(
+      `I've handed that to a background agent (${task.id}, "${task.title}"). I'll tell you when it's done.`,
+    );
+  }
+
+  /** Speaks sub-agent events routed as interrupts and keeps the task list current. */
+  private watchAgents(): void {
+    this.unwatchAgents();
+    const agents = this.plugin.agents;
+    this.stopAgentWatch.push(
+      agents.onInterrupt((event, mode) => void this.relayAgentEvent(event, mode)),
+      agents.onChange(() => this.renderTasks()),
+    );
+    agents.setProgressInterval(this.plugin.settings.orchestrator.progressUpdateSeconds);
+    // Tell the model about anything that happened while no call was open.
+    const held = agents.takeQueuedUpdates();
+    if (held.length) this.voiceCall?.notify(held.map(formatAgentUpdate).join('\n'), 'pause');
+  }
+
+  /**
+   * Passes an event to the voice model. A result or question that would be said at the next
+   * pause is checked against what the user is saying right now: if it would overrule or change
+   * their point, it cuts in; otherwise it waits until they finish the thought.
+   * @param event - Sub-agent event.
+   * @param mode - Delivery the routes chose.
+   */
+  private async relayAgentEvent(event: SubAgentEvent, mode: NoticeMode): Promise<void> {
+    const text = formatAgentUpdate(event);
+    const o = this.plugin.settings.orchestrator;
+    let finalMode = mode;
+    if (mode === 'pause' && (o.routes[event.kind] ?? 'auto') === 'auto') {
+      const recent = this.transcript
+        .filter(l => l.role === 'user' && (l.at ?? 0) > Date.now() - 10_000)
+        .map(l => l.text)
+        .join(' ');
+      if (recent && (await shouldInterrupt(this.plugin, text, recent, o.relevanceCheck))) {
+        finalMode = 'interrupt';
+      }
+    }
+    this.transcript.push({
+      role: 'tool',
+      text: `${event.title}: ${event.kind.replace('_', ' ')}${finalMode === 'interrupt' ? ' (cutting in)' : ''}`,
+      final: true,
+      at: Date.now(),
+    });
+    this.renderTranscript();
+    this.voiceCall?.notify(
+      finalMode === 'interrupt'
+        ? `${text} This bears directly on what the user is saying right now: cut in briefly and tell them.`
+        : text,
+      finalMode,
+    );
+  }
+
+  /** Stops listening to sub-agent events. */
+  private unwatchAgents(): void {
+    for (const stop of this.stopAgentWatch) stop();
+    this.stopAgentWatch = [];
+    this.plugin.agents?.setProgressInterval(0);
+  }
+
+  /** Renders background tasks with links to their notes. */
+  private renderTasks(): void {
+    const el = this.tasksEl;
+    if (!el) return;
+    el.empty();
+    const tasks = this.plugin.agents?.list().slice(0, 8) ?? [];
+    if (!tasks.length) return;
+    new Setting(el).setName('Background tasks').setHeading();
+    for (const task of tasks) {
+      const row = el.createDiv({ cls: `voice-call-task voice-call-task-${task.status}` });
+      row.createSpan({ cls: 'voice-call-task-status', text: task.status });
+      const name = row.createSpan({ cls: 'voice-call-task-title', text: task.title });
+      if (task.notePath) {
+        name.addClass('is-clickable');
+        name.setAttr('title', describeTask(task));
+        name.onclick = () =>
+          void this.app.workspace.openLinkText(task.notePath as string, '', 'tab');
+      }
+      if (task.status === 'running' || task.status === 'queued' || task.status === 'waiting') {
+        const stop = row.createEl('button', { text: 'Stop', cls: 'voice-call-task-stop' });
+        stop.onclick = () => this.plugin.agents.cancel(task.id);
+      }
+    }
+  }
+
+  /**
    *
    */
   private async startCall(): Promise<void> {
@@ -372,10 +518,22 @@ export class VoiceCallSideView extends ItemView {
         throw new Error(`No API key for ${info.keyEndpoint}. Add one in settings.`);
       }
 
-      // 2. Tools (agent mode)
+      await this.plugin.mcp?.freshenNativeTokens();
+
+      // 2. Tools: an orchestrator only gets the delegation tools; sub-agents do the work.
+      const orchestrator = this.plugin.settings.orchestrator.voiceRole === 'orchestrator';
       let tools: ToolDefinition[] = [];
       let nativeMcp = this.plugin.mcp?.nativeServers() ?? [];
-      if (this.plugin.settings.agentMode) {
+      if (orchestrator) {
+        this.chat = new PureChatLLMChat(this.plugin);
+        this.chat.role = 'orchestrator';
+        this.chat.registerAvailableTools();
+        this.toolExecutor = new ChatToolExecutor(this.chat);
+        tools = this.chat.toolregistry
+          .getEnabledDefinitions()
+          .filter(t => ORCHESTRATOR_TOOL_NAMES.includes(t.function.name));
+        nativeMcp = [];
+      } else if (this.plugin.settings.agentMode) {
         this.chat = new PureChatLLMChat(this.plugin);
         this.toolExecutor = new ChatToolExecutor(this.chat);
         const selected = selectVoiceTools(
@@ -394,7 +552,8 @@ export class VoiceCallSideView extends ItemView {
 
       // 3. Instructions
       let instructions = await this.getRealtimeSystemPrompt();
-      if (tools.length || nativeMcp.length) instructions += `\n\n${VOICE_TOOL_GUIDANCE}`;
+      if (orchestrator) instructions += `\n\n${ORCHESTRATOR_GUIDANCE}`;
+      else if (tools.length || nativeMcp.length) instructions += `\n\n${VOICE_TOOL_GUIDANCE}`;
 
       const config: VoiceCallConfig = {
         apiKey: providerEndpoint.apiKey,
@@ -402,7 +561,10 @@ export class VoiceCallSideView extends ItemView {
         tools,
         settings: voice,
         nativeMcp,
-        runBackend: transcript => this.runClientBackend(transcript),
+        runBackend: transcript =>
+          orchestrator
+            ? this.delegateFromTranscript(transcript)
+            : this.runClientBackend(transcript),
       };
 
       this.transcript = [];
@@ -415,6 +577,7 @@ export class VoiceCallSideView extends ItemView {
       );
 
       await this.voiceCall.startCall();
+      if (orchestrator) this.watchAgents();
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
       console.error('Failed to start call:', msg);
@@ -434,8 +597,14 @@ export class VoiceCallSideView extends ItemView {
       if (last && last.role === event.role && !last.final) {
         last.text = event.text;
         last.final = event.final;
+        last.at = Date.now();
       } else if (event.text.trim()) {
-        this.transcript.push({ role: event.role, text: event.text, final: event.final });
+        this.transcript.push({
+          role: event.role,
+          text: event.text,
+          final: event.final,
+          at: Date.now(),
+        });
       }
     } else if (event.type === 'tool') {
       this.transcript.push({
@@ -497,6 +666,7 @@ export class VoiceCallSideView extends ItemView {
    *
    */
   private async endCall(): Promise<void> {
+    this.unwatchAgents();
     if (this.voiceCall) {
       await this.voiceCall.endCall();
       this.voiceCall = null;

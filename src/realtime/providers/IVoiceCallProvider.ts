@@ -1,3 +1,4 @@
+import type { NoticeMode } from '../../agents/types';
 import type { McpServerConfig, ToolDefinition, VoiceSettings } from '../../types';
 
 /**
@@ -63,6 +64,15 @@ export interface IVoiceCallProvider {
    * @param muted Whether the microphone is muted.
    */
   setMuted?(muted: boolean): void;
+
+  /**
+   * Tells the voice model about something that happened in the background (a sub-agent
+   * finished, got stuck or needs advice) so it can tell the user.
+   * @param text Update text, already prefixed for the model.
+   * @param mode `interrupt` cuts in now, `pause` speaks at the next pause, `silent` adds quiet
+   * context without a spoken reply (where the provider has a way to).
+   */
+  notify?(text: string, mode: NoticeMode): void;
 
   /** Provider display name. */
   getName(): string;

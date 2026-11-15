@@ -7,7 +7,7 @@ import jsdoc from 'eslint-plugin-jsdoc';
 
 export default defineConfig([
   {
-    ignores: ['main.js', 'node_modules/**', 'dist/**', 'package.json'],
+    ignores: ['main.js', 'node_modules/**', 'dist/**', 'package.json', 'src/vendor/**'],
   },
   ...obsidianmd.configs.recommended,
   {
@@ -49,6 +49,11 @@ export default defineConfig([
             'Streamable HTTP',
             'BCP-47',
             'X',
+            'djs',
+            'TypeScript',
+            'QuickJS',
+            'WebAssembly',
+            'Web Worker',
           ],
           acronyms: ['OK', 'MCP', 'VAD', 'HTTP', 'SKILL.md'],
           enforceCamelCaseLower: true,

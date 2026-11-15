@@ -91,6 +91,7 @@ export const DEFAULT_VOICE_SETTINGS: VoiceSettings = {
   provider: 'openai-realtime',
   toolExposure: 'all',
   maxToolOutputChars: 6000,
+  fullDuplex: true,
   openai: {
     model: 'gpt-realtime-2.1',
     voice: 'marin',

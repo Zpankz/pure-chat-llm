@@ -1,6 +1,8 @@
 import { Notice, Setting } from 'obsidian';
 import type PureChatLLM from '../main';
 import { DEFAULT_MCP_SERVER } from '../mcp/McpManager';
+import { signIn } from '../mcp/McpOAuth';
+import { djsModulePath, loadDjsModule, resetDjsModule } from '../tools/codemode/djsEngine';
 import {
   LIVE_BACKEND_MODELS,
   OPENAI_TRANSCRIPTION_MODELS,
@@ -8,7 +10,297 @@ import {
   geminiSupportsScheduling,
   geminiSupportsThinking,
 } from '../realtime/voiceCatalog';
-import type { McpServerConfig, VoiceProviderId, VoiceToolExposure } from '../types';
+import type {
+  McpServerConfig,
+  SubAgentWritePolicy,
+  VoiceProviderId,
+  VoiceToolExposure,
+} from '../types';
+import {
+  AUTO_ROUTES,
+  SUB_AGENT_EVENT_KINDS,
+  type SubAgentEventKind,
+  type SubAgentEventRoute,
+} from '../agents/types';
+
+const EVENT_LABELS: Record<SubAgentEventKind, string> = {
+  started: 'Task started',
+  progress: 'Progress',
+  needs_advice: 'Needs advice',
+  stuck: 'Looks stuck',
+  checkpoint: 'Timed check-in',
+  finished: 'Finished',
+  failed: 'Failed',
+  cancelled: 'Cancelled',
+};
+
+const ROUTE_LABELS: Record<SubAgentEventRoute, string> = {
+  auto: 'Automatic',
+  interrupt: 'Cut in now',
+  pause: 'Say at the next pause',
+  silent: 'Tell quietly',
+  queue: 'Wait until asked',
+  ignore: 'Ignore',
+};
+
+/**
+ * Orchestrator and sub-agent settings.
+ * @param el - Container.
+ * @param plugin - Plugin.
+ * @param redraw - Re-renders the settings tab.
+ */
+export function renderOrchestratorSettings(
+  el: HTMLElement,
+  plugin: PureChatLLM,
+  redraw: () => void,
+): void {
+  const o = plugin.settings.orchestrator;
+  const save: Save = () => plugin.saveSettings();
+  new Setting(el).setName('Voice orchestrator and sub-agents').setHeading();
+
+  choose(
+    new Setting(el)
+      .setName('Voice model role')
+      .setDesc(
+        'Orchestrator: the voice model only talks with you and hands work to background agents, then relays what they find. Direct: the voice model calls tools itself (the previous behaviour).',
+      ),
+    { orchestrator: 'Orchestrator', direct: 'Direct' } as Record<'orchestrator' | 'direct', string>,
+    o.voiceRole,
+    async value => {
+      o.voiceRole = value;
+      await save();
+      redraw();
+    },
+  );
+  if (o.voiceRole !== 'orchestrator') return;
+
+  suggestText(
+    new Setting(el)
+      .setName('Sub-agent model')
+      .setDesc('Model on your default provider. Empty uses that provider’s default model.'),
+    o.subAgentModel,
+    [],
+    async value => {
+      o.subAgentModel = value;
+      await save();
+    },
+  );
+  new Setting(el)
+    .setName('Sub-agent instructions')
+    .setDesc('System prompt every background agent starts with.')
+    .addTextArea(t =>
+      t.setValue(o.subAgentInstructions).onChange(async value => {
+        o.subAgentInstructions = value;
+        await save();
+      }),
+    );
+  numberInput(
+    new Setting(el).setName('Steps per task').setDesc('Model responses before a task stops.'),
+    o.maxSteps,
+    async n => {
+      o.maxSteps = n;
+      await save();
+    },
+    { min: 1, max: 500, fallback: 40 },
+  );
+  numberInput(
+    new Setting(el).setName('Tasks at once').setDesc('The rest wait in a queue.'),
+    o.maxConcurrent,
+    async n => {
+      o.maxConcurrent = n;
+      await save();
+    },
+    { min: 1, max: 10, fallback: 3 },
+  );
+  numberInput(
+    new Setting(el)
+      .setName('Check-in every (minutes)')
+      .setDesc(
+        'A running task reports what it has done so far, so the orchestrator can check it is on track. 0 turns check-ins off.',
+      ),
+    o.checkInMinutes,
+    async n => {
+      o.checkInMinutes = n;
+      await save();
+    },
+    { min: 0, max: 240, fallback: 5 },
+  );
+  numberInput(
+    new Setting(el)
+      .setName('Stuck after')
+      .setDesc(
+        'Identical tool calls, or failed tool calls, in a row before a task counts as stuck.',
+      ),
+    o.stuckThreshold,
+    async n => {
+      o.stuckThreshold = n;
+      await save();
+    },
+    { min: 2, max: 20, fallback: 3 },
+  );
+  numberInput(
+    new Setting(el)
+      .setName('Advice timeout (seconds)')
+      .setDesc('How long a task waits for an answer to its question before it carries on alone.'),
+    o.adviceTimeoutSeconds,
+    async n => {
+      o.adviceTimeoutSeconds = n;
+      await save();
+    },
+    { min: 10, max: 3600, fallback: 300 },
+  );
+  numberInput(
+    new Setting(el)
+      .setName('Spoken progress every (seconds)')
+      .setDesc(
+        'From the start of each call. 0 keeps the voice model quiet until something happens; you can still say "keep me posted".',
+      ),
+    o.progressUpdateSeconds,
+    async n => {
+      o.progressUpdateSeconds = n;
+      await save();
+    },
+    { min: 0, max: 3600, fallback: 0 },
+  );
+  choose(
+    new Setting(el)
+      .setName('Cut in when it matters')
+      .setDesc(
+        'A result or question that arrives while you are talking waits until you finish your thought, unless it would overrule or change what you are saying. Model asks the sub-agent model to judge that; keywords compares words; off always waits.',
+      ),
+    { model: 'Model', keywords: 'Keywords', off: 'Off' } as Record<
+      'model' | 'keywords' | 'off',
+      string
+    >,
+    o.relevanceCheck,
+    async value => {
+      o.relevanceCheck = value;
+      await save();
+    },
+  );
+  new Setting(el)
+    .setName('Task notes folder')
+    .setDesc('Each task’s brief, steps and result are saved here. Empty saves nothing.')
+    .addText(t =>
+      t.setValue(o.taskFolder).onChange(async value => {
+        o.taskFolder = value.trim();
+        await save();
+      }),
+    );
+
+  new Setting(el)
+    .setName('When the voice model hears about tasks')
+    .setDesc(
+      'Automatic follows GPT-Live’s pattern: results, questions and stuck tasks are said at the next pause; check-ins and progress are told quietly. Override any event below.',
+    );
+  for (const kind of SUB_AGENT_EVENT_KINDS) {
+    choose(
+      new Setting(el)
+        .setName(EVENT_LABELS[kind])
+        .setDesc(`Automatic here means: ${ROUTE_LABELS[AUTO_ROUTES[kind]].toLowerCase()}.`),
+      ROUTE_LABELS,
+      o.routes[kind] ?? 'auto',
+      async value => {
+        o.routes[kind] = value;
+        await save();
+      },
+    );
+  }
+
+  new Setting(el)
+    .setName('Sub-agent vault writes')
+    .setDesc(
+      'Two reviewers: two separate reviewer agents each see only the proposed change and decide alone; it is made only if both approve. Deleted notes go to the trash.',
+    )
+    .setHeading();
+  const policies: Record<SubAgentWritePolicy, string> = {
+    allow: 'Go ahead',
+    peer: 'Two reviewers must agree',
+    review: 'Ask me (edit review window)',
+    deny: 'Not allowed',
+  };
+  const writeLabels = {
+    create: 'New notes',
+    edit: 'Edits to existing notes',
+    delete: 'Deleting notes',
+  };
+  for (const action of ['create', 'edit', 'delete'] as const) {
+    choose(
+      new Setting(el).setName(writeLabels[action]),
+      policies,
+      o.writes[action],
+      async value => {
+        o.writes[action] = value;
+        await save();
+      },
+    );
+  }
+  suggestText(
+    new Setting(el)
+      .setName('Reviewer models')
+      .setDesc(
+        'Two models, comma separated, on your default provider. Empty uses the sub-agent model for both; two different models make the verdicts more independent.',
+      ),
+    o.reviewerModels,
+    [],
+    async value => {
+      o.reviewerModels = value;
+      await save();
+    },
+  );
+  new Setting(el)
+    .setName('Back up notes before reviewed edits')
+    .setDesc('Saves a copy in the task notes folder, in a backups folder, before an approved edit.')
+    .addToggle(t =>
+      t.setValue(o.backupEdits).onChange(async value => {
+        o.backupEdits = value;
+        await save();
+      }),
+    );
+}
+
+/**
+ * Typed graph settings: where the ontology lives and where saved graph commands are kept.
+ * @param el - Container.
+ * @param plugin - Plugin.
+ */
+export function renderGraphSettings(el: HTMLElement, plugin: PureChatLLM): void {
+  const g = plugin.settings.graph;
+  const save: Save = () => plugin.saveSettings();
+  new Setting(el).setName('Typed graph').setHeading();
+  new Setting(el)
+    .setName('Schema folder')
+    .setDesc(
+      'Folder of schema notes for the typed graph plugin (frontmatter with tgs, such as _types). Empty reads every note that has tgs in its frontmatter.',
+    )
+    .addText(t =>
+      t
+        .setPlaceholder('_types')
+        .setValue(g.typesFolder)
+        .onChange(async value => {
+          g.typesFolder = value.trim();
+          await save();
+        }),
+    );
+  new Setting(el)
+    .setName('Give sub-agents the ontology')
+    .setDesc('Adds a short map of node and edge types to every sub-agent’s instructions.')
+    .addToggle(t =>
+      t.setValue(g.ontologyInPrompt).onChange(async value => {
+        g.ontologyInPrompt = value;
+        await save();
+      }),
+    );
+  new Setting(el)
+    .setName('Saved graph commands folder')
+    .setDesc('Scripts promoted into graph commands are kept here as notes, one command per note.')
+    .addText(t =>
+      t.setValue(g.commandsFolder).onChange(async value => {
+        g.commandsFolder = value.trim();
+        await save();
+      }),
+    );
+}
 
 /**
  * Settings sections for voice agents, the GPT-Live duplex agent, remote MCP servers,
@@ -131,6 +423,18 @@ export function renderVoiceSettings(
       redraw();
     },
   );
+
+  new Setting(el)
+    .setName('Full duplex')
+    .setDesc(
+      'On: you can talk over the voice model and cut it off. Off: your microphone is closed while the model speaks, which avoids it hearing itself on speakers. GPT-Live is always full duplex.',
+    )
+    .addToggle(t =>
+      t.setValue(v.fullDuplex).onChange(async value => {
+        v.fullDuplex = value;
+        await save();
+      }),
+    );
 
   choose(
     new Setting(el)
@@ -744,13 +1048,90 @@ function renderMcpServer(
         await save();
       }),
   );
-  new Setting(box).setName('Bearer token').addText(t => {
-    t.inputEl.type = 'password';
-    t.setValue(server.bearerToken).onChange(async x => {
-      server.bearerToken = x.trim();
+  choose(
+    new Setting(box)
+      .setName('Authentication')
+      .setDesc(
+        'Use a bearer token if the server needs one, or sign in through your browser. Sign-in registers the plugin with the server and renews the token.',
+      ),
+    { token: 'Token or none', oauth: 'OAuth sign-in' } as Record<'token' | 'oauth', string>,
+    server.auth ?? 'token',
+    async x => {
+      server.auth = x;
       await save();
+      redraw();
+    },
+  );
+  if ((server.auth ?? 'token') === 'token') {
+    new Setting(box).setName('Bearer token').addText(t => {
+      t.inputEl.type = 'password';
+      t.setValue(server.bearerToken).onChange(async x => {
+        server.bearerToken = x.trim();
+        await save();
+      });
     });
-  });
+  } else {
+    const signedIn = !!server.oauth?.accessToken;
+    new Setting(box)
+      .setName(signedIn ? 'Signed in' : 'Not signed in')
+      .setDesc(
+        signedIn
+          ? `Through ${server.oauth?.issuer ?? 'the server'}.${server.oauth?.expiresAt ? ` Token renews automatically.` : ''}`
+          : 'Opens the server’s sign-in page in your browser, then returns to Obsidian.',
+      )
+      .addButton(b =>
+        b
+          .setButtonText(signedIn ? 'Sign in again' : 'Sign in')
+          .setCta()
+          .onClick(async () => {
+            if (!server.url) {
+              new Notice('Add the server address first.');
+              return;
+            }
+            try {
+              await signIn(plugin, server);
+              await plugin.mcp.refresh(server);
+            } catch (error) {
+              new Notice(
+                `Sign-in failed: ${error instanceof Error ? error.message : String(error)}`,
+              );
+            }
+            redraw();
+          }),
+      )
+      .addExtraButton(b =>
+        b
+          .setIcon('log-out')
+          .setTooltip('Sign out')
+          .onClick(async () => {
+            if (server.oauth) {
+              server.oauth = { ...server.oauth, accessToken: '', refreshToken: '', expiresAt: 0 };
+            }
+            await save();
+            redraw();
+          }),
+      );
+    new Setting(box)
+      .setName('Client id')
+      .setDesc('Leave empty to register automatically. Some servers need one you create with them.')
+      .addText(t =>
+        t.setValue(server.oauth?.clientId ?? '').onChange(async x => {
+          server.oauth = {
+            ...(server.oauth ?? {
+              scope: '',
+              resource: '',
+              issuer: '',
+              tokenEndpoint: '',
+              accessToken: '',
+              refreshToken: '',
+              expiresAt: 0,
+            }),
+            clientId: x.trim(),
+          };
+          await save();
+        }),
+      );
+  }
   new Setting(box)
     .setName('Extra headers')
     .setDesc('One header per line, written as name: value.')
@@ -837,6 +1218,73 @@ export function renderSkillsAndCodeMode(
         await save();
       }),
     );
+  choose(
+    new Setting(el)
+      .setName('Script engine')
+      .setDesc(
+        'djs is the WebAssembly engine built to replace QuickJS in pi’s code mode (github.com/earendil-works/djs). It runs each script in its own wasm instance with an instruction and memory budget, and accepts TypeScript. Auto uses djs when its module is found, otherwise the built-in Web Worker.',
+      ),
+    { auto: 'Auto', djs: 'djs only', worker: 'Web Worker only' },
+    c.engine,
+    async x => {
+      c.engine = x;
+      await save();
+      redraw();
+    },
+  );
+  if (c.engine !== 'worker') {
+    const pathSetting = new Setting(el)
+      .setName('djs module')
+      .setDesc(`Vault path of djs.wasm. Leave empty to use ${djsModulePath(plugin)}. Checking…`)
+      .addText(t =>
+        t
+          .setPlaceholder('djs.wasm in the plugin folder')
+          .setValue(c.djsModulePath)
+          .onChange(async x => {
+            c.djsModulePath = x.trim();
+            resetDjsModule();
+            await save();
+          }),
+      )
+      .addButton(b =>
+        b
+          .setIcon('refresh-cw')
+          .setTooltip('Check the module again')
+          .onClick(() => {
+            resetDjsModule();
+            redraw();
+          }),
+      );
+    void loadDjsModule(plugin).then(module =>
+      pathSetting.setDesc(
+        `Vault path of djs.wasm. Leave empty to use ${djsModulePath(plugin)}. ${
+          module
+            ? 'Module loaded: scripts run in djs.'
+            : 'Module not found: scripts run in the Web Worker. Build it with scripts/build-wasm.sh in the djs repository and copy it here.'
+        }`,
+      ),
+    );
+    numberInput(
+      new Setting(el)
+        .setName('djs instruction budget')
+        .setDesc('Fuel per script before it is stopped.'),
+      c.djsMaxFuel,
+      async n => {
+        c.djsMaxFuel = n;
+        await save();
+      },
+      { min: 1_000_000, max: 100_000_000_000, fallback: 2_000_000_000 },
+    );
+    numberInput(
+      new Setting(el).setName('djs memory limit in megabytes'),
+      c.djsMemoryLimitMb,
+      async n => {
+        c.djsMemoryLimitMb = n;
+        await save();
+      },
+      { min: 8, max: 2048, fallback: 64 },
+    );
+  }
   numberInput(
     new Setting(el).setName('Script timeout (ms)'),
     c.timeoutMs,
