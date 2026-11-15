@@ -25,6 +25,6 @@ export class ChatToolExecutor implements IToolExecutor {
    *
    */
   getToolDefinitions(): ToolDefinition[] {
-    return this.chat.toolregistry.getAllDefinitions();
+    return this.chat.toolregistry.getEnabledDefinitions();
   }
 }

@@ -18,7 +18,13 @@ export interface PureChatLLMSettings {
   autoConcatMessagesFromSameRole: boolean;
   agentMode: boolean;
   useYAMLFrontMatter: boolean;
-  enabledToolClassifications: { Vault: boolean; UI: boolean; System: boolean; AI: boolean };
+  enabledToolClassifications: {
+    Vault: boolean;
+    UI: boolean;
+    System: boolean;
+    AI: boolean;
+    MCP: boolean;
+  };
   blueFileResolution: {
     enabled: boolean;
     maxDepth: number;
@@ -28,6 +34,115 @@ export interface PureChatLLMSettings {
   blueResolutionViewMode?: 'tree' | 'graph';
   removeEmptyMessages: boolean;
   realtimeSystemPromptFile: string;
+  /** Voice agent configuration (OpenAI Realtime, GPT-Live, Gemini Live, Grok Voice). */
+  voice: VoiceSettings;
+  /** Remote MCP servers (Streamable HTTP). */
+  mcpServers: McpServerConfig[];
+  /** Vault folder that holds Agent Skills (one sub-folder per skill with a SKILL.md). */
+  skillsFolder: string;
+  /** Code mode tool configuration. */
+  codeMode: CodeModeSettings;
+}
+
+export type VoiceProviderId = 'openai-realtime' | 'openai-live' | 'gemini-live' | 'xai-voice';
+
+/** How tools are exposed to voice agents. */
+export type VoiceToolExposure = 'all' | 'codemode';
+
+export interface OpenAIRealtimeVoiceSettings {
+  model: string;
+  voice: string;
+  speed: number;
+  turnDetection: 'semantic_vad' | 'server_vad' | 'none';
+  eagerness: 'auto' | 'low' | 'medium' | 'high';
+  noiseReduction: 'near_field' | 'far_field' | 'none';
+  transcriptionModel: string;
+  reasoningEffort: 'default' | 'minimal' | 'low' | 'medium' | 'high';
+  idleTimeoutMs: number;
+}
+
+export interface OpenAILiveVoiceSettings {
+  model: string;
+  voice: string;
+  /**
+   * Who runs the duplex agent's backend.
+   * - `responses`: OpenAI runs the backend model through the Responses API.
+   * - `client`: this plugin runs the backend with the default chat provider and vault tools.
+   */
+  delegation: 'responses' | 'client';
+  backendModel: string;
+  backendInstructions: string;
+  backendReasoningEffort: 'default' | 'none' | 'minimal' | 'low' | 'medium' | 'high';
+  toolChoice: 'auto' | 'required' | 'none';
+  parallelToolCalls: boolean;
+  serviceTier: 'auto' | 'priority';
+  hostedWebSearch: boolean;
+  acknowledgementDelayMs: number;
+  store: boolean;
+}
+
+export interface GeminiLiveVoiceSettings {
+  model: string;
+  voice: string;
+  languageCode: string;
+  thinkingLevel: 'default' | 'low' | 'medium' | 'high';
+  startSensitivity: 'default' | 'high' | 'low';
+  endSensitivity: 'default' | 'high' | 'low';
+  silenceDurationMs: number;
+  proactiveAudio: boolean;
+  transcription: boolean;
+  contextCompression: boolean;
+  sessionResumption: boolean;
+  nonBlockingTools: boolean;
+  toolScheduling: 'WHEN_IDLE' | 'INTERRUPT' | 'SILENT';
+  googleSearch: boolean;
+}
+
+export interface XaiVoiceSettings {
+  model: string;
+  voice: string;
+  speed: number;
+  reasoningEffort: 'high' | 'none';
+  turnDetection: 'server_vad' | 'none';
+  webSearch: boolean;
+  xSearch: boolean;
+}
+
+export interface VoiceSettings {
+  provider: VoiceProviderId;
+  toolExposure: VoiceToolExposure;
+  /** Maximum characters of a tool result sent back to a voice model. */
+  maxToolOutputChars: number;
+  openai: OpenAIRealtimeVoiceSettings;
+  live: OpenAILiveVoiceSettings;
+  gemini: GeminiLiveVoiceSettings;
+  xai: XaiVoiceSettings;
+}
+
+export interface McpServerConfig {
+  /** Short label, used to namespace tools (mcp__label__tool). */
+  name: string;
+  /** Streamable HTTP endpoint, e.g. https://example.com/mcp */
+  url: string;
+  enabled: boolean;
+  /** Optional bearer token sent as `Authorization: Bearer ...`. */
+  bearerToken: string;
+  /** Extra headers, one `Name: value` per line. */
+  headers: string;
+  /**
+   * `bridge`: the plugin calls the server and exposes its tools to every model.
+   * `native`: hand the server to providers that support remote MCP natively
+   * (OpenAI Realtime, GPT-Live Responses delegation, Grok Voice); other providers fall back to bridge.
+   */
+  mode: 'bridge' | 'native';
+  /** Optional comma-separated allow-list of tool names. */
+  allowedTools: string;
+}
+
+export interface CodeModeSettings {
+  enabled: boolean;
+  timeoutMs: number;
+  maxOutputChars: number;
 }
 
 export interface PureChatLLMAPI {
@@ -78,7 +193,9 @@ export interface ToolDefinition {
   function: ToolFunction;
 }
 
-export type ToolClassification = 'Vault' | 'UI' | 'System' | 'AI';
+export type ToolClassification = 'Vault' | 'UI' | 'System' | 'AI' | 'MCP';
+
+export const TOOL_CLASSIFICATIONS: ToolClassification[] = ['Vault', 'UI', 'System', 'AI', 'MCP'];
 
 // Chat Types
 export interface ChatMessage {

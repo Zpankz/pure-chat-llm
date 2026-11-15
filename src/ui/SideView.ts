@@ -15,7 +15,7 @@ import {
 import { alloptions, EmptyApiKey } from 'src/assets/constants';
 import { PureChatLLMChat } from '../core/Chat';
 import PureChatLLM from '../main';
-import { PURE_CHAT_LLM_ICON_NAME, PURE_CHAT_LLM_VIEW_TYPE } from '../types';
+import { PURE_CHAT_LLM_ICON_NAME, PURE_CHAT_LLM_VIEW_TYPE, TOOL_CLASSIFICATIONS } from '../types';
 import { BrowserConsole } from '../utils/BrowserConsole';
 import { toTitleCase } from '../utils/toTitleCase';
 import { CodeHandling, SectionHandling } from './CodeHandling';
@@ -291,7 +291,7 @@ export class PureChatLLMSideView extends ItemView {
     //});
     if (this.isExpanded) {
       new Setting(container).setName('Tools used in this chat').then(s => {
-        (['Vault', 'UI', 'System', 'AI'] as const).forEach(classification => {
+        TOOL_CLASSIFICATIONS.forEach(classification => {
           s.addButton(btn => {
             const en = chat.isEnabled(classification);
             if (en) btn.setCta();

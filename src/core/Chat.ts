@@ -20,6 +20,9 @@ import { WriteNoteSectionTool } from '../tools/WriteNoteSection';
 import { ShowNoticeTool } from '../tools/ShowNotice';
 import { SmartConnectionsRetrievalTool } from '../tools/SmartConnectionsRetrieval';
 import { SunoTool } from '../tools/Suno';
+import { CodeModeTool } from '../tools/CodeMode';
+import { ActivateSkillTool, ReadSkillFileTool } from '../tools/Skills';
+import { McpTool } from '../tools/McpTool';
 import { TemplatesTool } from '../tools/Templates';
 import {
   ChatMessage,
@@ -198,7 +201,13 @@ export class PureChatLLMChat {
       .registerTool(ActiveContextTool)
       .registerTool(ShowNoticeTool)
       .registerTool(PluginSettingsTool)
-      .registerTool(SunoTool);
+      .registerTool(SunoTool)
+      .registerTool(CodeModeTool)
+      .registerTool(ActivateSkillTool)
+      .registerTool(ReadSkillFileTool);
+    for (const bridged of this.plugin.mcp?.bridgedTools() ?? []) {
+      this.toolregistry.registerDynamic(new McpTool(this, this.toolregistry, bridged));
+    }
     if (!this.plugin.settings.useImageGeneration)
       this.toolregistry.disable(ImageGenerationTool._name);
   }

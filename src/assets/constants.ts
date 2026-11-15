@@ -1,4 +1,5 @@
 import { PureChatLLMSettings } from 'src/types';
+import { DEFAULT_VOICE_SETTINGS } from '../realtime/voiceCatalog';
 import { version } from '../../package.json';
 
 // import { readme, splash } from '../assets/s.json';
@@ -198,7 +199,7 @@ export const DEFAULT_SETTINGS: PureChatLLMSettings = {
   autoConcatMessagesFromSameRole: true,
   agentMode: true,
   useYAMLFrontMatter: false,
-  enabledToolClassifications: { Vault: true, UI: true, System: true, AI: true },
+  enabledToolClassifications: { Vault: true, UI: true, System: true, AI: true, MCP: true },
   blueFileResolution: {
     enabled: false,
     maxDepth: 5,
@@ -208,4 +209,12 @@ export const DEFAULT_SETTINGS: PureChatLLMSettings = {
   blueResolutionViewMode: 'tree',
   removeEmptyMessages: true,
   realtimeSystemPromptFile: '',
+  voice: DEFAULT_VOICE_SETTINGS,
+  mcpServers: [],
+  skillsFolder: 'Skills',
+  codeMode: {
+    enabled: true,
+    timeoutMs: 60000,
+    maxOutputChars: 40000,
+  },
 };

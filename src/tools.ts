@@ -252,6 +252,23 @@ export class ToolRegistry {
   }
 
   /**
+   * Registers a tool instance built at runtime (for example a remote MCP tool) and enables it.
+   * @param tool - The tool instance.
+   */
+  registerDynamic(tool: Tool<Record<string, unknown>>): this {
+    this.allTools.set(tool.name, tool);
+    this.enabledTools.add(tool.name);
+    return this;
+  }
+
+  /**
+   * Definitions of tools that are enabled, available and in an enabled classification.
+   */
+  getEnabledDefinitions(): ToolDefinition[] {
+    return this.tools.map(tool => tool.getDefinition());
+  }
+
+  /**
    *
    */
   getAllDefinitions(): ToolDefinition[] {

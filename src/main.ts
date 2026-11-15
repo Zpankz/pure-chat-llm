@@ -18,6 +18,9 @@ import {
 } from 'obsidian';
 
 import { DEFAULT_SETTINGS, EmptyApiKey } from './assets/constants';
+import { mergeVoiceSettings } from './realtime/voiceCatalog';
+import { DEFAULT_MCP_SERVER, McpManager } from './mcp/McpManager';
+import { SkillsCatalog } from './skills/SkillsCatalog';
 import { ObsidianFileSystemAdapter } from './adapters/ObsidianFileSystemAdapter';
 import { BlueFileResolver } from './core/BlueFileResolver';
 import { PureChatLLMChat } from './core/Chat';
@@ -78,6 +81,12 @@ export default class PureChatLLM extends Plugin {
   codeBlock: { from: number; to: number } | null = null;
   blueFileResolver: BlueFileResolver;
   blueView: BlueResolutionTreeView | null = null;
+  /** Remote MCP servers shared by every chat and voice session. */
+  mcp: McpManager;
+  /** Agent Skills discovered in the vault. */
+  skills: SkillsCatalog;
+  /** Small key/value store that persists code mode `store()` values for this session. */
+  codeModeStore: Map<string, string> = new Map();
 
   /**
    * Initializes the plugin by loading settings, registering views, commands, and setting up the UI.
@@ -100,6 +109,25 @@ export default class PureChatLLM extends Plugin {
     // Initialize BlueFileResolver with FileSystemPort
     const fileSystem = new ObsidianFileSystemAdapter(this.app);
     this.blueFileResolver = new BlueFileResolver(this, fileSystem);
+
+    // Remote MCP servers: discover tools in the background so startup stays fast.
+    this.mcp = new McpManager(this);
+    this.app.workspace.onLayoutReady(() => void this.mcp.refreshAll(false));
+
+    // Agent Skills (agentskills.io): keep the catalogue in sync with the skills folder.
+    this.skills = new SkillsCatalog(this);
+    this.app.workspace.onLayoutReady(() => void this.skills.refresh());
+    for (const event of ['create', 'modify', 'delete'] as const) {
+      this.registerEvent(
+        this.app.vault.on(event as 'create', file => this.skills.onVaultChange(file)),
+      );
+    }
+    this.registerEvent(
+      this.app.vault.on('rename', (file, oldPath) => {
+        this.skills.onVaultChange(file);
+        this.skills.onVaultChange(oldPath);
+      }),
+    );
 
     this.registerView(PURE_CHAT_LLM_VIEW_TYPE, leaf => new PureChatLLMSideView(leaf, this));
     this.registerView(CODE_PREVIEW_VIEW_TYPE, leaf => new CodePreview(leaf, this));
@@ -751,6 +779,16 @@ export default class PureChatLLM extends Plugin {
         ...DEFAULT_SETTINGS.selectionTemplates,
         ...loadedData.selectionTemplates,
       },
+      enabledToolClassifications: {
+        ...DEFAULT_SETTINGS.enabledToolClassifications,
+        ...loadedData.enabledToolClassifications,
+      },
+      voice: mergeVoiceSettings(loadedData.voice),
+      mcpServers: (loadedData.mcpServers ?? []).map(server => ({
+        ...DEFAULT_MCP_SERVER,
+        ...server,
+      })),
+      codeMode: { ...DEFAULT_SETTINGS.codeMode, ...loadedData.codeMode },
     };
 
     const toSentenceCase = (str: string) =>
@@ -827,7 +865,7 @@ export default class PureChatLLM extends Plugin {
    *
    */
   onunload() {
-    // Cleanup code if needed
+    this.mcp?.dispose();
   }
 }
 
