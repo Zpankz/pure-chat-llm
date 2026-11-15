@@ -101,6 +101,15 @@ export class Modal {
  * `onClick`, `addEventListener`) are kept, not called. Enough to render a settings tab and see it
  * finish; nothing is drawn.
  */
+/**
+ * Obsidian's `Setting` has `then(cb) { cb(this); return this }`, so a promise resolved with a
+ * Setting (an `await` of one, or a `.then()` callback that returns one) never settles and freezes
+ * the window in an endless microtask loop. The stand-in settles instead and records each such
+ * resolution here, so a test can fail on it.
+ */
+export const settingsResolvedAsPromise: string[] = [];
+const settingRoots = new WeakSet<object>();
+
 export function uiStub(key?: string | symbol, parent?: any): any {
   const store: Record<string | symbol, unknown> = {};
   const self: any = new Proxy(function () {}, {
@@ -111,7 +120,12 @@ export function uiStub(key?: string | symbol, parent?: any): any {
       }
       if (key === 'then' && typeof args[0] === 'function') {
         // `await stub` calls then(resolve, reject): settle with undefined, so awaiting ends.
-        if (args.length >= 2) return void (args[0] as (c: unknown) => void)(undefined);
+        if (args.length >= 2) {
+          if (parent && settingRoots.has(parent)) {
+            settingsResolvedAsPromise.push(new Error('A Setting resolved a promise').stack ?? '');
+          }
+          return void (args[0] as (c: unknown) => void)(undefined);
+        }
         // Setting.then(cb) calls cb with the setting itself.
         (args[0] as (c: unknown) => void)(parent);
       }
@@ -132,7 +146,9 @@ export function uiStub(key?: string | symbol, parent?: any): any {
 }
 export class Setting {
   constructor() {
-    return uiStub() as Setting;
+    const setting = uiStub();
+    settingRoots.add(setting);
+    return setting as Setting;
   }
 }
 export class SettingGroup {
