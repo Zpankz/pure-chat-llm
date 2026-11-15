@@ -42,6 +42,8 @@ const FOREGROUND: ToolLayer[] = ['chat', 'voice'];
 export const TOOL_LAYERS: Record<string, ToolLayer[]> = {
   // Read and search: everywhere.
   read_file: ALL,
+  // Deprecated alias of traverse_graph with direction in.
+  get_backlinks: ALL,
   read_note_section: ALL,
   search_vault: ALL,
   glob_vault_files: ALL,
