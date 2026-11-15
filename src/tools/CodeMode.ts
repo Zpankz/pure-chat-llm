@@ -1,5 +1,6 @@
 import { defineToolParameters, InferArgs, Tool } from '../tools';
 import { CODEMODE_WORKER_SOURCE } from './codemode/sandboxSource';
+import { CodeModeHost, CodeModeRunResult, loadDjsModule, runWithDjs } from './codemode/djsEngine';
 
 const codeModeParameters = defineToolParameters({
   type: 'object',
@@ -24,13 +25,8 @@ const codeModeParameters = defineToolParameters({
 
 export type CodeModeArgs = InferArgs<typeof codeModeParameters>;
 
-interface WorkerDone {
+interface WorkerDone extends CodeModeRunResult {
   type: 'done';
-  ok: boolean;
-  ret?: string;
-  error?: string;
-  outputs: string[];
-  console: string[];
 }
 
 interface WorkerCall {
@@ -102,7 +98,11 @@ export function parseInlineOptions(code: string): {
  * one tool call per step. Modelled on pi's built-in `codemode` tool
  * (https://docs.pi.dev/latest/codemode): same globals (`tools`, `text`, `console`, `store`, `load`,
  * `exit`, `ALL_TOOLS`, `searchTools`, `describeTool`, `describeNamespace`), same `// @options:`
- * header and the same result layout. Scripts run in an isolated Web Worker instead of QuickJS.
+ * header and the same result layout.
+ *
+ * Scripts run in djs (https://github.com/earendil-works/djs), the WebAssembly engine built to
+ * replace QuickJS in pi's code mode, when its module is available, and otherwise in a locked-down
+ * Web Worker. With djs, scripts may also be TypeScript.
  */
 export class CodeModeTool extends Tool<CodeModeArgs> {
   readonly name = 'codemode';
@@ -130,7 +130,7 @@ export class CodeModeTool extends Tool<CodeModeArgs> {
     }
     return [
       'Run a JavaScript program that orchestrates several tools in one step. Prefer this over many separate calls when a task needs loops, filtering, joins or more than two tool calls.',
-      'The code runs as an async function body in a sandbox with no DOM, network, file system or Node APIs. Every tool is `await tools.<name>(argsObject)`; results are strings, or parsed JSON when a tool returns JSON. Failed calls throw, so use try/catch or Promise.allSettled.',
+      'The code runs as an async function body (JavaScript, or TypeScript when the djs engine is active) in a sandbox with no DOM, network, file system or Node APIs. Every tool is `await tools.<name>(argsObject)`; results are strings, or parsed JSON when a tool returns JSON. Failed calls throw, so use try/catch or Promise.allSettled.',
       'Globals: text(v), console.log(...), return v, exit(), store(key, json) and load(key) (persist small values across calls), ALL_TOOLS, searchTools(query, {limit, namespace}), describeTool(name) (returns JSON Schema), describeNamespace(prefix).',
       'Optional first line: // @options: {"timeout_ms": 60000, "max_output_tokens": 2000}',
       'Tool calls are real: anything a script changes stays changed.',
@@ -170,29 +170,83 @@ export class CodeModeTool extends Tool<CodeModeArgs> {
     void this.status('Running code mode script...');
     const started = performance.now();
     let toolCalls = 0;
+    const host: CodeModeHost = {
+      call: (name, callArgs) => {
+        toolCalls++;
+        return this.callTool(name, callArgs);
+      },
+      store: (key, value) => {
+        const total = [...this.chat.plugin.codeModeStore.values()].reduce(
+          (n, v) => n + v.length,
+          0,
+        );
+        if (value.length <= 262144 && total + value.length <= 1048576) {
+          this.chat.plugin.codeModeStore.set(key, value);
+        }
+      },
+    };
 
+    let engine = 'worker';
+    let done: CodeModeRunResult;
+    const djsModule = settings.engine === 'worker' ? null : await loadDjsModule(this.chat.plugin);
+    if (djsModule) {
+      engine = 'djs';
+      done = await runWithDjs(djsModule, inline.code, { tools, store }, host, {
+        timeoutMs: timeout,
+        maxFuel: settings.djsMaxFuel || 2_000_000_000,
+        memoryLimitBytes: (settings.djsMemoryLimitMb || 64) * 1024 * 1024,
+      });
+    } else if (settings.engine === 'djs') {
+      return 'Error: Code mode is set to djs, but the djs module (djs.wasm) was not found. Set its path in settings or switch the engine to auto.';
+    } else {
+      done = await this.runInWorker(inline.code, tools, store, host, timeout);
+    }
+
+    const seconds = ((performance.now() - started) / 1000).toFixed(2);
+    const parts: string[] = [
+      `Script ${done.ok ? 'completed' : 'failed'} in ${seconds}s (${toolCalls} tool call${toolCalls === 1 ? '' : 's'}, ${engine})`,
+    ];
+    done.outputs.forEach((out, i) =>
+      parts.push(`==> text ${i + 1}/${done.outputs.length} <==\n${out}`),
+    );
+    if (done.console.length)
+      parts.push(`<console_output>\n${done.console.join('\n')}\n</console_output>`);
+    if (done.ret !== undefined) parts.push(`Return value:\n${done.ret}`);
+    if (!done.ok && done.error) parts.push(`Script error: ${done.error}`);
+    return clipMiddle(parts.join('\n\n'), maxChars);
+  }
+
+  /**
+   * Runs a script in the Web Worker engine.
+   * @param code - Script.
+   * @param tools - Tool metadata.
+   * @param store - Persisted values.
+   * @param host - Tool calls and store writes.
+   * @param timeout - Deadline in ms.
+   */
+  private runInWorker(
+    code: string,
+    tools: unknown[],
+    store: Record<string, string>,
+    host: CodeModeHost,
+    timeout: number,
+  ): Promise<CodeModeRunResult> {
     const blobUrl = URL.createObjectURL(
       new Blob([CODEMODE_WORKER_SOURCE], { type: 'application/javascript' }),
     );
     const worker = new Worker(blobUrl);
     URL.revokeObjectURL(blobUrl);
 
-    const done = await new Promise<WorkerDone>(resolve => {
+    return new Promise<CodeModeRunResult>(resolve => {
       const timer = window.setTimeout(() => {
         worker.terminate();
-        resolve({
-          type: 'done',
-          ok: false,
-          error: `Timed out after ${timeout} ms`,
-          outputs: [],
-          console: [],
-        });
+        resolve({ ok: false, error: `Timed out after ${timeout} ms`, outputs: [], console: [] });
       }, timeout);
 
       worker.onerror = event => {
         window.clearTimeout(timer);
         worker.terminate();
-        resolve({ type: 'done', ok: false, error: event.message, outputs: [], console: [] });
+        resolve({ ok: false, error: event.message, outputs: [], console: [] });
       };
 
       worker.onmessage = (event: MessageEvent<WorkerMessage>) => {
@@ -202,16 +256,9 @@ export class CodeModeTool extends Tool<CodeModeArgs> {
           worker.terminate();
           resolve(msg);
         } else if (msg.type === 'store') {
-          const total = [...this.chat.plugin.codeModeStore.values()].reduce(
-            (n, v) => n + v.length,
-            0,
-          );
-          if (msg.value.length <= 262144 && total + msg.value.length <= 1048576) {
-            this.chat.plugin.codeModeStore.set(msg.key, msg.value);
-          }
+          host.store(msg.key, msg.value);
         } else if (msg.type === 'call') {
-          toolCalls++;
-          void this.callTool(msg.name, msg.args).then(
+          void host.call(msg.name, msg.args).then(
             value => worker.postMessage({ type: 'reply', id: msg.id, value }),
             (error: unknown) =>
               worker.postMessage({
@@ -223,21 +270,8 @@ export class CodeModeTool extends Tool<CodeModeArgs> {
         }
       };
 
-      worker.postMessage({ type: 'run', code: inline.code, tools, store });
+      worker.postMessage({ type: 'run', code, tools, store });
     });
-
-    const seconds = ((performance.now() - started) / 1000).toFixed(2);
-    const parts: string[] = [
-      `Script ${done.ok ? 'completed' : 'failed'} in ${seconds}s (${toolCalls} tool call${toolCalls === 1 ? '' : 's'})`,
-    ];
-    done.outputs.forEach((out, i) =>
-      parts.push(`==> text ${i + 1}/${done.outputs.length} <==\n${out}`),
-    );
-    if (done.console.length)
-      parts.push(`<console_output>\n${done.console.join('\n')}\n</console_output>`);
-    if (done.ret !== undefined) parts.push(`Return value:\n${done.ret}`);
-    if (!done.ok && done.error) parts.push(`Script error: ${done.error}`);
-    return clipMiddle(parts.join('\n\n'), maxChars);
   }
 
   /**
