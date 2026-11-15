@@ -86,8 +86,12 @@ export class Plugin extends Component {}
 export class ItemView extends Component {}
 export class MarkdownView {}
 export class Modal {
+  /** Modals opened so far, so tests can see (and answer) them. */
+  static opened: Modal[] = [];
   constructor(public app?: unknown) {}
-  open(): void {}
+  open(): void {
+    Modal.opened.push(this);
+  }
   close(): void {}
 }
 export class Setting {}
