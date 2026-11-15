@@ -50,7 +50,7 @@ test('"ask me" for a worker saves a proposal, opens no window, and leaves the no
 });
 
 test('two reviewers approve: the edit is made and the note backed up first', async () => {
-  const fake = fakeReviewer(() => 'APPROVE\nfine');
+  const fake = fakeReviewer(() => '{"verdict":"approve","reason":"fine"}');
   try {
     const h = toolHarness(
       { 'a.md': 'abc' },

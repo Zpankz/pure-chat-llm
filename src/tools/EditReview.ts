@@ -1,7 +1,13 @@
 import { applyPatch, createPatch } from 'diff';
 import { App, Modal, normalizePath, Setting, TextAreaComponent, TFile, TFolder } from 'obsidian';
 import type { PureChatLLMChat } from '../core/Chat';
-import { backupNote, buildProposal, peerReview, writeRoute } from '../agents/peerReview';
+import {
+  backupNote,
+  buildProposal,
+  peerReview,
+  precheckWrite,
+  writeRoute,
+} from '../agents/peerReview';
 import type { WriteAction } from '../agents/peerReview';
 import { jsonResult, toolError, wantsJson } from './toolContract';
 
@@ -53,6 +59,8 @@ export interface WriteOutcome {
   backup?: string;
   /** Proposal note saved for the user's review instead of writing. */
   proposal?: string;
+  /** Why a change was held for the user instead of the reviewers. */
+  held?: string;
   /** Reviewer verdict lines. */
   verdicts?: string[];
   linesBefore?: number;
@@ -277,10 +285,33 @@ async function decideAndWrite(chat: PureChatLLMChat, request: WriteRequest): Pro
   let backup: string | undefined;
   let verdicts: string[] | undefined;
   if (route === 'peer') {
-    const proposal = await buildProposal(plugin, path, content, request.instruction, action);
+    // Changes too big to leave to reviewers go to the user, as a proposal.
+    const held = precheckWrite(plugin, action, path, original, content);
+    if (held) {
+      const proposal = await queueProposal(chat, { ...request, path }, action, original, held);
+      logReview(chat, `Held the ${action} of ${path} for the user (${held}): ${proposal}`);
+      return { ok: true, applied: false, action, path, review: 'policy:window', proposal, held };
+    }
+    const userRequest = (chat as { task?: { userRequest?: unknown } }).task?.userRequest;
+    const proposal = await buildProposal(plugin, path, content, request.instruction, action, {
+      original,
+      reason: request.reason,
+      userRequest: typeof userRequest === 'string' ? userRequest : undefined,
+    });
     const verdict = await peerReview(plugin, proposal);
     verdicts = verdict.verdicts;
     logReview(chat, `${action} ${path}`, verdict.approved, verdict.verdicts);
+    if (verdict.unavailable) {
+      return fail(
+        'policy:reviewers',
+        toolError(
+          'ReviewUnavailable',
+          `The reviewers gave no usable answer about the ${action} of "${path}", so it was not judged. Nothing changed.`,
+          [...verdict.verdicts, 'Try again later, or report the change you wanted.'],
+        ),
+        { verdicts },
+      );
+    }
     if (!verdict.approved) {
       return fail(
         'policy:reviewers',
@@ -358,6 +389,7 @@ export function renderWrite(
     review: outcome.review,
     ...(outcome.backup ? { backup: outcome.backup } : {}),
     ...(outcome.proposal ? { proposal: outcome.proposal } : {}),
+    ...(outcome.held ? { held: outcome.held } : {}),
     ...(outcome.edited ? { edited: true } : {}),
     ...(outcome.merged ? { merged: true } : {}),
     ...(outcome.applied && outcome.action !== 'delete'
@@ -372,7 +404,7 @@ export function renderWrite(
   if (wantsJson(args)) return jsonResult(json);
   if (!outcome.applied) {
     return [
-      `Not written yet: the ${outcome.action} of "${outcome.path}" was saved as a proposal for the user to review.`,
+      `Not written yet: the ${outcome.action} of "${outcome.path}" was saved as a proposal for the user to review${outcome.held ? `, because ${outcome.held}` : ''}.`,
       `Proposal: ${outcome.proposal}`,
       'Mention it in your report; the note itself is unchanged.',
     ].join('\n');
@@ -575,12 +607,14 @@ const PROPOSAL_KEY = 'voice-agent-proposal';
  * @param request - The change.
  * @param action - Create, edit or delete.
  * @param original - The note's text now.
+ * @param held - Why it was held for the user instead of the reviewers.
  */
 async function queueProposal(
   chat: PureChatLLMChat,
   request: WriteRequest,
   action: WriteAction,
   original: string | null,
+  held?: string,
 ): Promise<string> {
   const vault = chat.plugin.app.vault;
   const root = chat.plugin.settings.orchestrator?.taskFolder?.trim() || 'Agent tasks';
@@ -606,6 +640,7 @@ async function queueProposal(
     `What it does: ${request.instruction}`,
   ];
   if (request.reason) parts.push(`Why: ${request.reason}`);
+  if (held) parts.push(`Held for you instead of the reviewers because ${held}.`);
   if (action === 'edit') {
     parts.push(
       '',
