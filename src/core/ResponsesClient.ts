@@ -1,4 +1,5 @@
 import type { ChatRequestOptions, ChatResponse, ToolCall, ToolDefinition } from '../types';
+import { HttpStatusError } from './requestControl';
 import type { ReasoningEffort } from '../types';
 
 /**
@@ -19,6 +20,8 @@ export interface ResponsesCall {
   effort?: ReasoningEffort;
   /** Send only fields Sign in with ChatGPT accepts. */
   chatgptPlan?: boolean;
+  /** Cancels the request. */
+  signal?: AbortSignal;
 }
 
 interface InputItem {
@@ -206,6 +209,7 @@ export async function callResponses(call: ResponsesCall): Promise<ChatResponse> 
         accept: 'text/event-stream',
       },
       body,
+      signal: call.signal,
     });
     if (res.status === 401 && attempt === 0) continue;
     if (!res.ok || !res.body) {
@@ -216,7 +220,7 @@ export async function callResponses(call: ResponsesCall): Promise<ChatResponse> 
       } catch {
         // Not JSON.
       }
-      throw new Error(`Responses API (${res.status}): ${detail}`);
+      throw new HttpStatusError(`Responses API (${res.status}): ${detail}`, res.status);
     }
     return readResponsesStream(res.body);
   }

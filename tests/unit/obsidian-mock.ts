@@ -330,6 +330,14 @@ export class MockVault {
   async delete(file: TAbstractFile): Promise<void> {
     this.remove(file);
   }
+  /** Moves a file (folders are created as needed). Links are not rewritten. */
+  async rename(file: TAbstractFile, newPath: string): Promise<void> {
+    const p = normalizePath(newPath);
+    if (this.files.has(p)) throw new Error('Destination file already exists!');
+    const content = this.contents.get(file.path) ?? '';
+    this.remove(file);
+    this.put(p, content);
+  }
   async trash(file: TAbstractFile): Promise<void> {
     this.trashed.push(file.path);
     this.remove(file);
@@ -413,6 +421,7 @@ export interface MockApp {
   metadataCache: MockMetadataCache;
   fileManager: {
     trashFile(file: TAbstractFile): Promise<void>;
+    renameFile(file: TAbstractFile, newPath: string): Promise<void>;
     processFrontMatter(file: TFile, fn: (fm: Record<string, unknown>) => void): Promise<void>;
     getAvailablePathForAttachment(name: string): Promise<string>;
     generateMarkdownLink(file: TFile): string;
@@ -431,6 +440,7 @@ export function createApp(): MockApp {
     metadataCache,
     fileManager: {
       trashFile: async file => vault.trash(file),
+      renameFile: async (file, newPath) => vault.rename(file, newPath),
       processFrontMatter: async (file, fn) => {
         const text = vault.contents.get(file.path) ?? '';
         const cache = buildCache(text);

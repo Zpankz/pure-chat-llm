@@ -208,6 +208,8 @@ export interface OrchestratorSettings {
   subAgentInstructions: string;
   /** Model responses per task before it stops. */
   maxSteps: number;
+  /** Minutes a task may run in all before it is stopped (0 = no limit). */
+  taskTimeoutMinutes: number;
   /** Tasks that run at the same time; the rest wait in a queue. */
   maxConcurrent: number;
   /** Minutes between timed check-ins on a running task. 0 turns them off. */

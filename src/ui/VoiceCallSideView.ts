@@ -462,10 +462,12 @@ export class VoiceCallSideView extends ItemView {
           .map(l => `${l.role === 'user' ? 'User' : 'Assistant'}: ${l.text}`),
       );
       this.stopAgentWatch.push(
-        orchestrator.onSay((text, urgency) =>
+        // The answer to what the user just asked skips the relevance check: they are waiting
+        // for it, and the check would only add a model round trip (system review D1).
+        orchestrator.onSay((text, urgency, answersUser) =>
           text.startsWith('[Orchestrator activity]')
             ? this.voiceCall?.notify(text, 'silent')
-            : void this.deliver(`[Orchestrator] ${text}`, 'Orchestrator', urgency, true),
+            : void this.deliver(`[Orchestrator] ${text}`, 'Orchestrator', urgency, !answersUser),
         ),
         () => orchestrator.setTranscriptSource(null),
       );

@@ -1,3 +1,4 @@
+import { HttpStatusError } from './requestControl';
 import type { ChatRequestOptions, ChatResponse, ReasoningEffort, ToolCall } from '../types';
 
 /**
@@ -19,6 +20,8 @@ export interface GeminiCall {
   projectId: string;
   options: ChatRequestOptions;
   effort?: ReasoningEffort;
+  /** Cancels the request. */
+  signal?: AbortSignal;
 }
 
 const BASE = 'https://generativelanguage.googleapis.com/v1beta';
@@ -82,7 +85,7 @@ export function toGeminiBody(
       if (t) system.push(t);
     } else if (m.role === 'assistant') {
       const parts: Part[] = t ? [{ text: t }] : [];
-      for (const call of (m.tool_calls ?? [])) {
+      for (const call of m.tool_calls ?? []) {
         if (call.id) names.set(call.id, call.function.name);
         let args: unknown = {};
         try {
@@ -183,6 +186,7 @@ export async function callGemini(call: GeminiCall): Promise<ChatResponse> {
         'content-type': 'application/json',
       },
       body,
+      signal: call.signal,
     });
     if (res.status === 401 && attempt === 0) continue;
     let data: GeminiResponse = {};
@@ -192,7 +196,10 @@ export async function callGemini(call: GeminiCall): Promise<ChatResponse> {
       // Not JSON.
     }
     if (!res.ok)
-      throw new Error(`Gemini (${res.status}): ${data.error?.message ?? res.statusText}`);
+      throw new HttpStatusError(
+        `Gemini (${res.status}): ${data.error?.message ?? res.statusText}`,
+        res.status,
+      );
     return fromGeminiResponse(data);
   }
   throw new Error('Gemini: not authorised. Sign in with Google again.');

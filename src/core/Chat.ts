@@ -1,4 +1,5 @@
 import { App, EditorRange, Notice, TFile } from 'obsidian';
+import type { SubAgentTask } from '../agents/types';
 import { Chatsysprompt, EmptyApiKey, Selectionsysprompt } from 'src/assets/constants';
 import PureChatLLM, { StreamNotice } from '../main';
 import { ToolRegistry } from '../tools';
@@ -92,6 +93,13 @@ export class PureChatLLMChat {
   role: 'agent' | 'orchestrator' | 'voice' | 'orchestrator-agent' | 'subagent' = 'agent';
   /** Task id when this chat runs a sub-agent. */
   subAgentTaskId?: string;
+  /** The task this chat runs, when it is a sub-agent (writes and reviewers read its request). */
+  task?: SubAgentTask;
+  /**
+   * Fires when the work this chat is doing is cancelled or timed out. Tools that write check it
+   * right before writing, so a cancelled or timed-out run never lands a change later.
+   */
+  abortSignal?: AbortSignal;
 
   /**
    *
