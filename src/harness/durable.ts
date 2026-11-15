@@ -59,6 +59,8 @@ export interface DurableHost {
   workerInstructions?: () => string;
   /** Longest task result `get_task_result` returns. */
   maxResultChars?: number;
+  /** Minutes between check-ins on a running worker; 0 turns them off. Read for each round. */
+  checkInMinutes?: () => number;
   /** Mobile device (fewer progress commits). */
   mobile?: boolean;
 }
@@ -152,6 +154,7 @@ export async function openDurable(
           ...(host.workerInstructions ? { instructions: host.workerInstructions() } : {}),
         }),
         maxResultChars: host.maxResultChars,
+        checkInMinutes: host.checkInMinutes,
       },
       taskId =>
         live.harness

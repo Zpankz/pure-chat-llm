@@ -98,6 +98,7 @@ export class DurableEngine {
         orchestratorInstructions: () => DURABLE_ORCHESTRATOR_GUIDANCE,
         workerInstructions: () => new LocalSubAgentBackend(this.plugin).systemPrompt(),
         maxResultChars: this.plugin.settings.voice.maxToolOutputChars || 6000,
+        checkInMinutes: () => this.plugin.settings.orchestrator.checkInMinutes,
         mobile: Platform.isMobile,
       },
       {

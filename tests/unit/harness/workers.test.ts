@@ -72,9 +72,19 @@ async function until(check: () => boolean, what: string, ms = 5000) {
   }
 }
 
-async function open(send: LayerSend, storage: Storage = new MemoryStorage()) {
+async function open(
+  send: LayerSend,
+  storage: Storage = new MemoryStorage(),
+  checkInMinutes?: number,
+) {
   return openDurable(
-    { vaultKey: 'test', send, tools: vaultTools, workerInstructions: () => 'You are a worker.' },
+    {
+      vaultKey: 'test',
+      send,
+      tools: vaultTools,
+      workerInstructions: () => 'You are a worker.',
+      ...(checkInMinutes ? { checkInMinutes: () => checkInMinutes } : {}),
+    },
     { storage },
   );
 }
@@ -302,5 +312,95 @@ test('a question asked before a restart is answered after it, and asked once', a
     assert.equal(asks.length, 1);
   } finally {
     await s2.close();
+  }
+});
+
+test('a finished task takes a follow-up in the same conversation and reports again', async () => {
+  const { send, requests } = layers({
+    orchestrator: [
+      call('delegate_task', { title: 'Read notes', instructions: 'Read a.md.' }),
+      say('Started.'),
+      call('message_task', { id: 't1', message: 'Now also read b.md.' }),
+      say('Asked for b.md too.'),
+      say('a says 42 and b says 7.'),
+    ],
+    worker: [say('a.md says 42.'), say('b.md says 7.')],
+  });
+  const session = await open(send);
+  try {
+    const root = await session.root();
+    await (await root.submit({ type: 'input', content: 'Read my notes' }, CTX)).wait(CTX);
+    await until(() => requests.orchestrator.length === 5, 'the second report');
+    await session.harness.waitForIdle(CTX);
+    assert.match(lastTool(requests.orchestrator[3]) ?? '', /Sent the follow-up to t1 .*round 2/);
+    // The second round sees the first: one conversation, both messages.
+    assert.deepEqual(userTexts(requests.worker[1]), ['Read a.md.', 'Now also read b.md.']);
+    const reports = userTexts(requests.orchestrator[4]).filter(t =>
+      t.includes('t1 "Read notes" finished'),
+    );
+    assert.equal(reports.length, 2);
+    const t1 = (await workers(session)).t1;
+    assert.equal(t1.status, 'done');
+    assert.equal(t1.rounds, 2);
+    assert.equal(t1.result, 'b.md says 7.');
+  } finally {
+    await session.close();
+  }
+});
+
+test('check-ins: a quiet note while the worker moves, one stuck report when it stops', async () => {
+  let release: (r: ChatResponse) => void = () => {};
+  let blocked = false;
+  const { send, requests } = layers({
+    orchestrator: [
+      call('delegate_task', { title: 'Slow job', instructions: 'Read a.md slowly.' }),
+      say('Started.'),
+      say('I will give it a moment.'),
+      say('Slow job is done.'),
+    ],
+    worker: [
+      call('read_file', { path: 'a.md' }),
+      () =>
+        new Promise<ChatResponse>(resolve => {
+          blocked = true;
+          release = resolve;
+        }),
+    ],
+  });
+  // 0.003 minutes: a look every 180 ms.
+  const session = await open(send, new MemoryStorage(), 0.003);
+  try {
+    const root = await session.root();
+    await (await root.submit({ type: 'input', content: 'Do the slow job' }, CTX)).wait(CTX);
+    await until(() => blocked, 'the worker to block');
+    // The first look sees the read, a quiet note; the next sees nothing new and reports it stuck.
+    await until(() => requests.orchestrator.length === 3, 'the stuck report');
+    const third = userTexts(requests.orchestrator[2]);
+    assert.ok(
+      third.some(t =>
+        /t1 "Slow job" check-in: running for \d+ min\. Recent: tools used: read_file/.test(t),
+      ),
+    );
+    assert.match(third[third.length - 1], /t1 "Slow job" has made no step/);
+    // The same stall is not reported twice.
+    await new Promise(r => setTimeout(r, 450));
+    assert.equal(requests.orchestrator.length, 3);
+    release({ role: 'assistant', content: 'a.md read.' });
+    await until(() => requests.orchestrator.length === 4, 'the report');
+    await session.harness.waitForIdle(CTX);
+    assert.match(lastUser(requests.orchestrator[3]) ?? '', /t1 "Slow job" finished/);
+    // The round is over, so its timer is too.
+    await new Promise(r => setTimeout(r, 400));
+    assert.equal(requests.orchestrator.length, 4);
+    const t1 = (await workers(session)).t1;
+    assert.equal(t1.status, 'done');
+    const graph = await session.harness.inspect(CTX);
+    assert.equal(
+      graph.tasks.filter(t => t.record.kind === 'voice-agent.check-in').length,
+      0,
+      'no check-in task is left',
+    );
+  } finally {
+    await session.close();
   }
 });
