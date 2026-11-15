@@ -485,12 +485,21 @@ describe('Layered call pipeline and saved call notes', () => {
     const threadNote = String(d.task.notePath ?? '');
     expect(d.task.parentNote).toBe(topic!.path);
     expect(Object.keys(d.notes)).toContain(threadNote);
-    expect(d.notes[topic!.path] ?? '').toContain(`#^spawn-${taskId}`);
     expect(linked(d, topic!.path, threadNote)).toBe(true);
     expect(linked(d, threadNote, topic!.path)).toBe(true);
     await obsidianPage.openFile(topic!.path);
     await browser.pause(800);
     await ev.shot('topic-with-thread');
+    // The thread note says where it started with a block link into the topic note; that block has
+    // to exist there, or the link opens the topic without landing on the hand-off line.
+    const anchor = `spawn-${taskId}`;
+    const threadLinksBlock = (d.notes[threadNote] ?? '').includes(`#^${anchor}`);
+    const topicHasBlock = new RegExp(`\\^${anchor}\\s*$`, 'm').test(d.notes[topic!.path] ?? '');
+    ev.save('block-link', { threadLinksBlock, topicHasBlock });
+    if (threadLinksBlock && !topicHasBlock) {
+      ev.note(`Finding: the thread note links to the topic at #^${anchor}, but the topic's "Started" line carries no ^${anchor} block id, so that link does not land on the hand-off.`);
+    }
+    expect(!threadLinksBlock || topicHasBlock).toBe(true);
     ev.note(`With the direct voice role there is no orchestrator note; the thread ${threadNote} hangs off the topic "Bohr equation" and links back to it.`);
   });
 
