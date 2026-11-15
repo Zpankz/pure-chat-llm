@@ -38,6 +38,7 @@ export const REQUIREMENTS = [
   { id: 'CALL-1', title: 'A call is saved as interlinked notes: transcript, orchestrator conversation and each sub-thread', source: 'D16 and follow-up' },
   { id: 'CALL-3', title: 'A saved call is a folder whose folder note is the root node; orchestrator and sub-thread notes nest under it as folder notes or notes, wikilinked parent to child and back, so it branches as a graph', source: 'Hani 11:59 UTC (folder-note call structure)' },
   { id: 'CALL-2', title: 'Saved calls go to a folder set in settings (default "Voice Agent")', source: 'D16' },
+  { id: 'CALL-8', title: 'Saving a call never stops on an Obsidian prompt: renaming a topic note or moving the orchestrator note works with the default "Automatically update internal links" setting', source: 'validation-scenarios.md §1 (found in this run)' },
   { id: 'CALL-4', title: 'Zettelkasten layout: one note per topic plus an index (folder) note with Map, Flow, Threads and Timings; an alternative that returns to an earlier topic branches under it', source: 'D16a, D16b; validation-scenarios.md §1' },
   { id: 'CALL-5', title: 'Relays are block-linked both ways: the topic note links to the orchestrator at ^relay-N and the orchestrator links back to the topic; threads hang off ^spawn-<id>', source: 'validation-scenarios.md §1.2-1.3' },
   { id: 'CALL-6', title: 'Call layout "One transcript note": the folder note holds the whole transcript with hand-offs inline', source: 'validation-scenarios.md §1.4' },

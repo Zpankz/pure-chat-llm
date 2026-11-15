@@ -126,10 +126,11 @@ export async function consoleLines(pattern?: RegExp): Promise<string[]> {
 export async function freezeStack(): Promise<Record<string, unknown>> {
   try {
     const pptr = await withTimeout(browser.getPuppeteer(), 20_000, 'Connecting to DevTools');
-    const pages = await pptr.pages();
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const page = pages.find((p: any) => /obsidian\.md|app:\/\/|index\.html/.test(p.url())) ?? pages[0];
-    const cdp = await page.createCDPSession();
+    // Attach to the page's target directly: Page objects initialise over the page's own thread,
+    // which is the one that is stuck.
+    const targets = pptr.targets().filter(t => t.type() === 'page');
+    const target = targets.find(t => /obsidian\.md|app:\/\/|index\.html/.test(t.url())) ?? targets[0];
+    const cdp = await withTimeout(target.createCDPSession(), 15_000, 'Opening a DevTools session');
     const scripts = new Map<string, string>();
     cdp.on('Debugger.scriptParsed', (e: { scriptId: string; url: string }) => scripts.set(e.scriptId, e.url));
     // eslint-disable-next-line @typescript-eslint/no-explicit-any

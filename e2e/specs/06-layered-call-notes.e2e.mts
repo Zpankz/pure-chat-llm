@@ -32,6 +32,8 @@ interface CallInfo {
   timings: Array<{ what: string; ms: number; outcome: string }>;
   /** How calls.finish() ended: 'done in N ms', 'error: …' or 'pending' after 30 s. */
   finish: string;
+  /** Obsidian "Update links" prompts that came up while the call's notes were saved. */
+  prompts: string[];
 }
 
 interface SavedCall {
@@ -107,6 +109,19 @@ async function play(steps: Step[]): Promise<string[]> {
   }, steps);
 }
 
+/** Text of an open "Update links" prompt, answered with "Just once"; '' when none is open. */
+async function answerUpdateLinks(): Promise<string> {
+  const text = await browser.execute(() => {
+    const modal = [...document.querySelectorAll('.modal-container .modal')].find(m => /Update links/.test(m.textContent ?? ''));
+    if (!modal) return '';
+    const button = [...modal.querySelectorAll('button')].find(b => b.textContent?.trim() === 'Just once');
+    const text = modal.textContent?.trim() ?? '';
+    (button as HTMLElement | undefined)?.click();
+    return text;
+  });
+  return text;
+}
+
 /** Ends the call and reads back everything it saved. */
 async function closeCall(root: string, task: Record<string, unknown> = {}, mark = 0): Promise<SavedCall> {
   // finish() is started, not awaited inside the page script: the first CI run's call never came
@@ -123,12 +138,18 @@ async function closeCall(root: string, task: Record<string, unknown> = {}, mark 
       .then(() => (w.__e2eFinish = `done in ${Date.now() - started} ms`))
       .catch((e: unknown) => (w.__e2eFinish = `error: ${String(e)}`));
   });
+  // Obsidian asks "Update links?" when a renamed note has links to it and its "Automatically
+  // update internal links" setting is off (the default). The recorder's renames wait for that
+  // answer, so answer "Just once" (the choice that changes no setting) and record each prompt.
   let finish = 'pending';
-  const until = Date.now() + 30_000;
+  const prompts: string[] = [];
+  const until = Date.now() + 45_000;
   while (Date.now() < until) {
+    const prompt = await answerUpdateLinks();
+    if (prompt) prompts.push(prompt);
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     finish = await browser.executeObsidian(() => String((window as any).__e2eFinish));
-    if (finish !== 'pending') break;
+    if (finish !== 'pending' && !prompt) break;
     await browser.pause(500);
   }
   const { info, said } = await browser.executeObsidian(({ plugins }) => {
@@ -151,11 +172,15 @@ async function closeCall(root: string, task: Record<string, unknown> = {}, mark 
           topics: r.topics,
           timings: r.timings,
           finish: '',
+          prompts: [],
         },
       }),
     );
   });
-  if (info) info.finish = finish;
+  if (info) {
+    info.finish = finish;
+    info.prompts = prompts;
+  }
   await browser.pause(2500);
   const saved = await walk(info?.folder ?? root);
   const md = saved.files.filter(f => f.endsWith('.md'));
@@ -467,6 +492,32 @@ describe('Layered call pipeline and saved call notes', () => {
     await browser.pause(800);
     await ev.shot('topic-with-thread');
     ev.note(`With the direct voice role there is no orchestrator note; the thread ${threadNote} hangs off the topic "Bohr equation" and links back to it.`);
+  });
+
+  check('CALL-8', 'With Obsidian\'s default links setting, saving a call never stops to ask the user anything', async ev => {
+    const alwaysUpdate = await browser.executeObsidian(({ app }) =>
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      String((app.vault as any).getConfig?.('alwaysUpdateLinks')),
+    );
+    await openCall('fake voice (scripted transcript, no audio)');
+    await play([
+      { say: 'user', text: 'Start with the alveolar gas equation.' },
+      { topic: 'Alveolar gas equation', kind: 'concept' },
+    ]);
+    await browser.pause(3000);
+    const open = await browser.execute(() =>
+      [...document.querySelectorAll('.modal-container .modal')].map(m => m.textContent?.trim() ?? '').find(t => /Update links/.test(t)) ?? '',
+    );
+    if (open) await ev.shot('update-links-prompt-during-call');
+    const c = await closeCall(FOLDER);
+    const all = [...call.info.prompts, ...(open ? [open] : []), ...c.info.prompts];
+    ev.save('prompts', { alwaysUpdateLinks: alwaysUpdate, mainCall: call.info.prompts, thisCall: { duringCall: open, whileSaving: c.info.prompts } });
+    ev.note(
+      all.length
+        ? `Obsidian's "Update links" prompt came up ${all.length} time(s) while call notes were renamed or moved (alwaysUpdateLinks is ${alwaysUpdate}); until someone answers it, every later save of the call waits.`
+        : 'No prompt came up.',
+    );
+    expect(all).toEqual([]);
   });
 
   check('CALL-2', 'Change the calls folder in settings, run a second short call, and look where it was saved', async ev => {

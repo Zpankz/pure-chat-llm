@@ -145,7 +145,9 @@ return JSON.stringify(out);`;
   check('CM-2', 'The same script edits Notes/codemode-edit.md; the edit goes to the two reviewers', async ev => {
     const reviews = reviewerRequests(code.traffic).filter(r => r.question.includes('codemode-edit'));
     ev.save('codemode-reviews', reviews);
-    expect(String(code.output.edited)).toContain('Approved by both independent reviewers');
+    // Code mode gets the structured result: review "policy:reviewers" is the two-reviewer approval.
+    expect(String(code.output.edited)).toMatch(/"review":"policy:reviewers"|Approved by both independent reviewers/);
+    expect(String(code.output.edited)).toContain('"applied":true');
     expect(reviews.length).toBe(2);
     expect(await readNote('Notes/codemode-edit.md')).toContain('EDITED-BY-CODEMODE');
   });
