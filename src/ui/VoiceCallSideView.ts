@@ -32,6 +32,7 @@ import {
   VOICE_LAYER_TOOL_NAMES,
   ORCHESTRATOR_TOOL_NAMES,
 } from '../tools/Orchestrator';
+import { voiceUnsupportedReason } from '../realtime/support';
 import type { NoticeMode, SubAgentEvent } from '../agents/types';
 import { shouldInterrupt } from '../agents/relevance';
 
@@ -211,6 +212,7 @@ export class VoiceCallSideView extends ItemView {
     const controlsContainer = container.createDiv({ cls: 'voice-call-controls' });
 
     if (this.callState.status === 'idle' || this.callState.status === 'disconnected') {
+      const unsupported = voiceUnsupportedReason(this.plugin.settings.voice.provider);
       new Setting(controlsContainer)
         .addDropdown(dropdown => {
           for (const info of Object.values(VOICE_PROVIDERS))
@@ -225,10 +227,13 @@ export class VoiceCallSideView extends ItemView {
           btn
             .setButtonText('Start call')
             .setCta()
+            .setDisabled(!!unsupported)
             .onClick(() => {
               void this.startCall();
             }),
         );
+      if (unsupported)
+        controlsContainer.createEl('p', { cls: 'setting-item-description', text: unsupported });
     }
 
     if (this.callState.status === 'error') {
@@ -571,6 +576,10 @@ export class VoiceCallSideView extends ItemView {
       const voice = this.plugin.settings.voice;
       const info = VOICE_PROVIDERS[voice.provider] ?? VOICE_PROVIDERS['openai-realtime'];
 
+      // 0. Can this device make the call at all? (Obsidian on phones may lack the APIs.)
+      const unsupported = voiceUnsupportedReason(info.id);
+      if (unsupported) throw new Error(unsupported);
+
       // 1. API key from the matching endpoint
       const providerEndpoint = this.plugin.settings.endpoints.find(
         ep => ep.name === info.keyEndpoint,
@@ -651,13 +660,13 @@ export class VoiceCallSideView extends ItemView {
         stream => this.handleRemoteStream(stream),
       );
 
-      await this.voiceCall.startCall();
+      if (!(await this.voiceCall.startCall())) return;
       this.plugin.calls?.start(info.label, () => this.transcript);
       if (layered || orchestrator) this.watchAgents(layered);
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
       console.error('Failed to start call:', msg);
-      new Notice(`Failed to start call: ${msg}`);
+      new Notice(msg, 10000);
       this.callState.error = msg;
       this.renderView();
     }
