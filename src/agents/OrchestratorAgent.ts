@@ -55,7 +55,29 @@ export const ORCHESTRATOR_READ_TOOLS = [
 const NOTE_ONLY = new Set(['started', 'progress', 'cancelled', 'checkpoint']);
 
 /** `answersUser`: this is the first answer to something the user asked, which they are waiting for. */
-type SayListener = (text: string, urgency: NoticeMode, answersUser: boolean) => void;
+export type SayListener = (text: string, urgency: NoticeMode, answersUser: boolean) => void;
+
+/**
+ * What the voice call, the layer tools and the call notes use of an orchestrator. The Classic
+ * engine's `OrchestratorAgent` and the durable engine's `DurableOrchestrator` both provide it.
+ */
+export interface Orchestrator {
+  /** Whether the layered setup is on. */
+  readonly active: boolean;
+  /** Label of the orchestrator model. */
+  readonly label: string;
+  state: 'idle' | 'thinking';
+  lastError: string;
+  onSay(listener: SayListener): () => void;
+  onChange(listener: () => void): () => void;
+  setTranscriptSource(source: (() => string[]) | null): void;
+  relay(request: string, waiting?: boolean): string;
+  say(text: string, urgency: NoticeMode): string;
+  cancelTurn(): void;
+  reset(): void;
+  dispose(): void;
+  recentActivity(limit?: number): string[];
+}
 
 interface Input {
   text: string;
@@ -72,7 +94,7 @@ export const TURN_TIMEOUT_MS = 90_000;
 const USER_TURN_STEPS = 12;
 const EVENT_TURN_STEPS = 3;
 
-export class OrchestratorAgent {
+export class OrchestratorAgent implements Orchestrator {
   private messages: ChatRequestOptions['messages'] = [];
   private inputs: Input[] = [];
   private notes: string[] = [];

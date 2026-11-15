@@ -3,9 +3,14 @@
 import { Notice, Platform } from 'obsidian';
 import { PureChatLLMChat } from '../core/Chat';
 import type PureChatLLM from '../main';
-import { layerFetch, resolveLayer } from '../agents/layers';
+import { layerFetch, layerProblem, logTiming, resolveLayer } from '../agents/layers';
+import { ORCHESTRATOR_READ_TOOLS, spokenError } from '../agents/OrchestratorAgent';
 import { LocalSubAgentBackend } from '../agents/LocalSubAgentBackend';
-import { ORCHESTRATOR_TOOL_NAMES, SUBAGENT_TOOL_NAMES } from '../tools/Orchestrator';
+import {
+  ORCHESTRATOR_AGENT_TOOL_NAMES,
+  ORCHESTRATOR_TOOL_NAMES,
+  SUBAGENT_TOOL_NAMES,
+} from '../tools/Orchestrator';
 import {
   AbortHost,
   callWithSignal,
@@ -13,6 +18,7 @@ import {
   toolTimeoutMs,
   withToolTimeout,
 } from '../tools/toolContract';
+import { DurableOrchestrator } from './bridge';
 import { openDurable } from './durable';
 import { DURABLE_ORCHESTRATOR_GUIDANCE } from './workers';
 import type { DurableSession } from './durable';
@@ -34,19 +40,33 @@ export function pluginLayerSend(plugin: PureChatLLM): LayerSend {
 /**
  * The plugin's tools for one role. A worker gets a chat with role `subagent`, so the write
  * policy, the two reviewers and proposals apply inside the write tools as on the Classic engine.
- * The Classic engine's task tools are left out for both roles: the durable engine has its own
- * (`workers.ts`).
+ * The orchestrator gets what it has on Classic: `tell_user`, the evaluator, the read-only vault
+ * tools and remote MCP tools. The Classic engine's task tools are left out for both roles: the
+ * durable engine has its own (`workers.ts`), and `read_task_thread` reads Classic tasks.
  * @param plugin - Plugin.
  * @param role - Whose tools.
  */
 export function pluginToolSource(plugin: PureChatLLM, role: 'orchestrator' | 'worker'): ToolSource {
   const chat = new PureChatLLMChat(plugin);
-  if (role === 'worker') chat.role = 'subagent';
+  chat.role = role === 'worker' ? 'subagent' : 'orchestrator-agent';
   chat.registerAvailableTools();
-  const classicTaskTools = new Set<string>([...ORCHESTRATOR_TOOL_NAMES, ...SUBAGENT_TOOL_NAMES]);
+  const registry = chat.toolregistry;
+  const classicTaskTools = new Set<string>([
+    ...ORCHESTRATOR_TOOL_NAMES,
+    ...SUBAGENT_TOOL_NAMES,
+    'read_task_thread',
+  ]);
+  const orchestratorTools = new Set<string>([
+    ...ORCHESTRATOR_AGENT_TOOL_NAMES,
+    ...ORCHESTRATOR_READ_TOOLS,
+  ]);
+  const offered = (name: string) =>
+    !classicTaskTools.has(name) &&
+    (role === 'worker' ||
+      orchestratorTools.has(name) ||
+      registry.classificationForTool(name) === 'MCP');
   return {
-    definitions: () =>
-      chat.toolregistry.getEnabledDefinitions().filter(d => !classicTaskTools.has(d.function.name)),
+    definitions: () => registry.getEnabledDefinitions().filter(d => offered(d.function.name)),
     readOnly: isReadOnlyTool,
     run: (name, args, signal) =>
       withToolTimeout(
@@ -70,8 +90,27 @@ function vaultKey(plugin: PureChatLLM): string {
 /** Opens the durable engine once, on first use, when it is chosen in settings. */
 export class DurableEngine {
   private opening: Promise<DurableSession> | null = null;
+  /** The orchestrator the voice call talks to on this engine. */
+  readonly orchestrator: DurableOrchestrator;
 
-  constructor(private plugin: PureChatLLM) {}
+  constructor(private plugin: PureChatLLM) {
+    this.orchestrator = new DurableOrchestrator({
+      session: () => this.session(),
+      active: () => plugin.settings.orchestrator.voiceRole === 'layered',
+      label: () => resolveLayer(plugin, 'orchestrator').label,
+      problem: () => layerProblem(plugin, resolveLayer(plugin, 'orchestrator')),
+      voiceContext: () => ({
+        mode: plugin.settings.orchestrator.voiceContext,
+        recentLines: plugin.settings.orchestrator.relayTranscriptLines ?? 6,
+      }),
+      voiceSeesActivity: () => plugin.settings.orchestrator.voiceSeesActivity,
+      log: (kind, text, fromUser) => plugin.calls?.logOrchestrator(kind, text, fromUser),
+      save: () => plugin.calls?.scheduleOrchestratorSave(),
+      timing: (label, ms) => logTiming(plugin, label, ms),
+      spokenError,
+      error: (message, error) => plugin.console?.error?.(message, error),
+    });
+  }
 
   /** Whether settings choose it and this device can run it. */
   get enabled(): boolean {
@@ -130,6 +169,7 @@ export class DurableEngine {
 
   /** Closes the session, if one is open. */
   async dispose(): Promise<void> {
+    this.orchestrator.dispose();
     const opening = this.opening;
     this.opening = null;
     if (!opening) return;

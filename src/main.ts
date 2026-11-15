@@ -23,6 +23,7 @@ import { mergeVoiceSettings } from './realtime/voiceCatalog';
 import { DEFAULT_MCP_SERVER, McpManager } from './mcp/McpManager';
 import { SubAgentManager } from './agents/SubAgentManager';
 import { OrchestratorAgent } from './agents/OrchestratorAgent';
+import type { Orchestrator } from './agents/OrchestratorAgent';
 import { CallRecorder } from './agents/CallRecorder';
 import { pendingProposals, ProposalPicker } from './ui/ProposalPicker';
 import { mergeLayers } from './agents/layers';
@@ -99,8 +100,15 @@ export default class PureChatLLM extends Plugin {
   mcp: McpManager;
   /** Background sub-agents run for orchestrators (voice calls). */
   agents: SubAgentManager;
-  /** The layered setup's orchestrator agent (between the voice layer and the workers). */
-  orchestrator: OrchestratorAgent;
+  /** The Classic engine's orchestrator agent. */
+  classicOrchestrator: OrchestratorAgent;
+  /**
+   * The layered setup's orchestrator (between the voice layer and the workers), on the engine
+   * chosen in settings. A call keeps the one it started with.
+   */
+  get orchestrator(): Orchestrator {
+    return this.durable?.enabled ? this.durable.orchestrator : this.classicOrchestrator;
+  }
   /** True when this load took its settings from the old `pure-chat-llm` plugin folder. */
   private migratedLegacySettings = false;
   /** Saves voice calls, the orchestrator's conversation and sub-threads as linked notes. */
@@ -141,7 +149,7 @@ export default class PureChatLLM extends Plugin {
     // Remote MCP servers: discover tools in the background so startup stays fast.
     this.mcp = new McpManager(this);
     this.agents = new SubAgentManager(this);
-    this.orchestrator = new OrchestratorAgent(this);
+    this.classicOrchestrator = new OrchestratorAgent(this);
     this.calls = new CallRecorder(this);
     this.durable = new DurableEngine(this);
     this.chatgpt = new ChatGPTAuth(this.app);
@@ -963,7 +971,7 @@ export default class PureChatLLM extends Plugin {
    */
   onunload() {
     this.mcp?.dispose();
-    this.orchestrator?.dispose();
+    this.classicOrchestrator?.dispose();
     this.calls?.dispose();
     this.agents?.dispose();
     void this.durable?.dispose();

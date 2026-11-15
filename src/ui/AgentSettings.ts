@@ -1,4 +1,4 @@
-import { Notice, Setting } from 'obsidian';
+import { Notice, Platform, Setting } from 'obsidian';
 import { layerProblem, resolveLayer } from '../agents/layers';
 import type { LayerId } from '../agents/layers';
 import { ChatGPTAuth } from '../auth/ChatGPTAuth';
@@ -122,6 +122,25 @@ export function renderOrchestratorSettings(
 
   if (o.voiceRole === 'layered') {
     renderLayer(el, plugin, 'orchestrator', redraw);
+    const engine = choose(
+      new Setting(el)
+        .setName('Agent engine')
+        .setDesc(
+          Platform.isDesktopApp
+            ? 'Classic keeps the orchestrator and its workers in memory. Durable (in testing) keeps every conversation, tool call and task in this vault’s app storage, so a reload or crash resumes where it stopped and workers report back after a restart. A call keeps the engine it started with.'
+            : 'The durable engine runs on desktop only for now, so Classic runs here.',
+        ),
+      { classic: 'Classic', durable: 'Durable (in testing)' } as Record<
+        OrchestratorSettings['engine'],
+        string
+      >,
+      Platform.isDesktopApp ? o.engine : 'classic',
+      async v => {
+        o.engine = v;
+        await save();
+      },
+    );
+    if (!Platform.isDesktopApp) engine.setDisabled(true);
     choose(
       new Setting(el)
         .setName('Orchestrator sees the call')
