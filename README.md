@@ -101,81 +101,61 @@ _Note:_ The API key must be set before initiating chats. If you use the **Comple
 
 ## Voice Call Feature
 
-The plugin now supports real-time voice calls using WebRTC with the OpenAI Realtime API. This allows users to have voice conversations with AI models directly from Obsidian, with optional tool access for enhanced capabilities.
+Talk to your vault with a live voice model. Pick the provider under **Settings → Voice agents**; the API key comes from the matching model provider (OpenAI, Gemini or xAI).
 
-### How to Use Voice Calls
+| Provider        | Default model                                                   | Transport                        | Notes                                                                |
+| --------------- | --------------------------------------------------------------- | -------------------------------- | -------------------------------------------------------------------- |
+| OpenAI realtime | `gpt-realtime-2.1` (also `gpt-realtime-2.1-mini`)               | WebRTC, `/v1/realtime/calls`     | Semantic VAD, noise reduction, input transcription, reasoning effort |
+| OpenAI GPT-Live | `gpt-live-1`                                                    | WebRTC, `/v1/live/sessions`      | Full duplex: keeps talking while a backend agent works               |
+| Gemini live     | `gemini-3.8-live` (also extended thinking and 2.5 native audio) | WebSocket, `BidiGenerateContent` | Non-blocking tools, context compression, session resumption          |
+| Grok voice      | `grok-voice-latest`                                             | WebSocket, `/v1/realtime`        | Ephemeral client secret, web and X search                            |
 
-1. **Open Voice Call Panel:**
-   - Click the phone icon in the ribbon bar, or
-   - Use the command palette (Ctrl/Cmd + P) and select "Open voice call panel"
+Every model and voice field accepts free text, so newer model ids work without a plugin update.
 
-2. **Start a Call:**
-   - Click the "Start call" button in the voice call panel
-   - Grant microphone permissions when prompted
-   - The connection will be established directly with OpenAI's Realtime API
+### GPT-Live duplex agent
 
-3. **During a Call:**
-   - **Mute/Unmute:** Click the "Mute" button to toggle your microphone
-   - **End Call:** Click the "End call" button to disconnect
+GPT-Live hands reasoning and tool use to a backend agent while it keeps the conversation going. Choose who runs that agent in settings:
 
-### Tool Integration (Agent Mode)
+- **OpenAI Responses**: OpenAI runs the backend model (default `gpt-6-luna`) with your vault tools, remote MCP servers and optional web search. You can set the backend model, instructions, reasoning effort, tool choice, parallel calls and service tier.
+- **This plugin**: your default chat provider and model run the backend inside Obsidian with your vault tools, and the result is handed back to GPT-Live. You can set the acknowledgement delay and instructions.
 
-When **Agent Mode** is enabled in plugin settings, voice calls gain access to all available tools:
+### Tools for voice models
 
-- **File Operations**: Create, read, update, and delete notes
-- **Search**: Search across your vault with various filters
-- **Templates**: Insert templates into notes
-- **Smart Connections**: Retrieve related content
-- **Workspace Management**: Open and organize files
-- **Image Generation**: Create images during conversations
-- And more...
+With **Agent mode** on, voice models can use every enabled tool. To keep a voice model's context small, set **Tools exposed to voice models** to **Code mode only**: the model then gets one `codemode` tool and writes a short script that calls the other tools. Tool results are trimmed to a configurable length before they are sent back, and the voice model is told to answer in plain spoken language.
 
-The AI can autonomously use these tools during voice conversations to help you manage your vault, find information, and complete tasks—all through natural voice interaction.
+### Using voice calls
 
-**Example interactions with tools:**
+1. Open the voice call panel from the ribbon or the command palette ("Open voice call panel").
+2. Pick a provider and press **Start call**, then allow microphone access.
+3. Mute or end the call from the panel. A live transcript shows what you and the model said, and which tools ran.
 
-- "Create a new note about my meeting today"
-- "Search my vault for notes mentioning project deadlines"
-- "Read my daily template and tell me what's on my schedule"
-- "Find all notes related to this topic using smart connections"
+## Agent tools
 
-### Requirements
+### Code mode
 
-- **API Key:** A valid OpenAI API key configured in plugin settings
-- **Realtime API Access:** Your OpenAI account must have access to the Realtime API
-- **Microphone permissions:** Your browser/Obsidian must have access to your microphone
-- **WebRTC support:** Modern browsers and Obsidian desktop app support WebRTC
+The `codemode` tool (modelled on pi's code mode) lets a model write one JavaScript async function body that calls several tools, filters results and returns only what matters. It runs in a Web Worker with no network access. Inside the script:
 
-### Technical Details
+- `await tools.<name>(args)` calls any enabled tool; `searchTools(query)`, `describeTool(name)` and `ALL_TOOLS` help find them.
+- `text(value)` adds output for the model; `console.log` is captured; `store(key, value)` and `load(key)` keep small values between scripts; `exit(value)` stops early.
+- An optional first line `// @options: {"timeout_ms": 30000, "max_output_tokens": 4000}` overrides the limits.
 
-The voice call feature uses:
+### Agent Skills
 
-- **OpenAI Realtime API** via WebRTC for direct audio streaming
-- **Provider Pattern** for extensibility (supports multiple providers)
-- **PureChatLLMChat Integration** for tool access when agent mode is enabled
-- **Session Description Protocol (SDP)** exchange for connection setup
-- **Data channel** (`oai-events`) for sending/receiving API events and tool calls
-- **Echo cancellation, noise suppression, and auto-gain control** for better audio quality
+Put skills in the **Skills folder** (default `Skills`, hidden folders such as `.agents/skills` also work). Each skill is a folder with a `SKILL.md` in the [Agent Skills format](https://agentskills.io/specification). Models see each skill's name and description, load the full instructions with `activate_skill` when a task matches, and read bundled files with `read_skill_file`.
 
-The implementation follows OpenAI's unified interface pattern:
+### Remote MCP servers
 
-1. Creates an RTCPeerConnection with local audio track
-2. Generates SDP offer
-3. POSTs SDP to `https://api.openai.com/v1/realtime/calls` with API key and session config
-4. Includes tool definitions in session config when agent mode is enabled
-5. Receives answer SDP and establishes connection
-6. Audio and events flow through the established WebRTC connection
-7. Tool calls are executed via the PureChatLLMChat tool registry
-8. Tool results are sent back to the AI for continued conversation
+Add Streamable HTTP servers under **Settings → Remote MCP servers**. The client speaks the current MCP spec (2026-07-28, stateless requests with `Mcp-Method`, `Mcp-Name` and `Mcp-Param-*` headers) and falls back to the 2025-11-25 session-based protocol for older servers. Authentication is a bearer token or custom headers; OAuth is not supported yet.
+
+- **Bridge** (default): the plugin calls the server, and its tools appear to every model as `mcp__server__tool` under the MCP category.
+- **Native where supported**: OpenAI realtime, GPT-Live (Responses backend) and Grok voice call the server directly. Those providers receive the server's token and headers. Other models still use the bridge.
 
 ### Troubleshooting
 
-- **Microphone not working:** Check your system permissions and browser settings
-- **Connection fails:** Verify your API key is valid and has access to the Realtime API
-- **No audio:** Check that your audio output device is working and not muted
-- **"Failed to create session":** Ensure your OpenAI account has access to the Realtime API
-- **Tools not working:** Enable Agent Mode in plugin settings
-- **Tool execution fails:** Check the browser console for error details
+- **Connection fails:** check that the matching provider has an API key and that your account can use that model.
+- **Tools not working:** turn on Agent mode, and check the tool categories that are enabled.
+- **MCP server shows an error:** press the test button next to it; the message comes from the server.
+- **Tool execution fails:** check the developer console for details.
 
 ---
 

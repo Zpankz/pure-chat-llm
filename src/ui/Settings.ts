@@ -8,9 +8,10 @@ import PureChatLLM, {
   getObjectFromMarkdown,
   SelectionPromptEditor,
 } from '../main';
-import { PURE_CHAT_LLM_ICON_NAME, PureChatLLMSettings } from '../types';
+import { PURE_CHAT_LLM_ICON_NAME, PureChatLLMSettings, TOOL_CLASSIFICATIONS } from '../types';
 import { BrowserConsole } from '../utils/BrowserConsole';
 import { AskForAPI, EditModalProviders } from './Modals';
+import { renderMcpSettings, renderSkillsAndCodeMode, renderVoiceSettings } from './AgentSettings';
 
 /**
  * Represents the settings tab for the PureChatLLM plugin in Obsidian.
@@ -202,7 +203,7 @@ export class PureChatLLMSettingTab extends PluginSettingTab {
             .setName('Enabled tool classifications')
             .setDesc('Control which categories of tools are available to the agent.')
             .then(() => {
-              (['Vault', 'UI', 'System', 'AI'] as const).forEach(classification => {
+              TOOL_CLASSIFICATIONS.forEach(classification => {
                 setting.addButton(btn => {
                   if (settings.enabledToolClassifications[classification] ?? true) btn.setCta();
                   return btn.setButtonText(classification).onClick(async () => {
@@ -243,7 +244,10 @@ export class PureChatLLMSettingTab extends PluginSettingTab {
                 .setValue(this.ifdefault('realtimeSystemPromptFile'))
                 .onChange(
                   async value =>
-                    await this.sett('realtimeSystemPromptFile', value || DEFAULT_SETTINGS.realtimeSystemPromptFile),
+                    await this.sett(
+                      'realtimeSystemPromptFile',
+                      value || DEFAULT_SETTINGS.realtimeSystemPromptFile,
+                    ),
                 )
                 .inputEl.addEventListener('keydown', (e: KeyboardEvent) => {
                   if (e.key === '/' || e.key === '[') {
@@ -256,6 +260,11 @@ export class PureChatLLMSettingTab extends PluginSettingTab {
                 }),
             ),
       );
+    const redraw = () => this.display();
+    renderSkillsAndCodeMode(containerEl, this.plugin, redraw);
+    renderMcpSettings(containerEl, this.plugin, redraw);
+    renderVoiceSettings(containerEl, this.plugin, redraw);
+
     new SettingGroup(containerEl)
       .setHeading('Prompts & templates')
       .addSetting(

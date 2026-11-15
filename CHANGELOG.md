@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **New voice providers**: OpenAI GPT-Live (`gpt-live-1`, full duplex) and xAI Grok voice (`grok-voice-latest`).
+- **GPT-Live duplex agent settings**: choose OpenAI Responses or this plugin as the backend agent, with backend model, instructions, reasoning effort, tool choice, parallel calls, service tier, web search, acknowledgement delay and session storage.
+- **Code mode tool** (`codemode`): models write one sandboxed JavaScript script that calls several tools, with tool search, a key/value store between runs and inline limits.
+- **Agent Skills**: skills in the agentskills.io format load from a vault folder with progressive disclosure (`activate_skill`, `read_skill_file`).
+- **Remote MCP servers**: Streamable HTTP client for MCP 2026-07-28 with fallback to 2025-11-25, bearer tokens, custom headers, tool allow-lists, and bridge or native mode. Tools appear under a new MCP tool category.
+- **Voice settings** for every provider, a live transcript in the voice call panel, and a choice to expose all tools or only code mode to voice models.
+
+### Changed
+
+- **OpenAI realtime** now uses the GA session shape with `gpt-realtime-2.1`, semantic VAD, noise reduction, input transcription, reasoning effort and parallel tool calls.
+- **Gemini live** now defaults to `gemini-3.8-live`, sends audio with `realtimeInput.audio`, and supports non-blocking tools with scheduling, context compression, session resumption, `goAway` reconnects, transcripts, proactive audio and thinking levels.
+
 ## [1.12.1] - 2026-02-09
 
 ### Added
