@@ -2,7 +2,8 @@ import { Notice } from 'obsidian';
 import type PureChatLLM from '../main';
 import { PureChatLLMversion } from '../assets/constants';
 import type { McpServerConfig } from '../types';
-import { formatMcpResult, McpClient, McpToolInfo } from './McpClient';
+import { formatMcpResult, McpClient, McpHttpError, McpToolInfo } from './McpClient';
+import { bearerFor, ensureFreshToken } from './McpOAuth';
 
 export const DEFAULT_MCP_SERVER: McpServerConfig = {
   name: '',
@@ -55,10 +56,14 @@ export class McpManager {
    */
   private client(server: McpServerConfig): McpClient {
     const existing = this.clients.get(server.name);
-    if (existing && JSON.stringify(existing.config) === JSON.stringify(server)) return existing;
+    // Tokens change on refresh; that must not reset the client (and a legacy session).
+    const key = (s: McpServerConfig) => JSON.stringify({ ...s, oauth: undefined });
+    if (existing && key(existing.config) === key(server)) return existing;
     const client = new McpClient(
       { ...server },
       { name: 'pure-chat-llm', version: PureChatLLMversion },
+      undefined,
+      () => bearerFor(this.liveConfig(server.name) ?? server),
     );
     this.clients.set(server.name, client);
     return client;
@@ -82,13 +87,52 @@ export class McpManager {
     return this.refreshing;
   }
 
+  /** The server's current settings entry (tokens are updated there). */
+  private liveConfig(name: string): McpServerConfig | undefined {
+    return (this.plugin.settings.mcpServers ?? []).find(s => s.name === name);
+  }
+
+  /**
+   * Runs a request, refreshing an OAuth token first when it is about to expire and once more
+   * after a 401.
+   * @param server - Server config.
+   * @param run - The request.
+   */
+  private async withAuth<T>(server: McpServerConfig, run: () => Promise<T>): Promise<T> {
+    const live = this.liveConfig(server.name) ?? server;
+    if (live.auth === 'oauth' && !(await ensureFreshToken(this.plugin, live))) {
+      throw new Error('Not signed in. Press "Sign in" for this server in settings.');
+    }
+    try {
+      return await run();
+    } catch (error) {
+      if (live.auth === 'oauth' && error instanceof McpHttpError && error.status === 401) {
+        if (await ensureFreshToken(this.plugin, live, true)) return run();
+        throw new Error('The sign-in expired. Press "Sign in" for this server in settings.');
+      }
+      if (error instanceof McpHttpError && error.status === 401) {
+        throw new Error(
+          'The server needs authorization (401). Add a token, or set authentication to OAuth and sign in.',
+        );
+      }
+      throw error;
+    }
+  }
+
+  /** Refreshes OAuth tokens of native servers before a voice call hands them to a provider. */
+  async freshenNativeTokens(): Promise<void> {
+    for (const server of this.nativeServers()) {
+      if (server.auth === 'oauth') await ensureFreshToken(this.plugin, server);
+    }
+  }
+
   /**
    * Refreshes one server's tool list.
    * @param server - Server config.
    */
   async refresh(server: McpServerConfig): Promise<McpToolInfo[]> {
     try {
-      const list = await this.client(server).listTools();
+      const list = await this.withAuth(server, () => this.client(server).listTools());
       const allow = server.allowedTools
         .split(',')
         .map(t => t.trim())
@@ -144,7 +188,9 @@ export class McpManager {
    * @param args - Arguments from the model.
    */
   async call(bridged: BridgedMcpTool, args: Record<string, unknown>): Promise<string> {
-    const result = await this.client(bridged.server).callTool(bridged.tool, args);
+    const result = await this.withAuth(bridged.server, () =>
+      this.client(bridged.server).callTool(bridged.tool, args),
+    );
     return formatMcpResult(result);
   }
 
@@ -175,7 +221,7 @@ export function nativeMcpToolDefinition(server: McpServerConfig): Record<string,
     server_label: sanitizeToolFragment(server.name),
     server_url: server.url,
     require_approval: 'never',
-    ...(server.bearerToken ? { authorization: server.bearerToken } : {}),
+    ...(bearerFor(server) ? { authorization: bearerFor(server) } : {}),
     ...(Object.keys(headers).length ? { headers } : {}),
     ...(allowed.length ? { allowed_tools: allowed } : {}),
   };

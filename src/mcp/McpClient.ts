@@ -226,6 +226,7 @@ export class McpClient {
     public config: McpServerConfig,
     private clientInfo: { name: string; version: string },
     private post: HttpPost = defaultPost,
+    private token: () => string = () => config.bearerToken,
   ) {}
 
   /**
@@ -376,7 +377,8 @@ export class McpClient {
       'MCP-Protocol-Version': this.protocolVersion,
       ...parseHeaderLines(this.config.headers ?? ''),
     };
-    if (this.config.bearerToken) headers.Authorization = `Bearer ${this.config.bearerToken}`;
+    const token = this.token();
+    if (token) headers.Authorization = `Bearer ${token}`;
     if (this.era === 'legacy' && this.sessionId) headers['Mcp-Session-Id'] = this.sessionId;
     return headers;
   }
