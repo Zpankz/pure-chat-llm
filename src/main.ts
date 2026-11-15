@@ -62,6 +62,7 @@ import { BrowserConsole } from './utils/BrowserConsole';
 import { codelanguages } from './utils/codelanguages';
 import { replaceNonKeyboardChars } from './utils/replaceNonKeyboard';
 import { toTitleCase } from './utils/toTitleCase';
+import { DurableEngine } from './harness/pluginHost';
 
 /**
  * The main plugin class for the Pure Chat LLM Obsidian plugin.
@@ -110,6 +111,8 @@ export default class PureChatLLM extends Plugin {
   google: GoogleAuth;
   /** Agent Skills discovered in the vault. */
   skills: SkillsCatalog;
+  /** The Pi Durable engine, opened on first use when settings choose it (desktop only). */
+  durable: DurableEngine;
   /** Small key/value store that persists code mode `store()` values for this session. */
   codeModeStore: Map<string, string> = new Map();
 
@@ -140,6 +143,7 @@ export default class PureChatLLM extends Plugin {
     this.agents = new SubAgentManager(this);
     this.orchestrator = new OrchestratorAgent(this);
     this.calls = new CallRecorder(this);
+    this.durable = new DurableEngine(this);
     this.chatgpt = new ChatGPTAuth(this.app);
     this.google = new GoogleAuth(this.app);
     // Read the sign-ins once, after startup, so the settings tab and the first request answer
@@ -962,6 +966,7 @@ export default class PureChatLLM extends Plugin {
     this.orchestrator?.dispose();
     this.calls?.dispose();
     this.agents?.dispose();
+    void this.durable?.dispose();
   }
 }
 
