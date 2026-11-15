@@ -1,6 +1,6 @@
 {
   "name": "voice-agent",
-  "version": "1.12.1",
+  "version": "2.0.0",
   "description": "Turn notes into conversations with chatGPT",
   "main": "main.js",
   "scripts": {
