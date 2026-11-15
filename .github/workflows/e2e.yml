@@ -1,0 +1,79 @@
+name: End-to-end validation (real Obsidian)
+
+on:
+  # Pushes to claude/** branches cover the pull request's head too, so pull_request is not
+  # listed (it would run the same commit twice).
+  push:
+    branches: ['claude/**']
+  workflow_dispatch:
+    inputs:
+      obsidian_version:
+        description: 'Obsidian app version (latest, earliest or e.g. 1.11.4)'
+        default: 'latest'
+      spec:
+        description: 'Run only spec files whose name contains this text (empty: all)'
+        default: ''
+
+# A newer push replaces a run still in progress on the same branch.
+concurrency:
+  group: e2e-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build plugin
+        run: npm run build
+
+      - name: Type-check the harness
+        run: npm run e2e:typecheck
+
+      - name: Cache Obsidian downloads
+        uses: actions/cache@v4
+        with:
+          path: e2e/.obsidian-cache
+          key: obsidian-${{ runner.os }}-${{ inputs.obsidian_version || 'latest' }}
+
+      - name: Run the suite in real Obsidian (headless, xvfb)
+        id: e2e
+        continue-on-error: true
+        timeout-minutes: 35
+        env:
+          OBSIDIAN_VERSION: ${{ inputs.obsidian_version || 'latest' }}
+          E2E_SPEC: ${{ inputs.spec || '' }}
+        run: xvfb-run -a --server-args="-screen 0 1920x1080x24" npm run e2e
+
+      - name: Validation report
+        if: always()
+        run: |
+          node e2e/report.mjs e2e/.out
+          cat e2e/.out/report.md >> "$GITHUB_STEP_SUMMARY"
+          echo "===== VALIDATION REPORT ====="
+          cat e2e/.out/report.md
+          echo "===== RESULTS JSONL ====="
+          cat e2e/.out/results.jsonl || true
+
+      - name: Upload evidence (screenshots, traces, report)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: validation-evidence
+          path: e2e/.out
+          include-hidden-files: true
+          retention-days: 30
+
+      - name: Fail when the suite failed
+        if: steps.e2e.outcome == 'failure'
+        run: exit 1
