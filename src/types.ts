@@ -193,6 +193,8 @@ export interface OrchestratorSettings {
    * - `direct`: the voice model calls tools itself.
    */
   voiceRole: 'layered' | 'orchestrator' | 'direct';
+  /** Shows the orchestrator and direct voice roles in settings (layered is the default). */
+  advancedVoiceRoles: boolean;
   /** Model, provider and reasoning effort for each layer. */
   layers: LayerSettings;
   /**

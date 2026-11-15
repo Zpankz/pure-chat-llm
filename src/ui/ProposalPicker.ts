@@ -37,7 +37,7 @@ export class ProposalPicker extends FuzzySuggestModal<TFile> {
   getItemText(file: TFile): string {
     const fm = this.app.metadataCache.getFileCache(file)?.frontmatter ?? {};
     const target = typeof fm.target === 'string' ? fm.target : '';
-    const action = typeof fm[PROPOSAL_KEY] === 'string' ? (fm[PROPOSAL_KEY]) : 'change';
+    const action = typeof fm[PROPOSAL_KEY] === 'string' ? fm[PROPOSAL_KEY] : 'change';
     return target ? `${action}: ${target.replace(/^\[\[|\]\]$/g, '')}` : file.basename;
   }
 

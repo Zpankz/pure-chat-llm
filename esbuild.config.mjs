@@ -2,6 +2,7 @@ import esbuild from 'esbuild';
 import process from 'process';
 import builtins from 'builtin-modules';
 import fs from 'fs';
+import { createHash } from 'crypto';
 
 const banner = `
 /**
@@ -12,6 +13,26 @@ const banner = `
  */`;
 const prod = process.argv[2] === 'production';
 console.log(`Building for ${prod ? 'production' : 'development'}...`);
+
+// The djs WebAssembly module, built from source by .github/workflows/djs-wasm.yml, is embedded
+// in main.js when DJS_WASM_FILE names it (BRAT installs only main.js, manifest.json and
+// styles.css). Its sha256 is computed here and checked again before the plugin compiles it.
+// Without DJS_WASM_FILE nothing is embedded and code mode uses the Web Worker fallback.
+const djsFile = process.env.DJS_WASM_FILE?.trim();
+let djs = { base64: '', sha256: '', commit: '' };
+if (djsFile) {
+  const bytes = fs.readFileSync(djsFile);
+  if (bytes.subarray(0, 4).toString('hex') !== '0061736d') {
+    throw new Error(`${djsFile} is not a WebAssembly module.`);
+  }
+  const sha256 = createHash('sha256').update(bytes).digest('hex');
+  const expected = process.env.DJS_WASM_SHA256?.trim().toLowerCase();
+  if (expected && expected !== sha256) {
+    throw new Error(`${djsFile} has sha256 ${sha256}, not the expected ${expected}.`);
+  }
+  djs = { base64: bytes.toString('base64'), sha256, commit: process.env.DJS_COMMIT?.trim() ?? '' };
+  console.log(`Embedding djs.wasm: ${bytes.length} bytes, sha256 ${sha256}`);
+}
 
 const context = await esbuild.context({
   banner: {
@@ -43,6 +64,11 @@ const context = await esbuild.context({
   treeShaking: true,
   outfile: 'main.js',
   minify: prod,
+  define: {
+    __DJS_WASM_BASE64__: JSON.stringify(djs.base64),
+    __DJS_WASM_SHA256__: JSON.stringify(djs.sha256),
+    __DJS_WASM_COMMIT__: JSON.stringify(djs.commit),
+  },
 });
 
 if (prod) {

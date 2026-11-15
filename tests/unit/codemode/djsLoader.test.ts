@@ -4,7 +4,9 @@ import { test } from 'node:test';
 import './helpers';
 import {
   djsSource,
+  embeddedDjs,
   obtainDjsBytes,
+  setEmbeddedDjsForTests,
   sha256Hex,
   verifyDjsBytes,
 } from '../../../src/tools/codemode/djsEngine';
@@ -111,4 +113,35 @@ test('a cached file that does not match the pin is not loaded', async () => {
   // Without a pin, a file the user put there is used as before.
   const unpinned = plugin({}, { 'plugins/voice-agent/djs.wasm': fake });
   assert.equal((await obtainDjsBytes(unpinned.plugin)).bytes, fake);
+});
+
+test('the built-in module is used, after its recorded checksum matches', async () => {
+  const base64 = Buffer.from(new Uint8Array(fake)).toString('base64');
+  setEmbeddedDjsForTests({ base64, sha256: pin, commit: 'abc1234' });
+  try {
+    assert.deepEqual(embeddedDjs(), { sha256: pin, commit: 'abc1234' });
+    let calls = 0;
+    const got = await obtainDjsBytes(plugin({}).plugin, async () => {
+      calls++;
+      return fake;
+    });
+    assert.equal(got.problem, undefined);
+    assert.deepEqual(new Uint8Array(got.bytes!), new Uint8Array(fake));
+    assert.equal(calls, 0, 'nothing is downloaded');
+
+    // A path or download of the user's own takes its place.
+    const own = plugin({ djsModulePath: 'mine/djs.wasm' }, { 'mine/djs.wasm': fake });
+    assert.equal((await obtainDjsBytes(own.plugin)).bytes, fake);
+    const missing = await obtainDjsBytes(plugin({ djsModulePath: 'gone.wasm' }).plugin);
+    assert.match(missing.problem ?? '', /no djs module at gone\.wasm/);
+
+    // Bytes that do not match the checksum recorded at build time are never compiled.
+    setEmbeddedDjsForTests({ base64, sha256: '0'.repeat(64) });
+    const bad = await obtainDjsBytes(plugin({}).plugin);
+    assert.equal(bad.bytes, undefined);
+    assert.match(bad.problem ?? '', /built-in djs module does not match/);
+  } finally {
+    setEmbeddedDjsForTests({ base64: '', sha256: '' });
+  }
+  assert.equal(embeddedDjs(), null);
 });

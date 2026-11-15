@@ -3,6 +3,10 @@ name: Release Obsidian plugin
 # Push a tag that matches manifest.json's version (for example `2.0.0`, no `v`) and this
 # builds the plugin and attaches main.js, manifest.json and styles.css to a GitHub release.
 # BRAT and Obsidian install from those three release assets.
+#
+# Code mode's djs engine is built from source first (djs-wasm.yml, at a pinned commit) and
+# embedded in main.js with its SHA-256, which the plugin checks before compiling it. djs.wasm and
+# its checksum are attached to the release too, so anyone can compare them with their own build.
 
 on:
   push:
@@ -14,7 +18,11 @@ permissions:
   contents: write
 
 jobs:
+  djs:
+    uses: ./.github/workflows/djs-wasm.yml
+
   release:
+    needs: djs
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -48,8 +56,20 @@ jobs:
       - name: Test
         run: npm test
 
-      - name: Build
-        run: npm run build
+      - name: Get djs.wasm
+        uses: actions/download-artifact@v4
+        with:
+          name: djs-wasm
+          path: djs-build
+
+      - name: Build, with djs.wasm embedded
+        env:
+          DJS_WASM_FILE: djs-build/djs.wasm
+          DJS_WASM_SHA256: ${{ needs.djs.outputs.sha256 }}
+          DJS_COMMIT: ${{ needs.djs.outputs.commit }}
+        run: |
+          npm run build
+          grep -q "$DJS_WASM_SHA256" main.js
 
       - name: Create release
         env:
@@ -59,10 +79,16 @@ jobs:
           # Release notes: this version's CHANGELOG section, if there is one.
           sed -n "/^## \[$tag\]/,/^## \[/ { /^## \[$tag\]/b; /^## \[/b; p; }" CHANGELOG.md > release_notes.md
           [ -s release_notes.md ] || echo "Voice Agent $tag" > release_notes.md
+          {
+            echo ""
+            echo "Code mode's djs engine is built in: djs.wasm built from earendil-works/djs at"
+            echo "\`${{ needs.djs.outputs.commit }}\`, SHA-256 \`${{ needs.djs.outputs.sha256 }}\`."
+          } >> release_notes.md
           prerelease=""
           case "$tag" in *-*) prerelease="--prerelease" ;; esac
           gh release create "$tag" \
             --title "$tag" \
             --notes-file release_notes.md \
             $prerelease \
-            main.js manifest.json styles.css
+            main.js manifest.json styles.css \
+            djs-build/djs.wasm djs-build/djs.wasm.sha256

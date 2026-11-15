@@ -9,6 +9,7 @@ import { signIn } from '../mcp/McpOAuth';
 import {
   djsModulePath,
   djsProblem,
+  embeddedDjs,
   loadDjsModule,
   resetDjsModule,
 } from '../tools/codemode/djsEngine';
@@ -66,11 +67,27 @@ const ROUTE_LABELS: Record<SubAgentEventRoute, string> = {
 function renderVoiceRole(el: HTMLElement, plugin: PureChatLLM, redraw: () => void): void {
   const o = plugin.settings.orchestrator;
   const save: Save = () => plugin.saveSettings();
+  // Layered is the default; the other two roles sit behind an advanced switch.
+  const advanced = !!o.advancedVoiceRoles || o.voiceRole !== 'layered';
+  new Setting(el)
+    .setName('Other voice roles')
+    .setDesc(
+      'Advanced. The voice model normally passes requests to a separate orchestrator agent, which runs background workers. Turn this on to let the voice model delegate or call tools itself instead. Turning it off goes back to the default.',
+    )
+    .addToggle(t =>
+      t.setValue(advanced).onChange(async value => {
+        o.advancedVoiceRoles = value;
+        if (!value) o.voiceRole = 'layered';
+        await save();
+        redraw();
+      }),
+    );
+  if (!advanced) return;
   choose(
     new Setting(el)
       .setName('Voice model role')
       .setDesc(
-        'Layered: the voice model translates and filters, and passes requests to a separate orchestrator agent that plans and runs background workers (each layer keeps its own context). Orchestrator: the voice model hands work to background agents itself. Direct: the voice model calls tools itself.',
+        'Layered (default): the voice model translates and filters, and passes requests to a separate orchestrator agent that plans and runs background workers (each layer keeps its own context). Orchestrator: the voice model hands work to background agents itself. Direct: the voice model calls tools itself.',
       ),
     { layered: 'Layered', orchestrator: 'Orchestrator', direct: 'Direct' } as Record<
       OrchestratorSettings['voiceRole'],
@@ -1633,9 +1650,16 @@ export function renderSkillsAndCodeMode(
             redraw();
           }),
       );
+    const builtIn = embeddedDjs();
+    const own = !!(c.djsModulePath?.trim() || c.djsModuleUrl?.trim());
+    const pathHint =
+      builtIn && !own
+        ? `Leave empty to use the built-in module (djs ${builtIn.commit.slice(0, 7) || 'source build'}, sha256 ${builtIn.sha256.slice(0, 12)}…).`
+        : `Leave empty to use ${builtIn ? 'the built-in module' : djsModulePath(plugin)}.`;
+    pathSetting.setDesc(`Vault path of your own djs.wasm. ${pathHint} Checking…`);
     void loadDjsModule(plugin).then(module =>
       pathSetting.setDesc(
-        `Vault path of djs.wasm. Leave empty to use ${djsModulePath(plugin)}. ${
+        `Vault path of your own djs.wasm. ${pathHint} ${
           module
             ? 'Module loaded: scripts run in djs.'
             : `${djsProblem() ?? 'Module not found.'} Scripts run in the Web Worker, a weaker sandbox.`
@@ -1645,7 +1669,7 @@ export function renderSkillsAndCodeMode(
     new Setting(el)
       .setName('djs download address')
       .setDesc(
-        'Where to fetch djs.wasm when it is missing. Used only with a pinned checksum below, over https.',
+        'Where to fetch your own djs.wasm instead of the built-in one. Used only with a pinned checksum below, over https.',
       )
       .addText(t =>
         t.setValue(c.djsModuleUrl ?? '').onChange(async x => {
