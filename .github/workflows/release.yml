@@ -84,11 +84,18 @@ jobs:
             echo "Code mode's djs engine is built in: djs.wasm built from earendil-works/djs at"
             echo "\`${{ needs.djs.outputs.commit }}\`, SHA-256 \`${{ needs.djs.outputs.sha256 }}\`."
           } >> release_notes.md
+          assets="main.js manifest.json styles.css djs-build/djs.wasm djs-build/djs.wasm.sha256"
           prerelease=""
-          case "$tag" in *-*) prerelease="--prerelease" ;; esac
-          gh release create "$tag" \
-            --title "$tag" \
-            --notes-file release_notes.md \
-            $prerelease \
-            main.js manifest.json styles.css \
-            djs-build/djs.wasm djs-build/djs.wasm.sha256
+          # A version with a suffix (2.0.0-beta.1) is a pre-release, never marked latest.
+          case "$tag" in *-*) prerelease="--prerelease --latest=false" ;; esac
+          if gh release view "$tag" >/dev/null 2>&1; then
+            # Someone published the release (and with it the tag) on GitHub: attach the build to it.
+            gh release upload "$tag" $assets --clobber
+            [ -z "$prerelease" ] || gh release edit "$tag" $prerelease
+          else
+            gh release create "$tag" \
+              --title "$tag" \
+              --notes-file release_notes.md \
+              $prerelease \
+              $assets
+          fi
