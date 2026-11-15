@@ -56,7 +56,23 @@ export const parseLinktext = (l: string): { path: string; subpath: string } => {
   const i = l.indexOf('#');
   return i < 0 ? { path: l, subpath: '' } : { path: l.slice(0, i), subpath: l.slice(i) };
 };
-export const resolveSubpath = (): null => null;
+/** Like Obsidian's: `#Heading` (last segment of `#A#B`, case-insensitive) or `#^block`. */
+export const resolveSubpath = (
+  cache: Record<string, unknown>,
+  subpath: string,
+): { type: string; start: Pos; end: Pos | null } | null => {
+  const parts = subpath.split('#').filter(Boolean);
+  const last = parts[parts.length - 1] ?? '';
+  if (last.startsWith('^')) {
+    const block = (cache.blocks as Record<string, CacheItem> | undefined)?.[last.slice(1)];
+    return block ? { type: 'block', start: block.position.start, end: block.position.end } : null;
+  }
+  const headings = (cache.headings as (CacheItem & { heading: string; level: number })[]) ?? [];
+  const i = headings.findIndex(h => h.heading.toLowerCase() === last.trim().toLowerCase());
+  if (i < 0) return null;
+  const next = headings.slice(i + 1).find(h => h.level <= headings[i].level);
+  return { type: 'heading', start: headings[i].position.start, end: next?.position.start ?? null };
+};
 export const debounce = <T extends (...a: never[]) => unknown>(fn: T): T => fn;
 export const moment = (): { format: () => string } => ({ format: () => '2026-11-15' });
 
