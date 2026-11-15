@@ -6,7 +6,15 @@ import type { SubAgentBackend, SubAgentRunContext, SubAgentTask } from './types'
 import { VaultGraph } from '../graph/VaultGraph';
 import { ontologySummary } from '../graph/ontology';
 import { layerFetch, resolveLayer } from './layers';
-import { isToolError } from '../tools/toolContract';
+import {
+  AbortHost,
+  callWithSignal,
+  isToolError,
+  toolError,
+  toolErrorLine,
+  toolTimeoutMs,
+  withToolTimeout,
+} from '../tools/toolContract';
 
 /** Tools a sub-agent may not use (orchestration belongs to the orchestrator). */
 const ORCHESTRATOR_ONLY = new Set(ORCHESTRATOR_TOOL_NAMES);
@@ -137,7 +145,7 @@ export class LocalSubAgentBackend implements SubAgentBackend {
             'stuck',
             repeats >= threshold
               ? `It has called ${call.function.name} with the same input ${repeats} times in a row.`
-              : `${failures} tool calls in a row failed. Last error: ${output.slice(0, 300)}`,
+              : `${failures} tool calls in a row failed. Last error: ${toolErrorLine(output).slice(0, 300)}`,
           );
         } else if (repeats < threshold && failures === 0) {
           stuckReported = false;
@@ -168,23 +176,58 @@ export class LocalSubAgentBackend implements SubAgentBackend {
       const decision = await hook.beforeTool?.({ task, step }, call);
       if (decision?.block) {
         ctx.log({ kind: 'tool', text: `${name} blocked: ${decision.block}` });
-        return `Error: blocked by a hook: ${decision.block}`;
+        return toolError('Blocked', `A hook blocked ${name}: ${decision.block}`);
       }
     }
     let args: Record<string, unknown> = {};
     try {
       args = JSON.parse(call.function.arguments || '{}') as Record<string, unknown>;
     } catch {
-      return `Error: the arguments for ${name} were not valid JSON.`;
+      return toolError('InvalidArguments', `The arguments for ${name} were not valid JSON.`, [
+        'Call it again with one JSON object of arguments.',
+      ]);
     }
     let output = ORCHESTRATOR_ONLY.has(name)
-      ? `Error: ${name} is only available to the orchestrator.`
-      : await chat.toolregistry.executeTool(name, args);
+      ? toolError('NotAllowed', `${name} is only available to the orchestrator.`)
+      : await this.execute(chat, name, args, ctx);
     for (const hook of ctx.hooks) {
       const replaced = await hook.afterTool?.({ task, step }, call, output);
       if (typeof replaced === 'string') output = replaced;
     }
     ctx.log({ kind: 'tool', text: `${name}: ${output.slice(0, 200).replace(/\s+/g, ' ')}` });
     return output;
+  }
+
+  /**
+   * Runs one tool with its time limit (see toolContract). The call's abort signal fires on the
+   * time limit and when the task is cancelled, which is checked every second while it runs.
+   * @param chat - Sub-agent chat.
+   * @param name - Tool name.
+   * @param args - Arguments.
+   * @param ctx - Run context.
+   */
+  private async execute(
+    chat: PureChatLLMChat,
+    name: string,
+    args: Record<string, unknown>,
+    ctx: SubAgentRunContext,
+  ): Promise<string> {
+    const cancel = new AbortController();
+    const poll = window.setInterval(() => {
+      if (ctx.isCancelled()) cancel.abort();
+    }, 1000);
+    try {
+      return await withToolTimeout(
+        name,
+        toolTimeoutMs(name),
+        signal =>
+          callWithSignal(chat as unknown as AbortHost, signal, () =>
+            chat.toolregistry.executeTool(name, args),
+          ),
+        cancel.signal,
+      );
+    } finally {
+      window.clearInterval(poll);
+    }
   }
 }
