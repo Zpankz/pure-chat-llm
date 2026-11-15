@@ -32,7 +32,7 @@ export class PluginSettingsTool extends Tool<PluginSettingsArgs> {
   readonly name = 'manage_plugin_settings';
   readonly classification = 'System';
   readonly description =
-    'Reads or updates the Pure Chat LLM plugin settings. Updates trigger a user confirmation modal.';
+    'Reads or updates the Voice Agent plugin settings. Updates trigger a user confirmation modal.';
   readonly parameters = pluginSettingsParameters;
 
   /**

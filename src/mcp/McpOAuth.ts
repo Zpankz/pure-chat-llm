@@ -163,7 +163,7 @@ async function register(endpoint: string): Promise<{ clientId: string; clientSec
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
     body: JSON.stringify({
-      client_name: 'Pure Chat LLM (Obsidian)',
+      client_name: 'Voice Agent (Obsidian)',
       redirect_uris: [OAUTH_REDIRECT_URI],
       grant_types: ['authorization_code', 'refresh_token'],
       response_types: ['code'],

@@ -1,5 +1,5 @@
 {
-  "name": "pure-chat-llm",
+  "name": "voice-agent",
   "version": "1.12.1",
   "description": "Turn notes into conversations with chatGPT",
   "main": "main.js",

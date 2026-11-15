@@ -144,7 +144,7 @@ export class PureChatLLMSideView extends ItemView {
     this.contentEl.empty();
 
     new Setting(this.contentEl)
-      .setName('Pure Chat LLM')
+      .setName('Voice Agent')
       .setClass('PUREfloattop')
       .setHeading()
       .addButton(btn => btn.setButtonText('Hot keys').onClick(() => this.plugin.openHotkeys()))

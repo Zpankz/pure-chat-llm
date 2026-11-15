@@ -10,6 +10,7 @@ import {
   MarkdownView,
   Menu,
   Modal,
+  normalizePath,
   Notice,
   Plugin,
   Setting,
@@ -22,9 +23,13 @@ import { mergeVoiceSettings } from './realtime/voiceCatalog';
 import { DEFAULT_MCP_SERVER, McpManager } from './mcp/McpManager';
 import { SubAgentManager } from './agents/SubAgentManager';
 import { OrchestratorAgent } from './agents/OrchestratorAgent';
+import { CallRecorder } from './agents/CallRecorder';
 import { mergeLayers } from './agents/layers';
 import { ChatGPTAuth } from './auth/ChatGPTAuth';
 import { hydrateMcpTokens, withoutSecrets } from './auth/mcpTokens';
+
+/** The id this fork was installed under before it became Voice Agent. */
+const LEGACY_PLUGIN_ID = 'pure-chat-llm';
 import { handleOAuthCallback, OAUTH_ACTION } from './mcp/McpOAuth';
 import { SkillsCatalog } from './skills/SkillsCatalog';
 import { ObsidianFileSystemAdapter } from './adapters/ObsidianFileSystemAdapter';
@@ -93,6 +98,10 @@ export default class PureChatLLM extends Plugin {
   agents: SubAgentManager;
   /** The layered setup's orchestrator agent (between the voice layer and the workers). */
   orchestrator: OrchestratorAgent;
+  /** True when this load took its settings from the old `pure-chat-llm` plugin folder. */
+  private migratedLegacySettings = false;
+  /** Saves voice calls, the orchestrator's conversation and sub-threads as linked notes. */
+  calls: CallRecorder;
   /** Sign in with ChatGPT for layers that run on the user's ChatGPT plan. */
   chatgpt: ChatGPTAuth;
   /** Agent Skills discovered in the vault. */
@@ -126,6 +135,7 @@ export default class PureChatLLM extends Plugin {
     this.mcp = new McpManager(this);
     this.agents = new SubAgentManager(this);
     this.orchestrator = new OrchestratorAgent(this);
+    this.calls = new CallRecorder(this);
     this.chatgpt = new ChatGPTAuth(this.app);
     // OAuth sign-in for remote MCP servers returns to obsidian://pure-chat-llm-oauth.
     this.registerObsidianProtocolHandler(OAUTH_ACTION, params => handleOAuthCallback(params));
@@ -465,14 +475,14 @@ export default class PureChatLLM extends Plugin {
   /**
    * Updates the status bar with the provided text.
    *
-   * Displays a message in the status bar prefixed with '[Pure Chat LLM]'.
+   * Displays a message in the status bar prefixed with '[Voice Agent]'.
    *
    * @param {string} text - The message text to display in the status bar.
    * @returns {void}
    */
   status(text: string) {
     // Display a message in the status bar
-    this.pureChatStatusElement.setText(`[Pure Chat LLM] ${text}`);
+    this.pureChatStatusElement.setText(`[Voice Agent] ${text}`);
   }
 
   /**
@@ -506,7 +516,7 @@ export default class PureChatLLM extends Plugin {
     // make sure this stays up to date as the documentation does'nt include all the functions used here
     await this.app.setting.open();
     this.app.setting.openTabById('hotkeys');
-    this.app.setting.activeTab.searchComponent.setValue('Pure Chat LLM');
+    this.app.setting.activeTab.searchComponent.setValue(this.manifest.name);
     this.app.setting.activeTab.searchComponent.onChanged();
   }
 
@@ -515,7 +525,7 @@ export default class PureChatLLM extends Plugin {
    */
   async openSettings(): Promise<void> {
     await this.app.setting.open();
-    this.app.setting.openTabById('pure-chat-llm');
+    this.app.setting.openTabById(this.manifest.id);
   }
 
   /**
@@ -779,10 +789,30 @@ export default class PureChatLLM extends Plugin {
    *
    * @returns {Promise<void>}
    */
+  /**
+   * This plugin's saved data, or on first load under the `voice-agent` id, the settings saved
+   * under the previous `pure-chat-llm` id. The old file is left as it was.
+   */
+  private async loadOwnOrLegacyData(): Promise<unknown> {
+    const own: unknown = await this.loadData();
+    if (own) return own;
+    const path = normalizePath(`${this.app.vault.configDir}/plugins/${LEGACY_PLUGIN_ID}/data.json`);
+    try {
+      const adapter = this.app.vault.adapter;
+      if (!(await adapter.exists(path))) return own;
+      const data: unknown = JSON.parse(await adapter.read(path));
+      this.migratedLegacySettings = true;
+      return data;
+    } catch (error) {
+      console.error('Voice Agent: could not read the old Pure Chat LLM settings', error);
+      return own;
+    }
+  }
+
   async loadSettings() {
     const loadedData: PureChatLLMSettings = {
       ...DEFAULT_SETTINGS,
-      ...((await this.loadData()) as PureChatLLMSettings),
+      ...((await this.loadOwnOrLegacyData()) as PureChatLLMSettings),
     };
 
     this.settings = { ...loadedData };
@@ -870,7 +900,15 @@ export default class PureChatLLM extends Plugin {
         this.settings.endpoints.push(endpoint),
     );
     // MCP sign-in tokens live in secret storage; older versions saved them in this file.
-    if (hydrateMcpTokens(this.app, this.settings.mcpServers)) await this.saveSettings();
+    const moved = hydrateMcpTokens(this.app, this.settings.mcpServers);
+    if (moved || this.migratedLegacySettings) await this.saveSettings();
+    if (this.migratedLegacySettings) {
+      this.migratedLegacySettings = false;
+      new Notice(
+        'Voice Agent carried your Pure Chat LLM settings over. Hotkeys need binding again, and turn off Pure Chat LLM if it is still on.',
+        15000,
+      );
+    }
   }
 
   /**
@@ -900,6 +938,7 @@ export default class PureChatLLM extends Plugin {
   onunload() {
     this.mcp?.dispose();
     this.orchestrator?.dispose();
+    this.calls?.dispose();
     this.agents?.dispose();
   }
 }
@@ -1027,7 +1066,7 @@ export class SelectionPromptEditor extends Modal {
     new Setting(this.contentEl)
       .setName('All templates')
 
-      .setDesc('Manage all prompt templates for the Pure Chat LLM plugin.')
+      .setDesc('Manage all prompt templates for the Voice Agent plugin.')
       .setHeading()
       .addExtraButton(btn =>
         btn

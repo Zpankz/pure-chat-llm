@@ -105,7 +105,7 @@ export class ChatGPTAuth {
    * Runs the browser sign-in. Resolves when tokens are stored.
    * @param appName - Name OpenAI shows on first sign-in.
    */
-  async signIn(appName = 'Pure Chat LLM for Obsidian'): Promise<void> {
+  async signIn(appName = 'Voice Agent for Obsidian'): Promise<void> {
     if (!ChatGPTAuth.supported)
       throw new Error('Sign in with ChatGPT needs the desktop app (a local sign-in page).');
     const issued = readSecret<string>(this.app, CLIENT_KEY);
@@ -265,7 +265,7 @@ export class ChatGPTAuth {
         const code = url.searchParams.get('code');
         const ok = !error && !!code && url.searchParams.get('state') === state;
         res.writeHead(ok ? 200 : 400, { 'content-type': 'text/html; charset=utf-8' });
-        res.end(page(ok ? 'Signed in to Pure Chat LLM' : 'Sign-in did not finish'));
+        res.end(page(ok ? 'Signed in to Voice Agent' : 'Sign-in did not finish'));
         window.clearTimeout(timer);
         server.close();
         if (error === 'access_denied') reject(new Error('Sign-in was cancelled.'));

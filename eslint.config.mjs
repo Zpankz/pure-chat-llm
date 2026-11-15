@@ -32,6 +32,8 @@ export default defineConfig([
           brands: [
             'LLM',
             'PureChatLLM',
+            'Voice Agent',
+            'Pure Chat LLM',
             'API',
             'Pure Chat LLM',
             'OpenAI',

@@ -1,9 +1,9 @@
 {
-	"id": "pure-chat-llm",
-	"name": "Pure Chat LLM",
+	"id": "voice-agent",
+	"name": "Voice Agent",
 	"version": "1.12.1",
 	"minAppVersion": "1.11.4",
-	"description": "Turn notes into conversations with chatGPT",
+	"description": "Talk to your vault: a duplex voice agent with a background orchestrator and workers, plus notes as chats.",
 	"author": "Justice Vellacott",
 	"authorUrl": "https://thejusticeman.github.io/",
 	"isDesktopOnly": false
