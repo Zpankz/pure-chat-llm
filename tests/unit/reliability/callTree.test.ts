@@ -188,3 +188,35 @@ test('topics are refused when the call is laid out as one transcript', () => {
   assert.match(recorder.newTopic('Anything', 'idea'), /^Error: NoCall/);
   void recorder.finish();
 });
+
+test('moving call notes never waits on an "Update links?" prompt', async () => {
+  const { app, recorder, task } = setup('layered', 'topics');
+  // fileManager.renameFile can open a prompt and wait for an answer; make it hang like one.
+  let prompted = 0;
+  (app.fileManager as unknown as { renameFile: () => Promise<void> }).renameFile = () => {
+    prompted++;
+    return new Promise(() => undefined);
+  };
+  const lines: CallLine[] = [];
+  const record = recorder.start('GPT Live', () => lines);
+  assert.ok(record);
+  await recorder.flush();
+  // The opening topic is renamed, then the orchestrator gains a thread and moves into a folder.
+  recorder.newTopic('Sleep notes', 'concept');
+  recorder.logOrchestrator('input', 'Find my notes on sleep', true);
+  await recorder.flush();
+  recorder.attachTask(task('t1', 'Sleep notes'));
+  lines.push({ role: 'user', text: 'Find my notes on sleep', at: Date.now() + 1000 });
+  const done = await Promise.race([
+    recorder
+      .finish()
+      .then(() => recorder.flush())
+      .then(() => 'saved'),
+    new Promise(resolve => setTimeout(() => resolve('stalled'), 2000)),
+  ]);
+  assert.equal(done, 'saved');
+  assert.equal(prompted, 0);
+  const { stamp, folder } = record;
+  assert.ok(app.vault.contents.has(`${folder}/${stamp} 01 Sleep notes.md`));
+  assert.ok(app.vault.contents.has(`${folder}/${stamp} orchestrator/${stamp} orchestrator.md`));
+});
