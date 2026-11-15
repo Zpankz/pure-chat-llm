@@ -118,8 +118,55 @@ export async function consoleLines(pattern?: RegExp): Promise<string[]> {
 }
 
 /** What Obsidian shows and does right now: open modals, notices, the plugin's state, the console tail. */
+/**
+ * When the window is frozen, pauses its JavaScript through the DevTools protocol and records where
+ * it is stuck: the top call frames, and the code around the top one (the bundle is minified, so the
+ * string literals near it are what point back to the source). Resumes it afterwards.
+ */
+export async function freezeStack(): Promise<Record<string, unknown>> {
+  try {
+    const pptr = await withTimeout(browser.getPuppeteer(), 20_000, 'Connecting to DevTools');
+    const pages = await pptr.pages();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const page = pages.find((p: any) => /obsidian\.md|app:\/\/|index\.html/.test(p.url())) ?? pages[0];
+    const cdp = await page.createCDPSession();
+    const scripts = new Map<string, string>();
+    cdp.on('Debugger.scriptParsed', (e: { scriptId: string; url: string }) => scripts.set(e.scriptId, e.url));
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const paused = new Promise<any>(resolve => cdp.once('Debugger.paused', resolve));
+    await withTimeout(cdp.send('Debugger.enable'), 15_000, 'Debugger.enable');
+    await withTimeout(cdp.send('Debugger.pause'), 15_000, 'Debugger.pause');
+    const event = await withTimeout(paused, 15_000, 'Waiting for the pause');
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const frames = (event.callFrames as any[]).slice(0, 12).map(f => ({
+      fn: f.functionName || '(anonymous)',
+      url: scripts.get(f.location.scriptId) ?? f.url ?? '',
+      line: f.location.lineNumber + 1,
+      column: (f.location.columnNumber ?? 0) + 1,
+      scriptId: f.location.scriptId,
+    }));
+    const near: Array<{ frame: number; code: string; strings: string[] }> = [];
+    for (const [i, f] of frames.slice(0, 6).entries()) {
+      try {
+        const { scriptSource } = await cdp.send('Debugger.getScriptSource', { scriptId: f.scriptId });
+        const lines = String(scriptSource).split('\n');
+        const line = lines[f.line - 1] ?? '';
+        const code = line.slice(Math.max(0, f.column - 600), f.column + 300);
+        near.push({ frame: i, code, strings: [...code.matchAll(/(['"`])([^'"`\n]{6,80})\1/g)].map(m => m[2]) });
+      } catch {
+        // A frame without source (native code).
+      }
+    }
+    await cdp.send('Debugger.resume').catch(() => undefined);
+    await cdp.send('Debugger.disable').catch(() => undefined);
+    return { frames, near, reason: event.reason };
+  } catch (e) {
+    return { failed: String(e) };
+  }
+}
+
 export async function diagnose(): Promise<Record<string, unknown>> {
-  if (!(await windowResponds(8_000))) return { frozen: true, note: 'The Obsidian window did not answer a trivial script within 8 s.' };
+  if (!(await windowResponds(8_000))) return { frozen: true, note: 'The Obsidian window did not answer a trivial script within 8 s.', stuckAt: await freezeStack() };
   try {
     return await withTimeout(
       browser.executeObsidian(({ app, plugins }) => {
@@ -347,7 +394,14 @@ export async function runChat(
 
 /** Title (h2) of the open modal, or ''. */
 export async function openModalTitle(): Promise<string> {
-  return browser.execute(() => document.querySelector('.modal-container .modal h2, .modal-container .modal-title')?.textContent?.trim() ?? '');
+  // Obsidian modals carry an empty .modal-title when a plugin writes its own h2, so take the first
+  // heading that has text (the first CI runs read the empty one and never answered a modal).
+  return browser.execute(
+    () =>
+      [...document.querySelectorAll('.modal-container .modal-title, .modal-container .modal h2')]
+        .map(el => el.textContent?.trim() ?? '')
+        .find(Boolean) ?? '',
+  );
 }
 
 /** Clicks a button with this label in the open modal. */
@@ -358,8 +412,14 @@ export async function clickModalButton(label: string) {
   const modal = await browser.$('.modal-container');
   await modal.waitForExist({ timeout: 10_000 });
   const button = await modal.$(`button=${label}`);
-  await button.waitForClickable({ timeout: 10_000 });
-  await button.click();
+  await button.waitForExist({ timeout: 10_000 });
+  await button.scrollIntoView({ block: 'center' });
+  try {
+    await button.click();
+  } catch {
+    // Covered or off-screen in the headless window: press it the way the DOM would.
+    await browser.execute((el: HTMLElement) => el.click(), button as unknown as HTMLElement);
+  }
 }
 
 type WorkerScript = { rounds: Array<Array<{ name: string; args?: unknown }>>; final?: string; delays?: number[]; finalDelayMs?: number; drop?: boolean };
@@ -384,7 +444,7 @@ export async function readTask(taskId: string): Promise<Record<string, unknown>>
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const t = (plugins.voiceAgent as any).agents.find(taskId);
     return t
-      ? JSON.parse(JSON.stringify({ id: t.id, status: t.status, result: t.result, error: t.error, steps: t.steps, notePath: t.notePath, parentNote: t.parentNote, topicNote: t.topicNote, callNote: t.callNote }))
+      ? JSON.parse(JSON.stringify({ id: t.id, status: t.status, result: t.result, failure: t.error, steps: t.steps, notePath: t.notePath, parentNote: t.parentNote, topicNote: t.topicNote, callNote: t.callNote }))
       : {};
   }, taskId);
 }
@@ -434,7 +494,7 @@ export async function runWorker(title: string, brief: string, script: WorkerScri
       task = await browser.executeObsidian(({ plugins }, taskId: string) => {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const t = (plugins.voiceAgent as any).agents.find(taskId);
-        return t ? { id: t.id, status: t.status, result: t.result, error: t.error, steps: t.steps, notePath: t.notePath } : {};
+        return t ? { id: t.id, status: t.status, result: t.result, failure: t.error, steps: t.steps, notePath: t.notePath } : {};
       }, taskId);
       return ['done', 'failed', 'cancelled'].includes(String(task.status));
     },

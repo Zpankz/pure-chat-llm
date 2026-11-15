@@ -87,6 +87,7 @@ describe('Reliability: cancel, dropped requests and code mode timeouts', () => {
 
   check('REL-4', 'The orchestrator\'s model connection is cut on every request: one retry, then a plain spoken error', async ev => {
     const mark = traceMark();
+    const timingBefore = (await consoleLines(/\[timing\] orchestrator request/)).length;
     const script = encodeScript({ id: 'dropped-orchestrator', rounds: [], final: 'never', drop: true });
     const said = await browser.executeObsidian(async ({ plugins }, script: string) => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -100,15 +101,18 @@ describe('Reliability: cancel, dropped requests and code mode timeouts', () => {
       return said;
     }, script);
     const traffic = traceSince(mark).filter(e => e.script === 'dropped-orchestrator');
-    const timing = (await consoleLines(/\[timing\] orchestrator request/)).slice(-3);
+    const attempts = (await consoleLines(/\[timing\] orchestrator request/)).slice(timingBefore);
     ev.save('spoken', said);
     ev.save('traffic', traffic);
-    ev.save('timing-lines', timing);
-    expect(traffic.filter(e => e.dropped).length).toBe(2);
+    ev.save('attempt-timing-lines', attempts);
+    // The plugin's own attempts, from its timing log. The fake server counts connections, and the
+    // browser may reopen a reset connection once on its own, so it can see more than this.
+    expect(attempts.length).toBe(2);
+    expect(attempts.every(l => /\(error\)/.test(l))).toBe(true);
     expect(said.length).toBeGreaterThan(0);
     expect(said[0]).toMatch(/couldn't work on that|taking longer than expected/i);
     expect(said[0]).not.toMatch(/UND_ERR|ECONNRESET|stack|TypeError|at \w+ \(/);
-    ev.note(`Two attempts reached the fake model (both cut off), then the voice was given: "${said[0].slice(0, 200)}"`);
+    ev.note(`The plugin made 2 attempts (the fake server saw ${traffic.filter(e => e.dropped).length} cut-off connections), then the voice was given: "${said[0].slice(0, 200)}"`);
   });
 
   check('REL-5', 'A worker\'s code mode script runs past its time limit before writing: nothing is written afterwards', async ev => {

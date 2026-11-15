@@ -53,9 +53,11 @@ describe('Worker writes: two independent reviewers, backup, trash and code mode'
     const mcp = bridged.find((b: { server: string }) => b.server === 'fake-modern')?.name ?? 'missing_mcp_tool';
     const js = `
 const out = {};
-out.read = String(await tools.read_file({ path: 'Notes/scratch.md' })).slice(0, 300);
-out.created = String(await tools.create_obsidian_note({ path: 'Agent output/codemode-created.md', content: 'CREATED-BY-CODEMODE' })).slice(0, 300);
-try { out.edited = String(await tools.replace_in_note({ path: 'Notes/codemode-edit.md', search: 'Original line', replace: 'EDITED-BY-CODEMODE' })).slice(0, 600); } catch (e) { out.edited = 'THREW: ' + String(e); }
+// Tools return structured values in code mode; keep text as is and serialise the rest.
+const fmt = v => (typeof v === 'string' ? v : JSON.stringify(v));
+out.read = fmt(await tools.read_file({ path: 'Notes/scratch.md' })).slice(0, 300);
+out.created = fmt(await tools.create_obsidian_note({ path: 'Agent output/codemode-created.md', content: 'CREATED-BY-CODEMODE' })).slice(0, 300);
+try { out.edited = fmt(await tools.replace_in_note({ path: 'Notes/codemode-edit.md', search: 'Original line', replace: 'EDITED-BY-CODEMODE' })).slice(0, 600); } catch (e) { out.edited = 'THREW: ' + String(e); }
 out.net = {};
 const probes = {
   fetch: async () => { await fetch('${FAKE_URL}/v1/models'); },
@@ -64,7 +66,7 @@ const probes = {
   importScripts: async () => { importScripts('${FAKE_URL}/v1/models'); },
 };
 for (const [k, f] of Object.entries(probes)) { try { await f(); out.net[k] = 'ALLOWED'; } catch (e) { out.net[k] = 'BLOCKED: ' + String(e).slice(0, 120); } }
-try { out.mcp = String(await tools.${mcp}({ term: 'codemode' })).slice(0, 300); } catch (e) { out.mcp = 'THREW: ' + String(e); }
+try { out.mcp = fmt(await tools.call(${JSON.stringify(mcp)}, { term: 'codemode' })).slice(0, 300); } catch (e) { out.mcp = 'THREW: ' + String(e); }
 return JSON.stringify(out);`;
     mark = traceMark();
     const c = await runWorker('Code mode limits test', 'Run the script.', { rounds: [[{ name: 'codemode', args: { code: js } }]] });

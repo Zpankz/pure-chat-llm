@@ -39,8 +39,8 @@ describe('Navigation: typed links, routes, folder scope and names', () => {
       [{ name: 'traverse_graph', args: { note: 'dead-space', depth: 3, direction: 'both' } }],
     ]);
     expect(path.result).not.toMatch(/^(Error|ERROR)/);
-    expect(path.result).toContain('shunt');
-    expect(path.result).toContain('AP11AO402');
+    expect(path.result).toMatch(/connects to AP11AO402 in \d+ steps?/);
+    expect(path.result).toContain('respiratory-physiology');
     expect(walk.result).toContain('AP11AO402');
     ev.note(`path: ${path.result.replace(/\s+/g, ' ').slice(0, 240)}`);
   });

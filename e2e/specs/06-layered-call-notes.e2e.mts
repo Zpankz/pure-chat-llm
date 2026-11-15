@@ -30,6 +30,8 @@ interface CallInfo {
   structure: string;
   topics: Array<{ id: number; title: string; kind: string; followsFrom: number[]; path: string }>;
   timings: Array<{ what: string; ms: number; outcome: string }>;
+  /** How calls.finish() ended: 'done in N ms', 'error: …' or 'pending' after 30 s. */
+  finish: string;
 }
 
 interface SavedCall {
@@ -107,13 +109,33 @@ async function play(steps: Step[]): Promise<string[]> {
 
 /** Ends the call and reads back everything it saved. */
 async function closeCall(root: string, task: Record<string, unknown> = {}, mark = 0): Promise<SavedCall> {
-  const { info, said } = await browser.executeObsidian(async ({ plugins }) => {
+  // finish() is started, not awaited inside the page script: the first CI run's call never came
+  // back from it within the script timeout, so its progress is polled and recorded instead.
+  await browser.executeObsidian(({ plugins }) => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const p = plugins.voiceAgent as any;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const w = window as any;
+    const started = Date.now();
+    w.__e2eFinish = 'pending';
+    Promise.resolve(p.calls.finish())
+      .then(() => p.calls.flush?.())
+      .then(() => (w.__e2eFinish = `done in ${Date.now() - started} ms`))
+      .catch((e: unknown) => (w.__e2eFinish = `error: ${String(e)}`));
+  });
+  let finish = 'pending';
+  const until = Date.now() + 30_000;
+  while (Date.now() < until) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    finish = await browser.executeObsidian(() => String((window as any).__e2eFinish));
+    if (finish !== 'pending') break;
+    await browser.pause(500);
+  }
+  const { info, said } = await browser.executeObsidian(({ plugins }) => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const p = plugins.voiceAgent as any;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const call = (window as any).__e2eCall;
-    await p.calls.finish();
-    await p.calls.flush?.();
     call?.off?.();
     p.orchestrator.setTranscriptSource(null);
     const r = p.calls.current;
@@ -128,10 +150,12 @@ async function closeCall(root: string, task: Record<string, unknown> = {}, mark 
           structure: r.structure,
           topics: r.topics,
           timings: r.timings,
+          finish: '',
         },
       }),
     );
   });
+  if (info) info.finish = finish;
   await browser.pause(2500);
   const saved = await walk(info?.folder ?? root);
   const md = saved.files.filter(f => f.endsWith('.md'));
@@ -236,6 +260,8 @@ describe('Layered call pipeline and saved call notes', () => {
     const index = call.info.callPath;
     const orchNote = call.info.orchestratorPath ?? '';
     const taskNote = String(call.task?.notePath ?? '');
+    // Ending the call has to finish writing its notes.
+    expect(call.info.finish).toMatch(/^done/);
     expect(md).toContain(index);
     expect(md).toContain(orchNote);
     expect(md).toContain(taskNote);
