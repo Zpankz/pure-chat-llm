@@ -10,6 +10,11 @@ export interface SkillInfo {
   description: string;
   /** Vault path of the skill directory. */
   dir: string;
+  /**
+   * The skill's main file, relative to its folder: `<folder name>.md` (so the vault does not
+   * fill up with identical SKILL.md names) or `SKILL.md` (the Agent Skills standard).
+   */
+  mainFile: string;
   license?: string;
   compatibility?: string;
   allowedTools?: string;
@@ -44,7 +49,11 @@ export function splitFrontmatter(text: string): {
  * @param dir - Skill directory path.
  * @param frontmatter - Parsed frontmatter.
  */
-export function toSkillInfo(dir: string, frontmatter: Record<string, unknown>): SkillInfo | null {
+export function toSkillInfo(
+  dir: string,
+  frontmatter: Record<string, unknown>,
+  mainFile = 'SKILL.md',
+): SkillInfo | null {
   const dirName = dir.split('/').pop() ?? dir;
   const warnings: string[] = [];
   const rawName = typeof frontmatter.name === 'string' ? frontmatter.name.trim() : '';
@@ -71,6 +80,7 @@ export function toSkillInfo(dir: string, frontmatter: Record<string, unknown>): 
     name,
     description: description.slice(0, 1024),
     dir,
+    mainFile,
     license: typeof frontmatter.license === 'string' ? frontmatter.license : undefined,
     compatibility:
       typeof frontmatter.compatibility === 'string' ? frontmatter.compatibility : undefined,
@@ -79,6 +89,28 @@ export function toSkillInfo(dir: string, frontmatter: Record<string, unknown>): 
     metadata,
     warnings,
   };
+}
+
+/**
+ * The main file of a skill folder: `<folder name>.md` first, then the standard `SKILL.md`
+ * (any case). Returns null when the folder holds neither.
+ * @param adapter - Vault adapter.
+ * @param dir - Skill folder path.
+ */
+export async function skillMainFile(
+  adapter: {
+    exists(path: string): Promise<boolean>;
+    list(path: string): Promise<{ files: string[] }>;
+  },
+  dir: string,
+): Promise<string | null> {
+  const name = dir.split('/').pop() ?? '';
+  if (name && (await adapter.exists(`${dir}/${name}.md`))) return `${name}.md`;
+  const { files } = await adapter.list(dir);
+  const standard = files
+    .map(f => f.split('/').pop() ?? f)
+    .find(f => f.toLowerCase() === 'skill.md');
+  return standard ?? null;
 }
 
 /**
@@ -107,10 +139,10 @@ export class SkillsCatalog {
       if (await adapter.exists(this.folder)) {
         const { folders } = await adapter.list(this.folder);
         for (const dir of folders) {
-          const skillFile = `${dir}/SKILL.md`;
-          if (!(await adapter.exists(skillFile))) continue;
-          const { frontmatter } = splitFrontmatter(await adapter.read(skillFile));
-          const info = toSkillInfo(dir, frontmatter);
+          const mainFile = await skillMainFile(adapter, dir);
+          if (!mainFile) continue;
+          const { frontmatter } = splitFrontmatter(await adapter.read(`${dir}/${mainFile}`));
+          const info = toSkillInfo(dir, frontmatter, mainFile);
           if (info) found.push(info);
         }
       }

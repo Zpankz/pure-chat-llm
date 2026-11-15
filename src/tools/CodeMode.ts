@@ -104,15 +104,23 @@ export function parseInlineOptions(code: string): {
  * replace QuickJS in pi's code mode, when its module is available, and otherwise in a locked-down
  * Web Worker. With djs, scripts may also be TypeScript.
  */
+/** Tools scripts can't call. */
+const CODE_MODE_EXCLUDED = new Set(['generate_image', 'suno_music_gen', 'manage_plugin_settings']);
+
 export class CodeModeTool extends Tool<CodeModeArgs> {
   readonly name = 'codemode';
   readonly classification = 'System';
   static _name = 'codemode';
   readonly parameters = codeModeParameters;
 
-  /** Callable tools, excluding code mode itself. */
+  /**
+   * Callable tools, excluding code mode itself and tools that reach the internet other than
+   * through MCP servers or change plugin settings (Hani's sandbox rule: scripts read anything
+   * and create notes; edits and deletes go through the same tools, so the same review applies;
+   * no network beyond MCP). The sandboxes themselves have no fetch or sockets.
+   */
   private callable() {
-    return this.registry.tools.filter(t => t.name !== this.name);
+    return this.registry.tools.filter(t => t.name !== this.name && !CODE_MODE_EXCLUDED.has(t.name));
   }
 
   /** Description lists the callable tools within an inline budget. */

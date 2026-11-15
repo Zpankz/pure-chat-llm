@@ -39,7 +39,7 @@ export class ActivateSkillTool extends Tool<ActivateSkillArgs> {
   }
 
   /**
-   * Returns SKILL.md and the skill's file list.
+   * Returns the skill's main file and its file list.
    * @param args - Tool arguments.
    */
   async execute(args: ActivateSkillArgs): Promise<string> {
@@ -50,8 +50,8 @@ export class ActivateSkillTool extends Tool<ActivateSkillArgs> {
       return `Error: no skill named "${args.name}". Available skills: ${names}.`;
     }
     void this.status(`Activating skill ${skill.name}...`);
-    const content = await catalog.readFile(skill, 'SKILL.md');
-    const files = (await catalog.listFiles(skill)).filter(f => f !== 'SKILL.md');
+    const content = await catalog.readFile(skill, skill.mainFile);
+    const files = (await catalog.listFiles(skill)).filter(f => f !== skill.mainFile);
     return [
       `<skill_content name="${skill.name}" dir="${skill.dir}">`,
       content.trim(),
