@@ -14,9 +14,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Code mode tool** (`codemode`): models write one sandboxed JavaScript script that calls several tools, with tool search, a key/value store between runs and inline limits.
 - **Agent Skills**: skills in the agentskills.io format load from a vault folder with progressive disclosure (`activate_skill`, `read_skill_file`).
 - **Remote MCP servers**: Streamable HTTP client for MCP 2026-07-28 with fallback to 2025-11-25, bearer tokens, custom headers, tool allow-lists, and bridge or native mode. Tools appear under a new MCP tool category.
+- **Layered voice agents**: voice, orchestrator, worker and optional evaluator layers, each with its own provider, model, reasoning effort and API. The orchestrator agent sees the whole call and short worker summaries and reads a worker's thread on demand; the voice sees what the orchestrator says and an overview of its activity; workers see only their brief.
+- **Background workers** with hooks for started, progress, needs advice, stuck, timed check-ins, finished, failed and cancelled; per-event routing; GPT-Live-style timing with a relevance check that interrupts only when an update changes what you are saying.
+- **Two-reviewer writes**: workers create notes freely; edits and deletes need two independent reviewers, with a backup before edits and deletes to the trash.
+- **Sign in with ChatGPT** (desktop) for layers that run on a ChatGPT plan, through the Responses API. Tokens are kept in Obsidian's secret storage.
+- **Responses API** support for OpenAI layers (needed for tool calls on newer models).
+- **Meta** endpoint (`api.meta.ai`) for Muse models.
+- **Typed graph tools**: `traverse_graph` with typed relations, `vault_ontology` and `graph_cli` with saved traversal commands.
+- **djs engine** for code mode, with the Web Worker as fallback.
+- **OAuth sign-in for remote MCP servers**, with tokens in secret storage.
 - **Voice settings** for every provider, a live transcript in the voice call panel, and a choice to expose all tools or only code mode to voice models.
 
 ### Changed
+
+- Skills can name their main file after the skill folder instead of `SKILL.md`.
+- Code mode scripts can't call image or music generation or change plugin settings, so they have no network beyond MCP servers.
+- Folder lookups and search accept folder names in any case; search can be limited to a folder.
 
 - **OpenAI realtime** now uses the GA session shape with `gpt-realtime-2.1`, semantic VAD, noise reduction, input transcription, reasoning effort and parallel tool calls.
 - **Gemini live** now defaults to `gemini-3.8-live`, sends audio with `realtimeInput.audio`, and supports non-blocking tools with scheduling, context compression, session resumption, `goAway` reconnects, transcripts, proactive audio and thinking levels.

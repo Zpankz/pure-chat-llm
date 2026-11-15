@@ -123,6 +123,36 @@ GPT-Live hands reasoning and tool use to a backend agent while it keeps the conv
 
 With **Agent mode** on, voice models can use every enabled tool. To keep a voice model's context small, set **Tools exposed to voice models** to **Code mode only**: the model then gets one `codemode` tool and writes a short script that calls the other tools. Tool results are trimmed to a configurable length before they are sent back, and the voice model is told to answer in plain spoken language.
 
+### Layered voice agents
+
+By default (**Voice model role: Layered**) a call runs on four layers, each with its own model, reasoning effort and context. Set them under **Settings → Voice orchestrator and sub-agents**.
+
+| Layer        | Job                                                                                                   | Default                                                              |
+| ------------ | ----------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------- |
+| Voice        | Talks with you, filters noise, answers small talk, relays everything else                             | The voice provider you picked                                        |
+| Orchestrator | Plans, does quick read-only lookups and code mode, writes briefs, runs workers, decides what you hear | `gpt-6.1-sol`, medium effort, OpenAI key or **Sign in with ChatGPT** |
+| Workers      | Background sub-agents with every vault tool, skill, MCP server and code mode                          | `muse-spark-1.3-contributor` on Meta, extra-high effort (see below)  |
+| Evaluator    | Optional: checks plans and results when the orchestrator asks (`request_evaluation`)                  | Off; `gemini-4-argon`, high effort                                   |
+
+What each layer sees:
+
+- **Orchestrator:** the whole call (each relay carries the transcript lines it hasn't seen), plus a short summary of each worker event. It opens a worker's full thread only when it chooses to (`read_task_thread`).
+- **Voice:** what the orchestrator tells it (`tell_user`, with interrupt, pause or silent timing) and a quiet overview of the orchestrator's activity: which tools it used and which tasks it started, never their outputs. `orchestrator_activity` lists them on demand.
+- **Workers:** only the brief the orchestrator writes.
+
+Updates follow GPT-Live's timing: results and questions wait for a pause, quiet context is passed silently, and an update cuts in only when it would overrule or change what you are saying right now (checked by the worker model, or by keywords). Each event type (started, progress, needs advice, stuck, timed check-in, finished, failed, cancelled) can be routed differently. Ask for "updates every minute" and the voice turns on spoken progress.
+
+**Voice model role: Orchestrator** keeps the earlier two-layer setup (the voice model delegates to workers itself), and **Direct** lets the voice model call tools itself.
+
+Workers' edits and deletes go to two independent reviewer agents, each seeing only the proposed change. The change is made only when both approve; the note is backed up first, and deleted notes go to the trash. New notes are created straight away. Each action's rule can be changed (allow, two reviewers, ask me, never).
+
+#### Sign-in and model notes
+
+- **Sign in with ChatGPT** uses OpenAI's official sign-in for local apps (desktop only, since it opens a local sign-in page). Layers set to it run on your ChatGPT plan through the Responses API. Tokens are kept in Obsidian's secret storage, not in the vault or the settings file. Remote MCP sign-in tokens are kept there too.
+- **Gemini, xAI and Meta** use API keys. None of them documents a way for third-party apps to use a consumer subscription, so the plugin doesn't offer one.
+- **Muse Ember 1.0 contributor** isn't on Meta's public model list; set the worker model to it if your account lists it. Contributor models are cheaper because your prompts may be used for training.
+- **Gemini 4 Hydrogen** has no public model id; the evaluator defaults to Gemini 4 Argon.
+
 ### Using voice calls
 
 1. Open the voice call panel from the ribbon or the command palette ("Open voice call panel").
@@ -133,7 +163,7 @@ With **Agent mode** on, voice models can use every enabled tool. To keep a voice
 
 ### Code mode
 
-The `codemode` tool (modelled on pi's code mode) lets a model write one JavaScript async function body that calls several tools, filters results and returns only what matters. It runs in a Web Worker with no network access. Inside the script:
+The `codemode` tool (modelled on pi's code mode) lets a model write one JavaScript async function body that calls several tools, filters results and returns only what matters. It runs on the djs engine (put `djs.wasm` in the plugin folder) or, without it, in a Web Worker. Scripts have no network access except through your MCP servers, can't change plugin settings, and go through the same write rules as the tools they call: a worker's script can read anything and create notes, while its edits and deletes need the two reviewers. Inside the script:
 
 - `await tools.<name>(args)` calls any enabled tool; `searchTools(query)`, `describeTool(name)` and `ALL_TOOLS` help find them.
 - `text(value)` adds output for the model; `console.log` is captured; `store(key, value)` and `load(key)` keep small values between scripts; `exit(value)` stops early.
@@ -141,14 +171,22 @@ The `codemode` tool (modelled on pi's code mode) lets a model write one JavaScri
 
 ### Agent Skills
 
-Put skills in the **Skills folder** (default `Skills`, hidden folders such as `.agents/skills` also work). Each skill is a folder with a `SKILL.md` in the [Agent Skills format](https://agentskills.io/specification). Models see each skill's name and description, load the full instructions with `activate_skill` when a task matches, and read bundled files with `read_skill_file`.
+Put skills in the **Skills folder** (default `Skills`, hidden folders such as `.agents/skills` also work). Each skill is a folder whose main note is named after it (for example `review/review.md`), so the vault doesn't fill up with identical names; a `SKILL.md` in the [Agent Skills format](https://agentskills.io/specification) also works. The orchestrator and workers use skills and MCP servers; the voice layer doesn't. Models see each skill's name and description, load the full instructions with `activate_skill` when a task matches, and read bundled files with `read_skill_file`.
 
 ### Remote MCP servers
 
-Add Streamable HTTP servers under **Settings → Remote MCP servers**. The client speaks the current MCP spec (2026-07-28, stateless requests with `Mcp-Method`, `Mcp-Name` and `Mcp-Param-*` headers) and falls back to the 2025-11-25 session-based protocol for older servers. Authentication is a bearer token or custom headers; OAuth is not supported yet.
+Add Streamable HTTP servers under **Settings → Remote MCP servers**. The client speaks the current MCP spec (2026-07-28, stateless requests with `Mcp-Method`, `Mcp-Name` and `Mcp-Param-*` headers) and falls back to the 2025-11-25 session-based protocol for older servers. Authentication is a bearer token, custom headers, or OAuth sign-in through your browser (with dynamic client registration and token renewal).
 
 - **Bridge** (default): the plugin calls the server, and its tools appear to every model as `mcp__server__tool` under the MCP category.
 - **Native where supported**: OpenAI realtime, GPT-Live (Responses backend) and Grok voice call the server directly. Those providers receive the server's token and headers. Other models still use the bridge.
+
+### Typed graph traversal
+
+Workers explore the vault's link graph, including typed relations from the [Typed Graph](https://github.com/volland/obsigraph) plugin's schema notes (frontmatter with `tgs:`, such as a `_types` folder):
+
+- `traverse_graph`: multi-hop outgoing links, backlinks and unresolved links, filtered by relation (`edge_types`), node type, folder and tag.
+- `vault_ontology`: the declared node and edge types, how often each is used, tags and properties. A short version goes into every worker's instructions.
+- `graph_cli`: single-purpose commands (`path`, `hubs`, `related`, `traverse`), plus `save` and `run` for traversal scripts that worked well, kept as notes in **Saved graph commands folder** so they become reusable commands.
 
 ### Troubleshooting
 
