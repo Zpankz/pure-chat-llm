@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.0-beta.2] - 2026-11-17
+
+Second test build, for trying the durable engine. Everything in beta.1, plus:
+
+- **Agent engine setting** under the orchestrator settings: Classic (as before) or Durable (in testing, desktop only). A call keeps the engine it started with.
+- **Durable engine** (Pi Durable): the orchestrator's conversation, its tool calls and its background workers are kept in the app's storage, so a reload or crash resumes where it stopped and workers report back after a restart.
+- **Voice calls on the durable engine:** requests reach the durable orchestrator, `tell_user` speaks in the call, an answer without it is still spoken, and a failed request is said in words. The call notes record what the orchestrator did.
+- **Durable workers** take questions back to the orchestrator, timed check-ins (a quiet note while they move, one stuck report when they stop) and follow-ups after they finish.
+
+Not yet in this build: durable workers don't show in the call panel's task list.
+
 ## [2.0.0-beta.1] - 2026-11-15
 
 Test build of Voice Agent 2.0 for installing with BRAT. It holds everything listed under Unreleased below, plus:
