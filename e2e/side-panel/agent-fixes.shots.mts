@@ -84,6 +84,7 @@ async function listen() {
     const w = window as any;
     w.__e2eOffSay?.();
     w.__e2eSaid = [];
+    w.__e2eVA = plugins.voiceAgent;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     w.__e2eOffSay = (plugins.voiceAgent as any).orchestrator.onSay((text: string, urgency: string) => w.__e2eSaid.push({ text, urgency }));
   });
@@ -93,23 +94,25 @@ async function said(): Promise<Array<{ text: string; urgency: string }>> {
   return browser.execute(() => ((window as unknown as { __e2eSaid?: Array<{ text: string; urgency: string }> }).__e2eSaid ?? []));
 }
 
-async function relay(text: string) {
-  return browser.executeObsidian(({ plugins }, text: string) => {
+async function relay(text: string, reset = true) {
+  return browser.executeObsidian(({ plugins }, text: string, reset: boolean) => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const o = (plugins.voiceAgent as any).orchestrator;
-    o.reset?.();
+    if (reset) o.reset?.();
     return String(o.relay(text, true));
-  }, text);
+  }, text, reset);
 }
 
 async function task(title: string) {
-  return browser.executeObsidian(({ plugins }, title: string) => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  // Plain WebDriver execute on a handle saved by listen(), with every field copied as text.
+  return browser.execute((title: string) => {
     try {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const t = ((plugins.voiceAgent as any).agents.list() as any[]).filter(x => x.title === title).pop();
+      const va = (window as any).__e2eVA;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const t = ((va?.agents?.list() ?? []) as any[]).filter(x => x.title === title).pop();
       if (!t) return null;
-      const text = (v: unknown) => (v === undefined || v === null ? null : typeof v === 'string' ? v : v instanceof Error ? `Error: ${v.message}` : JSON.stringify(v));
+      const text = (v: unknown) => (v === undefined || v === null ? null : typeof v === 'string' ? v : v instanceof Error ? `Error: ${v.message}` : String(v));
       return { id: String(t.id), status: String(t.status), result: text(t.result) ?? '', error: text(t.error), readError: null as string | null };
     } catch (e) {
       return { id: '', status: 'unreadable', result: '', error: null, readError: e instanceof Error ? `${e.message}\n${e.stack ?? ''}` : String(e) };
@@ -118,11 +121,20 @@ async function task(title: string) {
 }
 
 async function waitFor(what: string, fn: () => Promise<boolean>, timeout = 60_000): Promise<boolean> {
+  let lastError = '';
+  const guarded = async () => {
+    try {
+      return await fn();
+    } catch (e) {
+      lastError = e instanceof Error ? e.message : String(e);
+      return false;
+    }
+  };
   try {
-    await browser.waitUntil(fn, { timeout, interval: 400, timeoutMsg: what });
+    await browser.waitUntil(guarded, { timeout, interval: 400, timeoutMsg: what });
     return true;
   } catch {
-    log(`  stopped waiting: ${what} (${timeout / 1000} s)`);
+    log(`  stopped waiting: ${what} (${timeout / 1000} s)${lastError ? `; the last read threw: ${lastError.slice(0, 400)}` : ''}`);
     return false;
   }
 }
@@ -295,8 +307,8 @@ describe(`Agent fixes (${LABEL})`, () => {
       return !!t && t.status === 'failed' && (await said()).some(s => /failed/.test(s.text));
     }, 90_000);
     await browser.pause(1500);
-    const t3 = await task('Check citation format');
-    const s3 = await said();
+    const t3 = await task('Check citation format').catch(e => ({ id: '', status: 'unreadable', result: '', error: null, readError: String(e) }));
+    const s3 = await said().catch(() => [] as Array<{ text: string; urgency: string }>);
     const tr = traffic(mark);
     log(`3: traffic ${JSON.stringify(summarise(tr))}`);
     const eventTurn = tr.filter(e => e.script === 'af-fail-orchestrator').pop();
@@ -543,7 +555,7 @@ describe(`Agent fixes (${LABEL})`, () => {
       ],
       final: 'FINAL-af-durable-orchestrator',
     });
-    log(`8: relay returned: ${await relay(`Search my altitude notes for acclimatisation ${orchestrator}`)}`);
+    log(`8: relay returned: ${await relay(`Search my altitude notes for acclimatisation ${orchestrator}`, false)}`);
     const durableTask = () =>
       browser.executeObsidian(({ plugins }) => {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
