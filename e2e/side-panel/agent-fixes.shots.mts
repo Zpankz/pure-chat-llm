@@ -1,4 +1,4 @@
-// Real-Obsidian check of the agent fixes in commits e82f368, 686c60e and 059321e (requested by the "Voice models and
+// Real-Obsidian check of the agent fixes in commits e82f368 to b640006 (2.0.0-beta.7) (requested by the "Voice models and
 // tools upgrade" thread, 2026-11-18; brief in validation/agent-fixes-e82f368.md). Not part of the
 // validation suite: the side-panel workflow builds the plugin at one commit and runs this file.
 //
@@ -48,7 +48,7 @@ async function setTheme(theme: 'light' | 'dark') {
   await browser.pause(300);
 }
 
-async function markLeaf() {
+async function markLeaf(target = VIEW) {
   return browser.executeObsidian(
     ({ app }, view: string, width: number) => {
       const leaf = app.workspace.getLeavesOfType(view)[0];
@@ -62,16 +62,16 @@ async function markLeaf() {
       leaf.view.containerEl.setAttribute('data-e2e-shot', view);
       return Math.round(leaf.view.containerEl.getBoundingClientRect().width);
     },
-    VIEW,
+    target,
     WIDTH,
   );
 }
 
-async function shootBoth(name: string) {
+async function shootBoth(name: string, target = VIEW) {
   for (const theme of ['light', 'dark'] as const) {
     await setTheme(theme);
     await browser.execute(() => document.querySelectorAll('.notice').forEach(n => n.remove()));
-    await (await browser.$(`[data-e2e-shot="${VIEW}"]`)).saveScreenshot(path.join(OUT, `${name}-${theme}.png`));
+    await (await browser.$(`[data-e2e-shot="${target}"]`)).saveScreenshot(path.join(OUT, `${name}-${theme}.png`));
     log(`saved ${name}-${theme}.png`);
   }
   await setTheme('light');
@@ -724,6 +724,94 @@ describe(`Agent fixes (${LABEL})`, () => {
       !!light && !!dark && alpha(light.background) < 0.5 && alpha(dark.background) < 0.5,
       `Voice provider ${started.provider} started with no key. Error box text: "${light?.text ?? 'none shown'}". Light: background ${light?.background}, text ${(out.light as { color?: string } | null)?.color}. Dark: background ${dark?.background}, text ${(out.dark as { color?: string } | null)?.color}.`,
       out,
+    );
+  });
+
+  it('11: the conversation overview follows typing', async function () {
+    this.timeout(90_000);
+    const OVERVIEW = 'voice-agent-conversation';
+    const note = [
+      '# role: system', '', 'You are a careful study assistant.', '',
+      '# role: user', '', 'What links [[Oxygen cascade]] to altitude?', '',
+      '# role: assistant', '', 'At altitude the inspired oxygen pressure falls, so every step of the cascade starts lower. See [[Altitude and hypoxia]].', '',
+      '# role: user', '', 'Thanks',
+    ].join('\n');
+    const opened = await browser.executeObsidian(async ({ app, plugins }, note: string, overview: string) => {
+      let file = app.vault.getFileByPath('Chat demo.md');
+      if (!file) file = await app.vault.create('Chat demo.md', note);
+      const leaf = app.workspace.getLeaf(false);
+      await leaf.openFile(file);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const p = plugins.voiceAgent as any;
+      if (!app.workspace.getLeavesOfType(overview).length) await p.activateChatView?.();
+      await new Promise(r => setTimeout(r, 800));
+      app.workspace.setActiveLeaf(leaf, { focus: true });
+      await new Promise(r => setTimeout(r, 800));
+      return app.workspace.getLeavesOfType(overview).length > 0;
+    }, note, OVERVIEW);
+    await markLeaf(OVERVIEW);
+    await browser.pause(600);
+    const width = await markLeaf(OVERVIEW);
+    // Focus the note's editor again (revealing the overview can move focus) and put the cursor at the end.
+    await browser.executeObsidian(({ app }) => {
+      const leaf = app.workspace.getLeavesOfType('markdown').find(l => (l.view as { file?: { path: string } }).file?.path === 'Chat demo.md')!;
+      app.workspace.setActiveLeaf(leaf, { focus: true });
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const editor = (leaf.view as any).editor;
+      editor.focus();
+      editor.setCursor(editor.lastLine(), editor.getLine(editor.lastLine()).length);
+    });
+    const typed = ', and tell me which notes mention acclimatisation';
+    const marker = 'which notes mention acclimatisation';
+    // In the page: the time of the last edit, and when the overview first shows the whole typed text.
+    await browser.executeObsidian(({ app }, overview: string, marker: string) => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const w = window as any;
+      w.__e2eOv = { edits: 0, lastEdit: 0, seen: 0, redraws: 0 };
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const ref = (app.workspace as any).on('editor-change', () => {
+        w.__e2eOv.edits++;
+        w.__e2eOv.lastEdit = performance.now();
+      });
+      w.__e2eOvOff = () => app.workspace.offref(ref);
+      const root = app.workspace.getLeavesOfType(overview)[0].view.containerEl;
+      const obs = new MutationObserver(() => {
+        w.__e2eOv.redraws++;
+        if (!w.__e2eOv.seen && (root.textContent ?? '').includes(marker)) w.__e2eOv.seen = performance.now();
+      });
+      obs.observe(root, { childList: true, subtree: true, characterData: true });
+      w.__e2eOvObs = obs;
+    }, OVERVIEW, marker);
+    await browser.keys(typed.split(''));
+    await browser.pause(1500);
+    const result = await browser.executeObsidian(({ app }, overview: string, marker: string) => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const w = window as any;
+      w.__e2eOvObs?.disconnect();
+      w.__e2eOvOff?.();
+      const root = app.workspace.getLeavesOfType(overview)[0].view.containerEl;
+      const bubbles = [...root.querySelectorAll('.va-bubble')];
+      const withText = bubbles.find(b => (b.textContent ?? '').includes(marker));
+      const leaf = app.workspace.getLeavesOfType('markdown').find(l => (l.view as { file?: { path: string } }).file?.path === 'Chat demo.md')!;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const editor = (leaf.view as any).editor;
+      return {
+        ...w.__e2eOv,
+        delayMs: w.__e2eOv.seen ? Math.round(w.__e2eOv.seen - w.__e2eOv.lastEdit) : null,
+        bubbles: bubbles.length,
+        typedBubble: withText ? (withText.textContent ?? '').replace(/\s+/g, ' ').trim() : null,
+        links: root.querySelectorAll('.va-bubble a.internal-link').length,
+        noteEndsWith: editor.getValue().slice(-60),
+      };
+    }, OVERVIEW, marker);
+    log(`11: overview opened ${opened}, ${width} px; ${JSON.stringify(result)}`);
+    await shootBoth('overview-after-typing', OVERVIEW);
+    const ok = !!result.seen && result.delayMs !== null && result.delayMs <= 400 && !!result.typedBubble && result.links > 0;
+    verdict(
+      '11',
+      ok,
+      `Typed ${typed.length} characters into "Chat demo.md" with the overview open (real key presses). The overview showed the typed words ${result.delayMs === null ? 'NEVER' : `${result.delayMs} ms after the last key press`}, in a bubble reading "${result.typedBubble ?? 'none'}". It had ${result.bubbles} bubbles with ${result.links} rendered internal links, and ${result.redraws} DOM changes for ${result.edits} edits.`,
+      result,
     );
   });
 
