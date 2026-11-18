@@ -35,7 +35,12 @@ let fake: { server: { close(): void } } | null = null;
 export const config: WebdriverIO.Config = {
   runner: 'local',
   framework: 'mocha',
-  specs: [path.join(here, 'specs', process.env.E2E_SPEC ? `*${process.env.E2E_SPEC}*.e2e.mts` : '*.e2e.mts')],
+  // E2E_SPEC_FILE runs one file outside specs/ (the side panel screenshots).
+  specs: [
+    process.env.E2E_SPEC_FILE
+      ? path.resolve(root, process.env.E2E_SPEC_FILE)
+      : path.join(here, 'specs', process.env.E2E_SPEC ? `*${process.env.E2E_SPEC}*.e2e.mts` : '*.e2e.mts'),
+  ],
   // One Obsidian at a time: specs share the fake services' trace file.
   maxInstances: 1,
   capabilities: [

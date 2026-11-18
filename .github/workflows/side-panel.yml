@@ -1,0 +1,89 @@
+name: Side panel screenshots (real Obsidian)
+
+# Screenshots of the voice call panel and the conversation overview, before and after the
+# side-panel redesign, in light and dark. The harness comes from this branch; the plugin is built
+# from each commit under test. The pictures go to the job log as base64 (between SHOT markers)
+# as well as to the artifact, so they can be read without downloading the artifact.
+on:
+  push:
+    branches: ['claude/project-thread-gha84v']
+    paths: ['e2e/side-panel/**', '.github/workflows/side-panel.yml']
+  workflow_dispatch:
+
+concurrency:
+  group: side-panel-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  shots:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: before
+            ref: b4229f16311447e2f54c80d95690c80d9014bcc8
+          - label: after
+            ref: 33684ab5902c658c1e21ddb5e169f8aad6598438
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Install the harness
+        run: npm ci
+
+      - name: Fetch the plugin at ${{ matrix.label }} (${{ matrix.ref }})
+        uses: actions/checkout@v4
+        with:
+          ref: claude/voice-models-tools-upgrade-aplfe8
+          fetch-depth: 0
+          path: plugin-under-test
+
+      - name: Build the plugin at ${{ matrix.label }}
+        working-directory: plugin-under-test
+        run: |
+          git checkout --detach ${{ matrix.ref }}
+          git log --oneline -1
+          npm ci
+          npm run build
+          cp main.js manifest.json ../
+          if [ -f styles.css ]; then cp styles.css ../; fi
+          grep '"version"' manifest.json
+
+      - name: Cache Obsidian downloads
+        uses: actions/cache@v4
+        with:
+          path: e2e/.obsidian-cache
+          key: obsidian-${{ runner.os }}-latest
+
+      - name: Take the screenshots
+        continue-on-error: true
+        env:
+          E2E_SPEC_FILE: e2e/side-panel/side-panel.shots.mts
+          SHOT_LABEL: ${{ matrix.label }}
+        run: xvfb-run -a --server-args="-screen 0 1920x1080x24" npx wdio run ./e2e/wdio.conf.mts
+
+      - name: Print the screenshots
+        if: always()
+        run: |
+          dir="e2e/.out/side-panel/${{ matrix.label }}"
+          cat "$dir/notes.txt" || true
+          for f in "$dir"/*.png; do
+            [ -f "$f" ] || continue
+            echo "=====SHOT-BEGIN ${{ matrix.label }}/$(basename "$f") $(wc -c < "$f") $(sha256sum "$f" | cut -c1-64)"
+            base64 -w 8000 "$f"
+            echo "=====SHOT-END"
+          done
+
+      - name: Upload the screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: side-panel-${{ matrix.label }}
+          path: e2e/.out/side-panel
+          retention-days: 30
