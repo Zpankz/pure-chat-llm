@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.0-beta.5] - 2026-11-18
+
+Everything in beta.4, plus a redesigned conversation in the voice call panel and the conversation overview:
+
+- **Turns:** your turns on the right in accent-tinted bubbles, the agent's on the left with an avatar; words still being heard are dimmed with a caret.
+- **Tool and skill cards:** one card per call with an icon and colour by kind (skill, memory, vault read, search, graph, write, delete, agent, MCP), a plain label, the telling argument, a live timer, then a tick or a cross and the duration. A card opens to the arguments and the rendered result. Skills show their name as a chip. The "Running tool" notices are gone.
+- **Agents:** updates from background agents and the orchestrator are cards with their message; ones that cut in are marked. Background agents show status, a live elapsed time and progress bar, what each is doing now, its question or result, its steps on demand, and buttons to open its thread or stop it.
+- **Wikilinks** in both panels open on click (Ctrl/Cmd-click for a new tab) and preview on hover, like in a note.
+- Light, dark and mobile follow your theme.
+
 ## [2.0.0-beta.4] - 2026-11-18
 
 Everything in beta.3, plus:
