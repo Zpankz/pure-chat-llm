@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.0-beta.3] - 2026-11-18
+
+Everything in beta.2, plus:
+
+- **Diagnostics log** (Settings → Diagnostics log, off by default). Records console output, every model request and response, every tool call with its arguments, result and duration, voice transcripts and the orchestrator's steps, as one JSON line per event in `Voice Agent/Diagnostics/<date>/<session>.jsonl`. API keys, tokens and auth headers are always removed. Files are capped at 5 MB (a session continues in a new part), day folders older than 14 days are removed at startup, and each call note links its log file under `diagnostics:`.
+
 ## [2.0.0-beta.2] - 2026-11-17
 
 Second test build, for trying the durable engine. Everything in beta.1, plus:
