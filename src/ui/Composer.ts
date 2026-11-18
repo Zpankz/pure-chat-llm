@@ -86,7 +86,9 @@ export class Composer extends Component {
       cls: 'va-composer__input',
       attr: {
         rows: '1',
-        placeholder: 'Message the agent. [[ or @ for notes, / for skills',
+        placeholder: Platform.isMobile
+          ? 'Message the agent'
+          : 'Message the agent. [[ or @ for notes, / for skills',
         'aria-label': 'Message',
       },
     });
@@ -345,7 +347,13 @@ export class Composer extends Component {
           .onClick(() => void this.attachFile(active)),
       );
     }
-    const editor = this.app.workspace.getActiveViewOfType(MarkdownView)?.editor;
+    // Clicking + makes this panel the active view, so look at the note last open in the main
+    // area too; its editor keeps the selection while unfocused.
+    const recent = this.app.workspace.getMostRecentLeaf()?.view;
+    const editor = (
+      this.app.workspace.getActiveViewOfType(MarkdownView) ??
+      (recent instanceof MarkdownView ? recent : null)
+    )?.editor;
     const selection = editor?.getSelection();
     if (active && selection) {
       menu.addItem(i =>

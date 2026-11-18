@@ -133,6 +133,7 @@ export function askReview(
     properties?: Record<string, unknown>;
   },
   signal?: AbortSignal,
+  inlineOnly = false,
 ): Promise<Decision> {
   return new Promise(resolve => {
     let settled = false;
@@ -183,7 +184,9 @@ export function askReview(
       },
     };
     inline = !!host?.(review);
-    if (!inline) review.openWindow();
+    // A background change with no panel to show it in stays a proposal for later.
+    if (!inline && inlineOnly) review.decide({ approved: false, cancelled: true });
+    else if (!inline) review.openWindow();
     void whenAborted(signal).then(() => review.decide({ approved: false, cancelled: true }));
   });
 }
@@ -388,6 +391,7 @@ async function decideAndWrite(chat: PureChatLLMChat, request: WriteRequest): Pro
     if (signal?.aborted) return fail('policy:window', cancelledError(path));
     const proposal = await queueProposal(chat, { ...request, path }, action, original);
     logReview(chat, `Saved the ${action} of ${path} as a proposal for the user: ${proposal}`);
+    offerInline(chat, proposal);
     return { ok: true, applied: false, action, path, review: 'policy:window', proposal };
   }
 
@@ -449,6 +453,7 @@ async function decideAndWrite(chat: PureChatLLMChat, request: WriteRequest): Pro
     if (held) {
       const proposal = await queueProposal(chat, { ...request, path }, action, original, held);
       logReview(chat, `Held the ${action} of ${path} for the user (${held}): ${proposal}`);
+      offerInline(chat, proposal);
       return { ok: true, applied: false, action, path, review: 'policy:window', proposal, held };
     }
     const userRequest = (chat as { task?: { userRequest?: unknown } }).task?.userRequest;
@@ -760,6 +765,20 @@ export async function applyNoteDelete(
 const PROPOSAL_KEY = 'voice-agent-proposal';
 
 /**
+ * Shows a background task's proposal as a card in the open conversation panel, so the user can
+ * approve it there and then; with no panel open it waits in the proposals list as before.
+ * @param chat - Worker chat.
+ * @param proposal - The proposal note's path.
+ */
+function offerInline(chat: PureChatLLMChat, proposal: string): void {
+  const host = chat.plugin.reviewHost;
+  if (!host) return;
+  void reviewProposal(chat.plugin.app, proposal, host, true).catch(error =>
+    console.error('[voice-agent] proposal card failed', error),
+  );
+}
+
+/**
  * Saves a worker's change as a proposal note in the task folder, for the user to review later
  * with `reviewProposal`.
  * @param chat - Worker chat.
@@ -838,7 +857,12 @@ function fenced(text: string, lang: string): string {
  * @param app - Obsidian app.
  * @param proposalPath - The proposal note.
  */
-export async function reviewProposal(app: App, proposalPath: string): Promise<WriteOutcome> {
+export async function reviewProposal(
+  app: App,
+  proposalPath: string,
+  host?: ReviewHost | null,
+  inlineOnly = false,
+): Promise<WriteOutcome> {
   const file = app.vault.getAbstractFileByPath(normalizePath(proposalPath));
   const base = { ok: false, applied: false, path: proposalPath, review: 'user' as const };
   if (!(file instanceof TFile)) {
@@ -877,15 +901,24 @@ export async function reviewProposal(app: App, proposalPath: string): Promise<Wr
     content = patched;
   }
   const instruction = /^What it does: (.*)$/m.exec(text)?.[1] ?? 'Proposed by a background task';
-  const decision = await new Promise<Decision>(resolve => {
-    const modal =
-      action === 'delete'
-        ? new DeleteReviewModal(app, path, instruction, resolve)
-        : new EditReviewModal(app, path, original, content, { properties, instruction }, resolve);
-    modal.open();
-  });
+  const decision = await askReview(
+    app,
+    host,
+    { action, path, original, content, instruction, properties },
+    undefined,
+    inlineOnly,
+  );
   const mark = (status: string) =>
     app.vault.process(file, data => data.replace(/^status: pending$/m, `status: ${status}`));
+  // Answered elsewhere meanwhile (the proposals list, or another card): leave it as it is.
+  if (!/^status: pending$/m.test(await app.vault.read(file))) {
+    return {
+      ...base,
+      action,
+      path,
+      error: toolError('NotPending', 'This proposal was already answered.'),
+    };
+  }
   if (!decision.approved) {
     if (!decision.cancelled) await mark('rejected');
     return {

@@ -159,6 +159,8 @@ export class OrchestratorAgent implements Orchestrator {
   private running = false;
   private spokeThisTurn = false;
   private transcriptSource: (() => string[]) | null = null;
+  /** The current turn was stopped by the user, not by the time limit. */
+  private userCancelled = false;
   private transcriptSent = 0;
   private stopHooks: () => void;
   /** Short state for the voice view. */
@@ -301,7 +303,10 @@ export class OrchestratorAgent implements Orchestrator {
 
   /** Stops the turn in progress, if any. */
   cancelTurn(): void {
-    this.turnAbort?.abort();
+    if (!this.turnAbort) return;
+    // The user stopped it: not a timeout or a failure, and nothing to say about it.
+    this.userCancelled = true;
+    this.turnAbort.abort();
   }
 
   /** Forgets the orchestrator's conversation. */
@@ -535,6 +540,13 @@ export class OrchestratorAgent implements Orchestrator {
       }
       this.lastError = '';
     } catch (error) {
+      if (this.userCancelled) {
+        this.lastError = '';
+        calls?.logOrchestrator('error', 'Stopped by the user.');
+        calls?.scheduleOrchestratorSave();
+        this.repairHistory();
+        return;
+      }
       const timedOut = abort.signal.aborted;
       this.lastError = timedOut
         ? `The turn took longer than ${Math.round(TURN_TIMEOUT_MS / 1000)} s and was stopped.`
@@ -558,6 +570,7 @@ export class OrchestratorAgent implements Orchestrator {
     } finally {
       window.clearTimeout(turnTimer);
       if (this.turnAbort === abort) this.turnAbort = null;
+      this.userCancelled = false;
       logTiming(
         this.plugin,
         `orchestrator turn (${userTurn ? 'user' : 'event'})`,

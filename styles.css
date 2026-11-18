@@ -1646,8 +1646,25 @@ pre.va-result {
 
 .va-composer__send:disabled {
   background: var(--background-modifier-border);
-  color: var(--text-faint);
+  color: var(--text-muted);
   cursor: default;
+}
+
+/* The icon keeps its own size and colour, whatever the theme or the mobile button styles do. */
+.va-composer__send .svg-icon,
+.va-composer__plus .svg-icon {
+  --icon-size: 18px;
+  width: 18px;
+  height: 18px;
+  color: inherit;
+  stroke: currentColor;
+  flex-shrink: 0;
+}
+
+.va-composer__input::placeholder {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .va-composer__send.is-stop {
@@ -1954,14 +1971,29 @@ pre.va-result {
 
 .va-md .pdf-embed,
 .va-md .internal-embed.pdf-embed {
-  height: 24em;
   width: 100%;
+  height: auto;
+  /* A whole page at the panel's width, however narrow. */
+  aspect-ratio: 8.5 / 11;
+  max-height: 70vh;
 }
 
 .va-md mjx-container[display='true'] {
   overflow-x: auto;
   overflow-y: hidden;
   max-width: 100%;
+  scrollbar-width: thin;
+}
+
+/* In a narrow panel long equations shrink before they scroll. */
+.va-conversation {
+  container-type: inline-size;
+}
+
+@container (max-width: 360px) {
+  .va-md mjx-container[display='true'] {
+    font-size: 85%;
+  }
 }
 
 .va-diagram {
