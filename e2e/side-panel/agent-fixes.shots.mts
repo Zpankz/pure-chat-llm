@@ -430,8 +430,16 @@ describe(`Agent fixes (${LABEL})`, () => {
         const root = document.querySelector(`[data-e2e-shot="${view}"]`);
         const rows = [...(root?.querySelectorAll('.va-row') ?? [])];
         const bubbles = [...(root?.querySelectorAll('.va-bubble') ?? [])].map(b => (b.textContent ?? '').replace(/\s+/g, ' ').trim());
-        const carets = [...(root?.querySelectorAll('.va-caret') ?? [])].map(c => (c.closest('.va-bubble')?.textContent ?? '').replace(/\s+/g, ' ').trim());
-        return { rows: rows.length, bubbles, carets };
+        const textOf = (c: Element) => (c.closest('.va-bubble')?.textContent ?? '').replace(/\s+/g, ' ').trim();
+        const all = [...(root?.querySelectorAll('.va-caret') ?? [])];
+        // A caret counts when it is drawn: displayed, not hidden, with a box (blinking only fades it).
+        const shown = all.filter(c => {
+          const cs = getComputedStyle(c);
+          const box = c.getBoundingClientRect();
+          return cs.display !== 'none' && cs.visibility !== 'hidden' && box.width > 0 && box.height > 0;
+        });
+        const live = [...(root?.querySelectorAll('.is-live') ?? [])].map(r => (r.textContent ?? '').replace(/\s+/g, ' ').trim().slice(0, 80));
+        return { rows: rows.length, bubbles, carets: shown.map(textOf), caretElements: all.map(textOf), live };
       }, VIEW);
 
     await feed([
@@ -443,7 +451,7 @@ describe(`Agent fixes (${LABEL})`, () => {
     ]);
     await browser.pause(400);
     const a = await state();
-    log(`6: shot A: bubbles ${JSON.stringify(a.bubbles)}; carets on ${JSON.stringify(a.carets)}`);
+    log(`6: shot A: bubbles ${JSON.stringify(a.bubbles)}; carets shown on ${JSON.stringify(a.carets)}; caret elements on ${JSON.stringify(a.caretElements)}; live rows ${JSON.stringify(a.live)}`);
     await shootBoth('shot-A');
 
     await feed([
@@ -459,7 +467,7 @@ describe(`Agent fixes (${LABEL})`, () => {
     ]);
     await browser.pause(400);
     const b = await state();
-    log(`6: shot B: bubbles ${JSON.stringify(b.bubbles)}; carets on ${JSON.stringify(b.carets)}`);
+    log(`6: shot B: bubbles ${JSON.stringify(b.bubbles)}; carets shown on ${JSON.stringify(b.carets)}; caret elements on ${JSON.stringify(b.caretElements)}; live rows ${JSON.stringify(b.live)}`);
     await shootBoth('shot-B');
 
     // End the call the way a hang-up does: the panel settles every line and saves the call.
@@ -482,7 +490,7 @@ describe(`Agent fixes (${LABEL})`, () => {
     });
     await browser.pause(1500);
     const end = await state();
-    log(`6: after the call ended: carets on ${JSON.stringify(end.carets)}`);
+    log(`6: after the call ended: carets shown on ${JSON.stringify(end.carets)}; caret elements on ${JSON.stringify(end.caretElements)}`);
     await shootBoth('call-ended');
     const saved = await browser.executeObsidian(async ({ app, plugins }) => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
