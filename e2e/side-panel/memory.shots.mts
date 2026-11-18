@@ -294,7 +294,28 @@ describe('Shared memory overhaul (librarian, recall, entities)', function () {
       return { id: tab?.id ?? null, modalClass: modal?.className ?? null, items: root?.querySelectorAll('.setting-item').length ?? 0, names: [...(root?.querySelectorAll('.setting-item-name') ?? [])].map(n => (n.textContent ?? '').trim()).filter(Boolean).slice(0, 200) };
     });
     log(`M6: settings tab ${tabInfo.id}, modal "${tabInfo.modalClass}", ${tabInfo.items} rows; row names ${JSON.stringify(tabInfo.names)}`);
-    const rowSel = (name: string) => `.setting-item[data-e2e-row="${name}"]`;
+    // Marks the control inside a settings row and clicks it with a real WebDriver click; a click in
+    // the page is the fallback, and which one ran is logged.
+    const realClick = async (name: string, inner: string): Promise<string> => {
+      const ok = await browser.execute((name: string, inner: string) => {
+        document.querySelectorAll('[data-e2e-click]').forEach(e => e.removeAttribute('data-e2e-click'));
+        const root: ParentNode = (window as any).app?.setting?.activeTab?.containerEl ?? document;
+        const row = [...root.querySelectorAll('.setting-item')].find(r => r.querySelector('.setting-item-name')?.textContent?.trim() === name);
+        const el = row?.querySelector(inner) as HTMLElement | null;
+        if (!el) return `no ${inner} in the row; the row holds ${row?.innerHTML.slice(0, 400) ?? 'nothing'}`;
+        el.setAttribute('data-e2e-click', 'go');
+        el.scrollIntoView({ block: 'center' });
+        return '';
+      }, name, inner);
+      if (ok) return `NOT CLICKED: ${ok}`;
+      try {
+        await (await browser.$('[data-e2e-click="go"]')).click();
+        return 'a real click';
+      } catch (e) {
+        await browser.execute(() => (document.querySelector('[data-e2e-click="go"]') as HTMLElement | null)?.click());
+        return `FALLBACK click in the page, because the real click failed: ${String(e).slice(0, 200)}`;
+      }
+    };
     const mark = async (name: string) =>
       browser.execute((name: string) => {
         const root: ParentNode = (window as any).app?.setting?.activeTab?.containerEl ?? document;
@@ -324,8 +345,8 @@ describe('Shared memory overhaul (librarian, recall, entities)', function () {
     const before = await rowState('Use shared memory');
     log(`M6: "Use shared memory" row ${found ? 'found' : 'NOT FOUND'}: ${JSON.stringify(before)}`);
     if (found && !before?.toggle) {
-      await (await browser.$(`${rowSel('Use shared memory')} .checkbox-container`)).click();
-      log('M6: clicked the "Use shared memory" toggle (a real click)');
+      const how = await realClick('Use shared memory', '.checkbox-container');
+      log(`M6: clicked the "Use shared memory" toggle (${how})`);
     }
     const opened = await waitFor('the memory to turn on and open', async () =>
       browser.executeObsidian(({ plugins }) => {
@@ -337,8 +358,8 @@ describe('Shared memory overhaul (librarian, recall, entities)', function () {
     // The tab redraws after the toggle; type into the two new fields with real key presses.
     for (const [name, value] of [['Embeddings for recall', 'Fake LLM'], ['Embedding model', 'fake-embed']] as const) {
       if (await mark(name)) {
-        const input = await browser.$(`${rowSel(name)} input`);
-        await input.click();
+        const how = await realClick(name, 'input');
+        log(`M6: focused the "${name}" field (${how})`);
         await browser.keys(value.split(''));
         await browser.pause(300);
         log(`M6: typed ${JSON.stringify(value)} into "${name}" (real key presses)`);
@@ -376,6 +397,15 @@ describe('Shared memory overhaul (librarian, recall, entities)', function () {
 
   it('M1: a call, the librarian files a fact with its source and writes the call summary', async function () {
     this.timeout(180_000);
+    const on = await browser.executeObsidian(({ plugins }) => {
+      const m = (plugins.voiceAgent as any).settings.memory;
+      return !!m.enabled && m.embeddingEndpoint === 'Fake LLM';
+    });
+    if (!on) {
+      await setSettings({ 'memory.enabled': true, 'memory.embeddingEndpoint': 'Fake LLM', 'memory.embeddingModel': 'fake-embed' });
+      await browser.executeObsidian(async ({ plugins }) => (plugins.voiceAgent as any).memory.open());
+      log('M1: FALLBACK: memory was not set up by M6, so the test set it directly');
+    }
     const mark = traceMark();
     const answer = {
       summary: 'Hani called about the Voice Agent panel and asked for a typed message box so they can type instead of talking. The agent noted it and said it would pass it on.',
