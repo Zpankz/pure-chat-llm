@@ -641,6 +641,27 @@ describe(`Typed message box (${LABEL})`, () => {
     await browser.execute(() => document.querySelector('[data-e2e-shot="answer"]')?.scrollIntoView({ block: 'start' }));
     await shootBoth('5-answer', '[data-e2e-shot="answer"]');
     await shootBoth('5-panel');
+    // The answer is taller than the conversation's scroll area, so it is also shot in slices,
+    // scrolling the conversation (the nearest scrolling box around the answer) a step at a time.
+    const slices = await browser.execute(() => {
+      const row = document.querySelector('[data-e2e-shot="answer"]') as HTMLElement | null;
+      let box: HTMLElement | null = row?.parentElement ?? null;
+      while (box && !(box.scrollHeight > box.clientHeight + 4 && /auto|scroll/.test(getComputedStyle(box).overflowY))) box = box.parentElement;
+      if (!row || !box) return { n: 0, view: 0, cls: '' };
+      box.setAttribute('data-e2e-shot', 'scroller');
+      const top = row.getBoundingClientRect().top - box.getBoundingClientRect().top + box.scrollTop;
+      (window as any).__e2eSlice = { box, top, h: row.getBoundingClientRect().height, view: box.clientHeight };
+      return { n: Math.ceil(row.getBoundingClientRect().height / Math.max(1, box.clientHeight - 30)), view: box.clientHeight, cls: box.className };
+    });
+    log(`5: the answer is shot in ${slices.n} slice(s) of the scroll area "${slices.cls}" (${slices.view} px high)`);
+    for (let i = 0; i < Math.min(slices.n, 8); i++) {
+      await browser.execute((i: number) => {
+        const s = (window as any).__e2eSlice;
+        s.box.scrollTop = s.top + i * (s.view - 30);
+      }, i);
+      await browser.pause(300);
+      await shootBoth(`5-answer-slice-${i + 1}`, '[data-e2e-shot="scroller"]');
+    }
     const img = r.embeds.find(e => e.src === 'image.png');
     const pdf = r.embeds.find(e => e.src === 'some.pdf');
     const pdfOk = !!pdf && /pdf/.test(pdf.cls + pdf.tags.join(' ')) && pdf.h > 40;
