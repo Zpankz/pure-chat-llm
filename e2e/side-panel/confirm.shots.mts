@@ -343,6 +343,29 @@ async function pdfState() {
   }, ROOT);
 }
 
+const NARROW = 300;
+const WIDE = 700;
+
+/** Sets the right sidebar (holding the panel) to a width; returns the panel's width. */
+async function sizePanel(width: number): Promise<number> {
+  return browser.executeObsidian(
+    ({ app }, view: string, width: number) => {
+      const ws = app.workspace as any;
+      if (width > 480 && !ws.leftSplit?.collapsed) ws.leftSplit?.collapse?.();
+      if (width <= 480 && ws.leftSplit?.collapsed) ws.leftSplit?.expand?.();
+      if (ws.rightSplit?.collapsed) ws.rightSplit.expand?.();
+      ws.rightSplit?.setSize?.(width);
+      const leaf = app.workspace.getLeavesOfType(view)[0];
+      if (!leaf) return 0;
+      app.workspace.revealLeaf(leaf);
+      leaf.view.containerEl.setAttribute('data-e2e-shot', view);
+      return Math.round(leaf.view.containerEl.getBoundingClientRect().width);
+    },
+    VIEW,
+    width,
+  );
+}
+
 describe(`Confirm round (${LABEL})`, () => {
   before(async () => {
     fs.mkdirSync(OUT, { recursive: true });
@@ -438,7 +461,7 @@ describe(`Confirm round (${LABEL})`, () => {
   it('R3: a narrow panel links the PDF; a wide one shows the viewer', async function () {
     this.timeout(240_000);
     await openPanel();
-    await markLeaf();
+    log(`R3: right sidebar set to ${NARROW} px: panel ${await sizePanel(NARROW)} px wide`);
     await setDefaultScript({ id: 'pdf-answer', final: PDF_ANSWER });
     await focusBox();
     await type('Show me the PDF');
@@ -475,15 +498,11 @@ describe(`Confirm round (${LABEL})`, () => {
     });
     log(`R3: clicked the "some.pdf" link (${clickHow}) → PDF views open ${JSON.stringify(opened.pdfLeaves)}; active file ${opened.active}`);
     await browser.saveScreenshot(path.join(OUT, 'r3-pdf-opened-light.png')).catch(e => log(`could not save r3-pdf-opened-light.png: ${String(e).slice(0, 200)}`));
-    // Wide: the panel as a tab in the main area.
-    await closePanel();
-    await browser.executeObsidian(async ({ app }, view: string) => {
-      const leaf = app.workspace.getLeaf('tab');
-      await leaf.setViewState({ type: view, active: true });
-      app.workspace.revealLeaf(leaf);
-      leaf.view.containerEl.setAttribute('data-e2e-shot', view);
-    }, VIEW);
-    await browser.pause(2500);
+    // Wide: the same panel in the right sidebar, widened to 700 px (the left sidebar is collapsed to
+    // make room in the 1024 px window).
+    await openPanel();
+    log(`R3: right sidebar set to ${WIDE} px: panel ${await sizePanel(WIDE)} px wide`);
+    await browser.pause(1500);
     const hasAnswer = /Here is the PDF/.test(await lastAnswer());
     if (!hasAnswer) {
       log('R3: the wide panel did not show the earlier answer, so the same scripted answer is sent again there');
@@ -504,7 +523,7 @@ describe(`Confirm round (${LABEL})`, () => {
     verdict(
       'R3',
       !!narrow.link?.visible && !!narrow.link.icon && /some\.pdf/.test(narrow.link.text) && !narrow.embed?.visible && opened.pdfLeaves.includes('some.pdf') && !!wide.embed?.visible && !!wide.embed.viewer && !wide.link?.visible,
-      `Narrow (panel ${narrow.panelWidth} px): the link ${narrow.link ? `"${narrow.link.text}" is ${narrow.link.visible ? 'shown' : 'HIDDEN'}${narrow.link.icon ? ' with an icon' : ' WITHOUT an icon'}` : 'is MISSING'}, and the viewer is ${narrow.embed ? (narrow.embed.visible ? 'ALSO SHOWN' : 'hidden') : 'missing'}. Clicking the link (${clickHow}) ${opened.pdfLeaves.includes('some.pdf') ? 'opened some.pdf in a PDF view' : `did NOT open the PDF (PDF views ${JSON.stringify(opened.pdfLeaves)})`}. Wide (panel ${wide.panelWidth} px, a tab in the main area): the viewer is ${wide.embed ? (wide.embed.visible ? `shown (${wide.embed.w}x${wide.embed.h} px${wide.embed.viewer ? ', with its page' : ', with NO page'})` : 'HIDDEN') : 'MISSING'}, and the link is ${wide.link ? (wide.link.visible ? 'ALSO SHOWN' : 'hidden') : 'missing'}.`,
+      `Narrow (panel ${narrow.panelWidth} px): the link ${narrow.link ? `"${narrow.link.text}" is ${narrow.link.visible ? 'shown' : 'HIDDEN'}${narrow.link.icon ? ' with an icon' : ' WITHOUT an icon'}` : 'is MISSING'}, and the viewer is ${narrow.embed ? (narrow.embed.visible ? 'ALSO SHOWN' : 'hidden') : 'missing'}. Clicking the link (${clickHow}) ${opened.pdfLeaves.includes('some.pdf') ? 'opened some.pdf in a PDF view' : `did NOT open the PDF (PDF views ${JSON.stringify(opened.pdfLeaves)})`}. Wide (panel ${wide.panelWidth} px, the right sidebar widened): the viewer is ${wide.embed ? (wide.embed.visible ? `shown (${wide.embed.w}x${wide.embed.h} px${wide.embed.viewer ? ', with its page' : ', with NO page'})` : 'HIDDEN') : 'MISSING'}, and the link is ${wide.link ? (wide.link.visible ? 'ALSO SHOWN' : 'hidden') : 'missing'}.`,
       { narrow, opened, wide, clickHow },
     );
   });
