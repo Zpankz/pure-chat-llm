@@ -1,5 +1,6 @@
 import { normalizePath, TFile } from 'obsidian';
 import type PureChatLLM from '../main';
+import { diagnostics } from '../diagnostics/DiagnosticsLog';
 import type { SubAgentTask } from './types';
 
 /**
@@ -99,6 +100,8 @@ export interface CallRecord {
   taskIds: string[];
   handOffs: HandOff[];
   timings: TimingEntry[];
+  /** The diagnostics log the call was recorded in, when diagnostics are on. */
+  diagnosticsLog?: string;
   /** `topics`: one note per topic plus an index; `transcript`: one transcript note. */
   structure: 'topics' | 'transcript';
   topics: CallTopic[];
@@ -229,6 +232,8 @@ export class CallRecorder {
       topics: [],
       topicSwitches: [],
     };
+    diagnostics.setCall({ id: stamp, note: this.current.callPath });
+    this.current.diagnosticsLog = diagnostics.currentPath() ?? undefined;
     if (this.current.structure === 'topics') {
       const first: CallTopic = {
         id: 1,
@@ -255,6 +260,7 @@ export class CallRecorder {
     this.live = false;
     if (!record) return;
     record.endedAt = Date.now();
+    diagnostics.setCall(null);
     await this.saveCall();
     await this.saveOrchestrator();
     // The transcript is final; later work only updates the orchestrator and task notes.
@@ -474,6 +480,7 @@ export class CallRecorder {
    * @param fromUser - For `input`: relayed from the voice call.
    */
   logOrchestrator(kind: OrchestratorEntry['kind'], text: string, fromUser = false): void {
+    diagnostics.record('orchestrator', kind, { text, ...(fromUser ? { fromUser } : {}) });
     const record = this.current;
     if (!record?.orchestratorPath) return;
     const clipped =
@@ -568,6 +575,7 @@ export class CallRecorder {
       ...(record.endedAt ? [`ended: ${new Date(record.endedAt).toISOString()}`] : []),
       `provider: ${yaml(record.provider)}`,
       `voice_role: ${record.voiceRole}`,
+      ...(record.diagnosticsLog ? [`diagnostics: ${yaml(record.diagnosticsLog)}`] : []),
       ...(orch ? [`orchestrator: ${yaml(linkTo(orch))}`] : []),
       ...(tasks.some(t => t.notePath)
         ? [
@@ -650,6 +658,7 @@ export class CallRecorder {
       ...(record.endedAt ? [`ended: ${new Date(record.endedAt).toISOString()}`] : []),
       `provider: ${yaml(record.provider)}`,
       `voice_role: ${record.voiceRole}`,
+      ...(record.diagnosticsLog ? [`diagnostics: ${yaml(record.diagnosticsLog)}`] : []),
       ...(orch ? [`orchestrator: ${yaml(linkTo(orch))}`] : []),
       'topics:',
       ...record.topics.map(t => `  - ${yaml(linkTo(t.path))}`),

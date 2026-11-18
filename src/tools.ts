@@ -6,7 +6,8 @@ import type {
   ToolParameter,
   ToolParameters,
 } from './types';
-import { allowedIn, layerForRole, toolError } from './tools/toolContract';
+import { diagnostics } from './diagnostics/DiagnosticsLog';
+import { allowedIn, layerForRole, toolError, toolErrorType } from './tools/toolContract';
 
 // Abstract base class for all tools
 /**
@@ -285,6 +286,34 @@ export class ToolRegistry {
    * @param args
    */
   async executeTool(name: string, args: Record<string, unknown>): Promise<string> {
+    if (!diagnostics.enabled) return this.runTool(name, args);
+    const started = Date.now();
+    const id = diagnostics.nextId('t');
+    diagnostics.record('tool', 'start', { id, name, role: this.chat.role, args });
+    const result = await this.runTool(name, args).catch((error: unknown) => {
+      diagnostics.record('tool', 'end', {
+        id,
+        name,
+        role: this.chat.role,
+        ok: false,
+        error,
+        ms: Date.now() - started,
+      });
+      throw error;
+    });
+    diagnostics.record('tool', 'end', {
+      id,
+      name,
+      role: this.chat.role,
+      ok: !toolErrorType(result),
+      errorType: toolErrorType(result),
+      result,
+      ms: Date.now() - started,
+    });
+    return result;
+  }
+
+  private async runTool(name: string, args: Record<string, unknown>): Promise<string> {
     const tool = this.getTool(name);
     if (!tool) {
       return toolError('UnknownTool', `There is no tool named "${name}".`);

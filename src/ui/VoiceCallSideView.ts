@@ -1,4 +1,5 @@
 import { ItemView, WorkspaceLeaf, Setting, Notice, TFile } from 'obsidian';
+import { diagnostics } from '../diagnostics/DiagnosticsLog';
 import { VoiceCall } from '../realtime/VoiceCall';
 import {
   GeminiLiveProvider,
@@ -685,6 +686,13 @@ export class VoiceCallSideView extends ItemView {
    * @param event - Normalised voice event.
    */
   private onVoiceEvent(event: VoiceEvent): void {
+    if (event.type === 'transcript' && event.final && event.text.trim()) {
+      diagnostics.record('voice', 'transcript', { role: event.role, text: event.text });
+    } else if (event.type === 'status') {
+      diagnostics.record('voice', 'status', { text: event.text });
+    } else if (event.type === 'tool' && event.error) {
+      diagnostics.record('voice', 'tool-error', { name: event.name, error: event.error });
+    }
     if (event.type === 'transcript') {
       const last = this.transcript[this.transcript.length - 1];
       if (last && last.role === event.role && !last.final) {

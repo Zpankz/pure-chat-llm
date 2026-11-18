@@ -3,6 +3,7 @@ import type { SubAgentTask } from '../agents/types';
 import { Chatsysprompt, EmptyApiKey, Selectionsysprompt } from 'src/assets/constants';
 import PureChatLLM, { StreamNotice } from '../main';
 import { ToolRegistry } from '../tools';
+import { diagnostics, requestDetail } from '../diagnostics/DiagnosticsLog';
 import { ActiveContextTool } from '../tools/ActiveContext';
 import { BacklinksTool } from '../tools/Backlinks';
 import { GraphCliTool, TraverseGraphTool, VaultOntologyTool } from '../tools/TraverseGraph';
@@ -653,12 +654,39 @@ export class PureChatLLMChat {
     options: ChatRequestOptions,
     streamcallback?: (textFragment: StreamDelta) => Promise<boolean>,
   ): Promise<ChatResponse> {
-    const response = await this.llmService.fetchResponse(
-      this.endpoint,
-      options,
-      status => this.plugin.status(status),
-      streamcallback,
-    );
+    const id = diagnostics.enabled ? diagnostics.nextId('m') : '';
+    if (id) {
+      diagnostics.record('model', 'request', {
+        id,
+        layer: 'chat',
+        role: this.role,
+        endpoint: this.endpoint.name,
+        ...requestDetail(options),
+      });
+    }
+    const started = Date.now();
+    const response = await this.llmService
+      .fetchResponse(this.endpoint, options, status => this.plugin.status(status), streamcallback)
+      .catch((error: unknown) => {
+        if (id) {
+          diagnostics.record('model', 'error', {
+            id,
+            layer: 'chat',
+            error,
+            ms: Date.now() - started,
+          });
+        }
+        throw error;
+      });
+    if (id) {
+      diagnostics.record('model', 'response', {
+        id,
+        layer: 'chat',
+        model: options.model,
+        response,
+        ms: Date.now() - started,
+      });
+    }
 
     if (response.tool_calls) {
       if (await this.handleToolCalls(response.tool_calls, options, streamcallback, response)) {

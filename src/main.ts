@@ -12,6 +12,7 @@ import {
   Modal,
   normalizePath,
   Notice,
+  Platform,
   Plugin,
   Setting,
   TFile,
@@ -19,6 +20,7 @@ import {
 } from 'obsidian';
 
 import { DEFAULT_SETTINGS, EmptyApiKey } from './assets/constants';
+import { DEFAULT_DIAGNOSTICS, diagnostics } from './diagnostics/DiagnosticsLog';
 import { mergeVoiceSettings } from './realtime/voiceCatalog';
 import { DEFAULT_MCP_SERVER, McpManager } from './mcp/McpManager';
 import { SubAgentManager } from './agents/SubAgentManager';
@@ -138,6 +140,21 @@ export default class PureChatLLM extends Plugin {
 
     this.pureChatStatusElement = this.addStatusBarItem();
     void this.status('Loading...');
+    // The diagnostics log starts first, so it sees the rest of startup.
+    diagnostics.configure({
+      settings: () => this.settings.diagnostics,
+      store: this.app.vault.adapter,
+      secretsFrom: () => this.settings,
+      about: () => ({
+        version: this.manifest.version,
+        id: this.manifest.id,
+        mobile: Platform.isMobile,
+        voiceRole: this.settings.orchestrator.voiceRole,
+        engine: this.settings.orchestrator.engine,
+        voiceProvider: this.settings.voice.provider,
+      }),
+    });
+    await diagnostics.start();
     this.console = new BrowserConsole(this.settings.debug, 'PureChatLLM');
     this.console.log('settings loaded', this.settings);
     //runTest(this.settings.endpoints[0].apiKey); // Run the test function to check if the plugin is working
@@ -884,6 +901,7 @@ export default class PureChatLLM extends Plugin {
         layers: mergeLayers(loadedData.orchestrator),
       },
       graph: { ...DEFAULT_SETTINGS.graph, ...loadedData.graph },
+      diagnostics: { ...DEFAULT_DIAGNOSTICS, ...loadedData.diagnostics },
     };
 
     const toSentenceCase = (str: string) =>
@@ -964,12 +982,15 @@ export default class PureChatLLM extends Plugin {
         .filter(([key, value]) => key && value),
     ) as { [key: string]: string };
     await this.saveData(withoutSecrets(this.app, this.settings));
+    // A changed key is redacted from the log from now on.
+    diagnostics.refreshSecrets();
   }
 
   /**
    *
    */
   onunload() {
+    void diagnostics.stop();
     this.mcp?.dispose();
     this.classicOrchestrator?.dispose();
     this.calls?.dispose();

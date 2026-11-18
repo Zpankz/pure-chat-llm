@@ -10,6 +10,7 @@ import PureChatLLM, {
 } from '../main';
 import { PURE_CHAT_LLM_ICON_NAME, PureChatLLMSettings, TOOL_CLASSIFICATIONS } from '../types';
 import { BrowserConsole } from '../utils/BrowserConsole';
+import { DEFAULT_DIAGNOSTICS, diagnostics } from '../diagnostics/DiagnosticsLog';
 import { AskForAPI, EditModalProviders } from './Modals';
 import {
   renderMcpSettings,
@@ -67,6 +68,124 @@ export class PureChatLLMSettingTab extends PluginSettingTab {
     const { settings } = this.plugin;
     // eslint-disable-next-line @typescript-eslint/no-base-to-string
     return settings[key] !== DEFAULT_SETTINGS[key] ? String(settings[key] ?? '') : '';
+  }
+
+  /**
+   * The diagnostics log: console output, conversations and tool calls written to the vault, with
+   * keys and tokens removed, so a session can be audited afterwards.
+   * @param containerEl - Settings container.
+   */
+  private diagnosticsSection(containerEl: HTMLElement): void {
+    const d = this.plugin.settings.diagnostics;
+    const save = async (restart = false) => {
+      await this.plugin.saveSettings();
+      if (restart) await diagnostics.start();
+    };
+    const number = (value: string, fallback: number, min: number) => {
+      const n = Number(value);
+      return Number.isFinite(n) && n >= min ? n : fallback;
+    };
+    const where = diagnostics.currentPath();
+    new SettingGroup(containerEl)
+      .setHeading('Diagnostics log')
+      .addSetting(
+        setting =>
+          void setting
+            .setName('Record diagnostics')
+            .setDesc(
+              `Writes console output, every conversation with a model, every tool call with its arguments and result, and voice call transcripts to the vault as one JSON line per event, with timings. API keys, tokens and auth headers are always removed. ${
+                where ? `Writing to ${where}.` : 'Off.'
+              }`,
+            )
+            .addToggle(toggle =>
+              toggle.setValue(d.enabled).onChange(async value => {
+                d.enabled = value;
+                await save(true);
+                this.display();
+              }),
+            ),
+      )
+      .addSetting(
+        setting =>
+          void setting
+            .setName('Log folder')
+            .setDesc('One sub-folder per day, one file per session.')
+            .addText(text =>
+              text
+                .setPlaceholder(DEFAULT_DIAGNOSTICS.folder)
+                .setValue(d.folder)
+                .onChange(async value => {
+                  d.folder = value.trim() || DEFAULT_DIAGNOSTICS.folder;
+                  await save();
+                }),
+            ),
+      )
+      .addSetting(
+        setting =>
+          void setting
+            .setName('Keep logs for (days)')
+            .setDesc('Older day folders are removed when the plugin starts. 0 keeps them all.')
+            .addText(text =>
+              text.setValue(String(d.keepDays)).onChange(async value => {
+                d.keepDays = Math.floor(number(value, d.keepDays, 0));
+                await save();
+              }),
+            ),
+      )
+      .addSetting(
+        setting =>
+          void setting
+            .setName('Largest log file in megabytes')
+            .setDesc('A session continues in a new part once its file reaches this size.')
+            .addText(text =>
+              text.setValue(String(d.maxFileMB)).onChange(async value => {
+                d.maxFileMB = number(value, d.maxFileMB, 0.1);
+                await save();
+              }),
+            ),
+      )
+      .addSetting(
+        setting =>
+          void setting
+            .setName('Longest text per field (characters)')
+            .setDesc(
+              'Longer prompts, tool results and console output are cut, with a note of the length.',
+            )
+            .addText(text =>
+              text.setValue(String(d.maxFieldChars)).onChange(async value => {
+                d.maxFieldChars = Math.floor(number(value, d.maxFieldChars, 500));
+                await save();
+              }),
+            ),
+      )
+      .addSetting(
+        setting =>
+          void setting
+            .setName('Whole prompts')
+            .setDesc(
+              'Writes every model request in full, with its tool list. Off: each instruction set is written once, then only what is new in each request.',
+            )
+            .addToggle(toggle =>
+              toggle.setValue(d.fullPrompts).onChange(async value => {
+                d.fullPrompts = value;
+                await save();
+              }),
+            ),
+      )
+      .addSetting(
+        setting =>
+          void setting
+            .setName('App warnings and errors')
+            .setDesc(
+              'Also records warnings, errors and uncaught errors from the rest of the app, not only this plugin.',
+            )
+            .addToggle(toggle =>
+              toggle.setValue(d.appConsole).onChange(async value => {
+                d.appConsole = value;
+                await save(true);
+              }),
+            ),
+      );
   }
 
   /**
@@ -578,6 +697,8 @@ export class PureChatLLMSettingTab extends PluginSettingTab {
                 }),
             ),
       );
+
+    this.diagnosticsSection(containerEl);
 
     new SettingGroup(containerEl)
       .setHeading('Utilities & maintenance')

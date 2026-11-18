@@ -4,6 +4,7 @@ import { callResponses } from '../core/ResponsesClient';
 import type PureChatLLM from '../main';
 import { callGemini } from '../core/GeminiClient';
 import { withDeadline } from '../core/requestControl';
+import { diagnostics, requestDetail } from '../diagnostics/DiagnosticsLog';
 import { CHATGPT_SIGN_IN, GOOGLE_SIGN_IN } from '../types';
 import type {
   ChatRequestOptions,
@@ -198,7 +199,18 @@ export async function layerFetch(
   const problem = layerProblem(plugin, resolved);
   if (problem) throw new Error(problem);
   const label = control.label ?? `The ${resolved.layer} request`;
-  return withDeadline(signal => sendLayer(plugin, resolved, options, signal), {
+  const id = diagnostics.enabled ? diagnostics.nextId('m') : '';
+  if (id) {
+    diagnostics.record('model', 'request', {
+      id,
+      layer: resolved.layer,
+      label: control.label,
+      ...requestDetail({ ...options, model: resolved.model }),
+      effort: resolved.effort,
+    });
+  }
+  const started = Date.now();
+  const sent = withDeadline(signal => sendLayer(plugin, resolved, options, signal), {
     timeoutMs: control.timeoutMs ?? LAYER_TIMEOUT_MS[resolved.layer] ?? 120_000,
     signal: control.signal,
     retries: control.retries,
@@ -206,6 +218,29 @@ export async function layerFetch(
     onTiming: (ms, outcome) =>
       logTiming(plugin, `${resolved.layer} request (${resolved.model})`, ms, outcome),
   });
+  if (!id) return sent;
+  return sent.then(
+    response => {
+      diagnostics.record('model', 'response', {
+        id,
+        layer: resolved.layer,
+        model: resolved.model,
+        response,
+        ms: Date.now() - started,
+      });
+      return response;
+    },
+    (error: unknown) => {
+      diagnostics.record('model', 'error', {
+        id,
+        layer: resolved.layer,
+        model: resolved.model,
+        error,
+        ms: Date.now() - started,
+      });
+      throw error;
+    },
+  );
 }
 
 /**
