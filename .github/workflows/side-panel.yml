@@ -23,9 +23,10 @@ jobs:
       matrix:
         include:
           # Earlier runs shot before (b4229f1, beta.4) and after (33684ab, beta.5).
-          - label: after-beta6
-            ref: 4261b94afa95303cab5676a8ba30dbe0996fcd9f
-            no_test_fix: '1'
+          # Earlier: after-beta6 (4261b94) with side-panel.shots.mts.
+          - label: orchestrator-69da42b
+            ref: 69da42b4da7931b360aed8c0aa1f61dc0fd582f0
+            spec: e2e/side-panel/orchestrator.shots.mts
     steps:
       - uses: actions/checkout@v4
 
@@ -64,7 +65,7 @@ jobs:
       - name: Take the screenshots
         continue-on-error: true
         env:
-          E2E_SPEC_FILE: e2e/side-panel/side-panel.shots.mts
+          E2E_SPEC_FILE: ${{ matrix.spec || 'e2e/side-panel/side-panel.shots.mts' }}
           SHOT_LABEL: ${{ matrix.label }}
           SHOT_NO_TEST_FIX: ${{ matrix.no_test_fix || '0' }}
         run: xvfb-run -a --server-args="-screen 0 1920x1080x24" npx wdio run ./e2e/wdio.conf.mts
@@ -74,6 +75,9 @@ jobs:
         run: |
           dir="e2e/.out/side-panel/${{ matrix.label }}"
           cat "$dir/notes.txt" || true
+          if [ -f "$dir/fake-traffic.json" ]; then
+            echo "=====TRAFFIC-BEGIN"; base64 -w 8000 "$dir/fake-traffic.json"; echo "=====TRAFFIC-END"
+          fi
           for f in "$dir"/*.png; do
             [ -f "$f" ] || continue
             echo "=====SHOT-BEGIN ${{ matrix.label }}/$(basename "$f") $(wc -c < "$f") $(sha256sum "$f" | cut -c1-64)"
