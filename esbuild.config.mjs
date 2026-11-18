@@ -2,6 +2,8 @@ import esbuild from 'esbuild';
 import process from 'process';
 import builtins from 'builtin-modules';
 import fs from 'fs';
+import { createHash } from 'crypto';
+import { gzipSync } from 'zlib';
 
 const banner = `
 /**
@@ -9,9 +11,48 @@ const banner = `
  * if you want to view the source, please visit the github repository of this plugin
  * plugin: pure-chat-llm
  * version: ${process.env.npm_package_version}
+ *
+ * Includes relate (https://github.com/relatedb/relate), @relate/relate-wasm 1.1.0, an embedded
+ * openCypher graph database, licensed under the Apache License 2.0
+ * (https://www.apache.org/licenses/LICENSE-2.0). See NOTICE in the plugin's repository.
  */`;
 const prod = process.argv[2] === 'production';
 console.log(`Building for ${prod ? 'production' : 'development'}...`);
+
+// The djs WebAssembly module, built from source by .github/workflows/djs-wasm.yml, is embedded
+// in main.js when DJS_WASM_FILE names it (BRAT installs only main.js, manifest.json and
+// styles.css). Its sha256 is computed here and checked again before the plugin compiles it.
+// Without DJS_WASM_FILE nothing is embedded and code mode uses the Web Worker fallback.
+const djsFile = process.env.DJS_WASM_FILE?.trim();
+let djs = { base64: '', sha256: '', commit: '' };
+if (djsFile) {
+  const bytes = fs.readFileSync(djsFile);
+  if (bytes.subarray(0, 4).toString('hex') !== '0061736d') {
+    throw new Error(`${djsFile} is not a WebAssembly module.`);
+  }
+  const sha256 = createHash('sha256').update(bytes).digest('hex');
+  const expected = process.env.DJS_WASM_SHA256?.trim().toLowerCase();
+  if (expected && expected !== sha256) {
+    throw new Error(`${djsFile} has sha256 ${sha256}, not the expected ${expected}.`);
+  }
+  djs = { base64: bytes.toString('base64'), sha256, commit: process.env.DJS_COMMIT?.trim() ?? '' };
+  console.log(`Embedding djs.wasm: ${bytes.length} bytes, sha256 ${sha256}`);
+}
+
+// The relate graph database (Apache-2.0, @relate/relate-wasm), the agents' shared memory, is
+// embedded gzipped (about 2.5 MB instead of 7 MB) so it works offline and on mobile; the plugin
+// checks this sha256 of the uncompressed module before compiling it. The version is pinned in
+// package.json, and a different module fails the build.
+const RELATE_WASM_SHA256 = '8c3ffba15745a685ab4a13cb15f61769a803534dcc02834ed374e3d8a5e7a970';
+const relateBytes = fs.readFileSync('node_modules/@relate/relate-wasm/relate_bg.wasm');
+const relateSha = createHash('sha256').update(relateBytes).digest('hex');
+if (relateSha !== RELATE_WASM_SHA256) {
+  throw new Error(`relate_bg.wasm has sha256 ${relateSha}, not the pinned ${RELATE_WASM_SHA256}.`);
+}
+const relate = {
+  base64: gzipSync(relateBytes, { level: 9 }).toString('base64'),
+  sha256: relateSha,
+};
 
 const context = await esbuild.context({
   banner: {
@@ -37,12 +78,19 @@ const context = await esbuild.context({
     ...builtins,
   ],
   format: 'cjs',
-  target: 'es2018',
+  target: 'es2020',
   logLevel: 'info',
   sourcemap: prod ? false : 'inline',
   treeShaking: true,
   outfile: 'main.js',
   minify: prod,
+  define: {
+    __DJS_WASM_BASE64__: JSON.stringify(djs.base64),
+    __DJS_WASM_SHA256__: JSON.stringify(djs.sha256),
+    __DJS_WASM_COMMIT__: JSON.stringify(djs.commit),
+    __RELATE_WASM_GZ_BASE64__: JSON.stringify(relate.base64),
+    __RELATE_WASM_SHA256__: JSON.stringify(relate.sha256),
+  },
 });
 
 if (prod) {

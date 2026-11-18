@@ -1,5 +1,5 @@
 import { App, Notice, PluginSettingTab, SettingGroup } from 'obsidian';
-import { DEFAULT_SETTINGS, PureChatLLMversion } from 'src/assets/constants';
+import { DEFAULT_SETTINGS, EmptyApiKey, PureChatLLMversion } from 'src/assets/constants';
 import { PureChatLLMChat } from '../core/Chat';
 import { ImportChatGPT } from '../core/ImportChatGPT';
 import PureChatLLM, {
@@ -8,9 +8,19 @@ import PureChatLLM, {
   getObjectFromMarkdown,
   SelectionPromptEditor,
 } from '../main';
-import { PURE_CHAT_LLM_ICON_NAME, PureChatLLMSettings } from '../types';
+import { PURE_CHAT_LLM_ICON_NAME, PureChatLLMSettings, TOOL_CLASSIFICATIONS } from '../types';
 import { BrowserConsole } from '../utils/BrowserConsole';
+import { DEFAULT_DIAGNOSTICS, diagnostics } from '../diagnostics/DiagnosticsLog';
+import { DEFAULT_MEMORY } from '../memory/MemoryService';
+import { relateAvailable } from '../memory/relateEngine';
 import { AskForAPI, EditModalProviders } from './Modals';
+import {
+  renderMcpSettings,
+  renderGraphSettings,
+  renderOrchestratorSettings,
+  renderSkillsAndCodeMode,
+  renderVoiceSettings,
+} from './AgentSettings';
 
 /**
  * Represents the settings tab for the PureChatLLM plugin in Obsidian.
@@ -60,6 +70,265 @@ export class PureChatLLMSettingTab extends PluginSettingTab {
     const { settings } = this.plugin;
     // eslint-disable-next-line @typescript-eslint/no-base-to-string
     return settings[key] !== DEFAULT_SETTINGS[key] ? String(settings[key] ?? '') : '';
+  }
+
+  /**
+   * The shared memory: one relate graph that every agent reads and writes, saved in the vault.
+   * @param containerEl - Settings container.
+   */
+  private memorySection(containerEl: HTMLElement): void {
+    const m = this.plugin.settings.memory;
+    const service = this.plugin.memory;
+    const status = !relateAvailable()
+      ? 'This build does not include the graph engine.'
+      : !m.enabled
+        ? 'Off.'
+        : (service?.problem ?? `Saved in ${service?.path ?? m.folder}.`);
+    new SettingGroup(containerEl)
+      .setHeading('Shared memory')
+      .addSetting(
+        setting =>
+          void setting
+            .setName('Use shared memory')
+            .setDesc(
+              `One graph database (relate, openCypher) that the voice agent, the orchestrator, workers and agent chats all read and write: preferences, instructions, decisions and facts, which calls and tasks ran, and shared state. Every agent starts with a short brief from it, so new sessions remember earlier ones. Agents change it only through the memory tools; their own queries are read-only. ${status}`,
+            )
+            .addToggle(toggle =>
+              toggle.setValue(m.enabled).onChange(async value => {
+                m.enabled = value;
+                await this.plugin.saveSettings();
+                if (value) {
+                  try {
+                    await service.open();
+                  } catch (error) {
+                    new Notice(`Shared memory could not open: ${(error as Error).message}`);
+                  }
+                } else {
+                  await service.reset();
+                }
+                this.display();
+              }),
+            ),
+      )
+      .addSetting(
+        setting =>
+          void setting
+            .setName('Memory folder')
+            .setDesc(
+              'Holds memory.json, which sync carries to your other devices; copies from two devices are merged. The file is never cleared or replaced if it cannot be read. A new folder takes effect when you leave the field; the memory is copied there and the old file is left in place.',
+            )
+            .addText(text => {
+              text.setPlaceholder(DEFAULT_MEMORY.folder).setValue(m.folder);
+              // Applied when the field is left or Enter is pressed, never on each keystroke:
+              // every change of folder saves and moves the memory file.
+              text.inputEl.addEventListener('change', () => {
+                const folder = text.getValue().trim() || DEFAULT_MEMORY.folder;
+                if (folder === m.folder) return;
+                void service
+                  .changeFolder(async () => {
+                    m.folder = folder;
+                    await this.plugin.saveSettings();
+                  })
+                  .then(() => this.display())
+                  .catch(
+                    error =>
+                      new Notice(`Shared memory could not move: ${(error as Error).message}`),
+                  );
+              });
+            }),
+      )
+      .addSetting(
+        setting =>
+          void setting
+            .setName('Brief length (characters)')
+            .setDesc(
+              'Longest memory brief put in each agent’s instructions: standing preferences, pinned and recent facts, unfinished tasks, the last sessions and shared state. 0 leaves it out (the tools still work).',
+            )
+            .addText(text =>
+              text.setValue(String(m.briefChars)).onChange(async value => {
+                const n = Math.floor(Number(value));
+                m.briefChars = Number.isFinite(n) && n >= 0 ? n : m.briefChars;
+                await this.plugin.saveSettings();
+              }),
+            ),
+      )
+      .addSetting(
+        setting =>
+          void setting
+            .setName('Record calls and tasks')
+            .setDesc(
+              'Adds each voice call, app session and background task to the graph by itself, with its outcome, so agents can see what ran before.',
+            )
+            .addToggle(toggle =>
+              toggle.setValue(m.autoRecord).onChange(async value => {
+                m.autoRecord = value;
+                await this.plugin.saveSettings();
+              }),
+            ),
+      )
+      .addSetting(
+        setting =>
+          void setting
+            .setName('Learn from calls and tasks')
+            .setDesc(
+              'After each call and background task, and every few turns of a long call, the worker model reads what was said or found and saves new facts, confirms ones it already knew and closes outdated ones, each linked to where it came from. It also writes a short summary of each call.',
+            )
+            .addToggle(toggle =>
+              toggle.setValue(m.consolidate).onChange(async value => {
+                m.consolidate = value;
+                await this.plugin.saveSettings();
+              }),
+            ),
+      )
+      .addSetting(
+        setting =>
+          void setting
+            .setName('Embeddings for recall')
+            .setDesc(
+              'Lets recall find facts by meaning, not only by shared words. Leave empty to use the first endpoint with a key that offers embeddings, type an endpoint name to choose one, or type off for word search only.',
+            )
+            .addText(text =>
+              text
+                .setPlaceholder('Automatic')
+                .setValue(m.embeddingEndpoint)
+                .onChange(async value => {
+                  m.embeddingEndpoint = value.trim();
+                  await this.plugin.saveSettings();
+                }),
+            ),
+      )
+      .addSetting(
+        setting =>
+          void setting
+            .setName('Embedding model')
+            .setDesc('Only needed for an endpoint without a known embedding model.')
+            .addText(text =>
+              text
+                .setPlaceholder('Default for the endpoint')
+                .setValue(m.embeddingModel)
+                .onChange(async value => {
+                  m.embeddingModel = value.trim();
+                  await this.plugin.saveSettings();
+                }),
+            ),
+      );
+  }
+
+  /**
+   * The diagnostics log: console output, conversations and tool calls written to the vault, with
+   * keys and tokens removed, so a session can be audited afterwards.
+   * @param containerEl - Settings container.
+   */
+  private diagnosticsSection(containerEl: HTMLElement): void {
+    const d = this.plugin.settings.diagnostics;
+    const save = async (restart = false) => {
+      await this.plugin.saveSettings();
+      if (restart) await diagnostics.start();
+    };
+    const number = (value: string, fallback: number, min: number) => {
+      const n = Number(value);
+      return Number.isFinite(n) && n >= min ? n : fallback;
+    };
+    const where = diagnostics.currentPath();
+    new SettingGroup(containerEl)
+      .setHeading('Diagnostics log')
+      .addSetting(
+        setting =>
+          void setting
+            .setName('Record diagnostics')
+            .setDesc(
+              `Writes console output, every conversation with a model, every tool call with its arguments and result, and voice call transcripts to the vault as one JSON line per event, with timings. API keys, tokens and auth headers are always removed. ${
+                where ? `Writing to ${where}.` : 'Off.'
+              }`,
+            )
+            .addToggle(toggle =>
+              toggle.setValue(d.enabled).onChange(async value => {
+                d.enabled = value;
+                await save(true);
+                this.display();
+              }),
+            ),
+      )
+      .addSetting(
+        setting =>
+          void setting
+            .setName('Log folder')
+            .setDesc('One sub-folder per day, one file per session.')
+            .addText(text => {
+              text.setPlaceholder(DEFAULT_DIAGNOSTICS.folder).setValue(d.folder);
+              // Applied when the field is left, so typing doesn't create a folder per letter (C8).
+              text.inputEl.addEventListener('change', () => {
+                d.folder = text.getValue().trim() || DEFAULT_DIAGNOSTICS.folder;
+                void save();
+              });
+            }),
+      )
+      .addSetting(
+        setting =>
+          void setting
+            .setName('Keep logs for (days)')
+            .setDesc('Older day folders are removed when the plugin starts. 0 keeps them all.')
+            .addText(text =>
+              text.setValue(String(d.keepDays)).onChange(async value => {
+                d.keepDays = Math.floor(number(value, d.keepDays, 0));
+                await save();
+              }),
+            ),
+      )
+      .addSetting(
+        setting =>
+          void setting
+            .setName('Largest log file in megabytes')
+            .setDesc('A session continues in a new part once its file reaches this size.')
+            .addText(text =>
+              text.setValue(String(d.maxFileMB)).onChange(async value => {
+                d.maxFileMB = number(value, d.maxFileMB, 0.1);
+                await save();
+              }),
+            ),
+      )
+      .addSetting(
+        setting =>
+          void setting
+            .setName('Longest text per field (characters)')
+            .setDesc(
+              'Longer prompts, tool results and console output are cut, with a note of the length.',
+            )
+            .addText(text =>
+              text.setValue(String(d.maxFieldChars)).onChange(async value => {
+                d.maxFieldChars = Math.floor(number(value, d.maxFieldChars, 500));
+                await save();
+              }),
+            ),
+      )
+      .addSetting(
+        setting =>
+          void setting
+            .setName('Whole prompts')
+            .setDesc(
+              'Writes every model request in full, with its tool list. Off: each instruction set is written once, then only what is new in each request.',
+            )
+            .addToggle(toggle =>
+              toggle.setValue(d.fullPrompts).onChange(async value => {
+                d.fullPrompts = value;
+                await save();
+              }),
+            ),
+      )
+      .addSetting(
+        setting =>
+          void setting
+            .setName('App warnings and errors')
+            .setDesc(
+              'Also records warnings, errors and uncaught errors from the rest of the app, not only this plugin.',
+            )
+            .addToggle(toggle =>
+              toggle.setValue(d.appConsole).onChange(async value => {
+                d.appConsole = value;
+                await save(true);
+              }),
+            ),
+      );
   }
 
   /**
@@ -188,7 +457,7 @@ export class PureChatLLMSettingTab extends PluginSettingTab {
           void setting
             .setName('Agent mode')
             .setDesc(
-              'Enable this to allow the LLM to use tools (e.g., creating notes, searching the vault).',
+              'Lets note chats use tools, such as creating notes or searching the vault. Voice calls, the orchestrator and background workers keep their tools; limit them with the tool groups and write rules below.',
             )
             .addToggle(toggle =>
               toggle
@@ -200,9 +469,11 @@ export class PureChatLLMSettingTab extends PluginSettingTab {
         setting =>
           void setting
             .setName('Enabled tool classifications')
-            .setDesc('Control which categories of tools are available to the agent.')
+            .setDesc(
+              'Control which categories of tools are available to the agent. The agent pipeline itself (relays, background tasks, memory, skills and code mode) stays on whatever you pick here.',
+            )
             .then(() => {
-              (['Vault', 'UI', 'System', 'AI'] as const).forEach(classification => {
+              TOOL_CLASSIFICATIONS.forEach(classification => {
                 setting.addButton(btn => {
                   if (settings.enabledToolClassifications[classification] ?? true) btn.setCta();
                   return btn.setButtonText(classification).onClick(async () => {
@@ -233,6 +504,28 @@ export class PureChatLLMSettingTab extends PluginSettingTab {
       .addSetting(
         setting =>
           void setting
+            .setName('Commands the agent may run')
+            .setDesc(
+              'One command id per line. The agent can run only these, and never commands that delete, close, reset or quit. Leave empty to turn the tool off.',
+            )
+            .addTextArea(text =>
+              text
+                .setPlaceholder('One command id per line')
+                .setValue((settings.commandAllowList ?? []).join('\n'))
+                .onChange(async value =>
+                  this.sett(
+                    'commandAllowList',
+                    value
+                      .split(/[\n,]/)
+                      .map(v => v.trim())
+                      .filter(Boolean),
+                  ),
+                ),
+            ),
+      )
+      .addSetting(
+        setting =>
+          void setting
             .setName('Realtime system prompt file')
             .setDesc(
               'Path to a file containing the system prompt for voice calls. If empty or not found, defaults to built-in prompts.',
@@ -243,7 +536,10 @@ export class PureChatLLMSettingTab extends PluginSettingTab {
                 .setValue(this.ifdefault('realtimeSystemPromptFile'))
                 .onChange(
                   async value =>
-                    await this.sett('realtimeSystemPromptFile', value || DEFAULT_SETTINGS.realtimeSystemPromptFile),
+                    await this.sett(
+                      'realtimeSystemPromptFile',
+                      value || DEFAULT_SETTINGS.realtimeSystemPromptFile,
+                    ),
                 )
                 .inputEl.addEventListener('keydown', (e: KeyboardEvent) => {
                   if (e.key === '/' || e.key === '[') {
@@ -256,6 +552,13 @@ export class PureChatLLMSettingTab extends PluginSettingTab {
                 }),
             ),
       );
+    const redraw = () => this.display();
+    renderSkillsAndCodeMode(containerEl, this.plugin, redraw);
+    renderMcpSettings(containerEl, this.plugin, redraw);
+    renderVoiceSettings(containerEl, this.plugin, redraw);
+    renderOrchestratorSettings(containerEl, this.plugin, redraw);
+    renderGraphSettings(containerEl, this.plugin);
+
     new SettingGroup(containerEl)
       .setHeading('Prompts & templates')
       .addSetting(
@@ -540,6 +843,9 @@ export class PureChatLLMSettingTab extends PluginSettingTab {
             ),
       );
 
+    this.memorySection(containerEl);
+    this.diagnosticsSection(containerEl);
+
     new SettingGroup(containerEl)
       .setHeading('Utilities & maintenance')
       .addSetting(
@@ -579,19 +885,26 @@ export class PureChatLLMSettingTab extends PluginSettingTab {
             .addButton(btn =>
               btn
                 .setButtonText('Reset settings')
-                .setTooltip("Won't delete the API keys.")
+                .setTooltip('Keeps your API keys and the providers you added.')
                 .setWarning()
                 .onClick(e => {
-                  const oldSettings = { ...this.plugin.settings };
-                  this.plugin.settings = { ...DEFAULT_SETTINGS };
-                  this.plugin.settings.endpoints.forEach((ep, endpoint) => {
-                    if (DEFAULT_SETTINGS.endpoints[endpoint])
-                      this.plugin.settings.endpoints[endpoint].apiKey =
-                        oldSettings.endpoints[endpoint].apiKey;
-                  });
+                  const old = this.plugin.settings.endpoints;
+                  // A fresh copy, so later changes never touch the defaults themselves.
+                  const fresh = structuredClone(DEFAULT_SETTINGS);
+                  // Keys follow their provider by name, not by place in the list (an upgrade
+                  // can reorder it), and providers you added are kept with their keys.
+                  for (const ep of fresh.endpoints) {
+                    const mine = old.find(o => o.name === ep.name);
+                    if (mine) ep.apiKey = mine.apiKey;
+                  }
+                  const added = old.filter(o => !fresh.endpoints.some(ep => ep.name === o.name));
+                  fresh.endpoints.push(...added.map(o => structuredClone(o)));
+                  this.plugin.settings = fresh;
                   void this.plugin.saveSettings();
                   this.display();
-                  new Notice('Settings reset to defaults.  API keys are unchanged.');
+                  new Notice(
+                    'Settings reset to defaults. API keys and providers you added are unchanged.',
+                  );
                 }),
             )
             .addButton(btn =>
@@ -609,18 +922,27 @@ export class PureChatLLMSettingTab extends PluginSettingTab {
  * @param plugin
  */
 function loadAllModels(plugin: PureChatLLM): void {
-  const currentEndpoint = plugin.settings.endpoint;
-  plugin.settings.endpoints.forEach((endpoint, index) => {
-    try {
-      plugin.settings.endpoint = index;
+  // Only providers with a key, and one notice with what came back (C9).
+  const keyed = plugin.settings.endpoints.filter(e => e.apiKey && e.apiKey !== EmptyApiKey);
+  if (!keyed.length) {
+    new Notice('No provider has an API key yet.');
+    return;
+  }
+  void Promise.all(
+    keyed.map(endpoint => {
       plugin.settings.ModelsOnEndpoint[endpoint.name] = [];
-      void new PureChatLLMChat(plugin).getAllModels().then(models => {
-        void plugin.saveSettings();
-        new Notice('Model list refreshed');
-      });
-    } catch (e) {
-      plugin.console.error('Error loading models for endpoint', endpoint.name, e);
-    }
+      const chat = new PureChatLLMChat(plugin);
+      chat.endpoint = endpoint;
+      return chat.getAllModels().then(
+        models => `${endpoint.name}: ${models.length}`,
+        (e: unknown) => {
+          plugin.console.error('Error loading models for endpoint', endpoint.name, e);
+          return `${endpoint.name}: failed`;
+        },
+      );
+    }),
+  ).then(counts => {
+    void plugin.saveSettings();
+    new Notice(`Model lists refreshed. ${counts.join(', ')}.`);
   });
-  plugin.settings.endpoint = currentEndpoint;
 }

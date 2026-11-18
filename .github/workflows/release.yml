@@ -1,41 +1,101 @@
 name: Release Obsidian plugin
 
+# Push a tag that matches manifest.json's version (for example `2.0.0`, no `v`) and this
+# builds the plugin and attaches main.js, manifest.json and styles.css to a GitHub release.
+# BRAT and Obsidian install from those three release assets.
+#
+# Code mode's djs engine is built from source first (djs-wasm.yml, at a pinned commit) and
+# embedded in main.js with its SHA-256, which the plugin checks before compiling it. djs.wasm and
+# its checksum are attached to the release too, so anyone can compare them with their own build.
+
 on:
   push:
     tags:
-      - '*'
+      - '[0-9]+.[0-9]+.[0-9]+'
+      - '[0-9]+.[0-9]+.[0-9]+-*'
+
+permissions:
+  contents: write
 
 jobs:
-  build:
+  djs:
+    uses: ./.github/workflows/djs-wasm.yml
+
+  release:
+    needs: djs
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
 
       - name: Use Node.js
-        uses: actions/setup-node@v3
+        uses: actions/setup-node@v4
         with:
-          node-version: '18.x'
+          node-version: '22.x'
+          cache: npm
 
-      - name: Build plugin
+      - name: Check the tag matches the manifest
         run: |
-          npm install
+          tag="${GITHUB_REF_NAME}"
+          manifest=$(node -p "require('./manifest.json').version")
+          package=$(node -p "require('./package.json').version")
+          id=$(node -p "require('./manifest.json').id")
+          echo "Tag $tag, manifest $manifest, package $package, id $id"
+          if [ "$tag" != "$manifest" ]; then
+            echo "::error::Tag $tag does not match manifest.json version $manifest. BRAT reads the version from manifest.json."
+            exit 1
+          fi
+          if [ "$package" != "$manifest" ]; then
+            echo "::error::package.json version $package does not match manifest.json version $manifest."
+            exit 1
+          fi
+          node -e "const v=require('./versions.json'); if(!Object.keys(v).length) process.exit(1)"
+
+      - name: Install
+        run: npm ci
+
+      - name: Test
+        run: npm test
+
+      - name: Get djs.wasm
+        uses: actions/download-artifact@v4
+        with:
+          name: djs-wasm
+          path: djs-build
+
+      - name: Build, with djs.wasm embedded
+        env:
+          DJS_WASM_FILE: djs-build/djs.wasm
+          DJS_WASM_SHA256: ${{ needs.djs.outputs.sha256 }}
+          DJS_COMMIT: ${{ needs.djs.outputs.commit }}
+        run: |
           npm run build
+          grep -q "$DJS_WASM_SHA256" main.js
 
       - name: Create release
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          tag="${GITHUB_REF#refs/tags/}"
-
-          # Extract changelog section for this tag
-          sed -n "/^## \[$tag\]/,/^## \[/ { /^## \[$tag\]/b; /^## \[/b; p; }" CHANGELOG.md > "release_notes.md"
-
-          gh release create "$tag" \
-            --title="$tag" \
-            --notes-file "release_notes.md" \
-            main.js manifest.json styles.css
-
-          # Remove release notes file
-          rm "release_notes.md"
+          tag="${GITHUB_REF_NAME}"
+          # Release notes: this version's CHANGELOG section, if there is one.
+          sed -n "/^## \[$tag\]/,/^## \[/ { /^## \[$tag\]/b; /^## \[/b; p; }" CHANGELOG.md > release_notes.md
+          [ -s release_notes.md ] || echo "Voice Agent $tag" > release_notes.md
+          {
+            echo ""
+            echo "Code mode's djs engine is built in: djs.wasm built from earendil-works/djs at"
+            echo "\`${{ needs.djs.outputs.commit }}\`, SHA-256 \`${{ needs.djs.outputs.sha256 }}\`."
+          } >> release_notes.md
+          assets="main.js manifest.json styles.css djs-build/djs.wasm djs-build/djs.wasm.sha256"
+          prerelease=""
+          # A version with a suffix (2.0.0-beta.1) is a pre-release, never marked latest.
+          case "$tag" in *-*) prerelease="--prerelease --latest=false" ;; esac
+          if gh release view "$tag" >/dev/null 2>&1; then
+            # Someone published the release (and with it the tag) on GitHub: attach the build to it.
+            gh release upload "$tag" $assets --clobber
+            [ -z "$prerelease" ] || gh release edit "$tag" $prerelease
+          else
+            gh release create "$tag" \
+              --title "$tag" \
+              --notes-file release_notes.md \
+              $prerelease \
+              $assets
+          fi

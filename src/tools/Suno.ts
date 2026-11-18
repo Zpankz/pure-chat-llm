@@ -1,5 +1,14 @@
 import { requestUrl, Modal, App, Setting } from 'obsidian';
 import { defineToolParameters, InferArgs, Tool } from '../tools';
+import { EmptyApiKey } from '../assets/constants';
+import { FORMAT_PARAMETER, jsonResult, layerForRole, toolError, wantsJson } from './toolContract';
+
+const BASE_URL = 'https://api.sunoapi.org/api/v1';
+/** Approximate price of one Suno API credit, in US dollars. */
+const USD_PER_CREDIT = 0.005;
+/** How long the confirmation window waits before it counts as "no". */
+const CONFIRM_TIMEOUT_MS = 180_000;
+const MODELS = ['V4', 'V4_5', 'V4_5PLUS', 'V4_5ALL', 'V5'];
 
 const sunoParameters = defineToolParameters({
   type: 'object',
@@ -7,14 +16,7 @@ const sunoParameters = defineToolParameters({
     action: {
       type: 'string',
       description:
-        'The specific Suno API action to perform. Options:\n' +
-        '- "generate_music": Create new music (requires `prompt`).\n' +
-        '- "generate_lyrics": Generate song lyrics (requires `prompt`).\n' +
-        '- "check_status": Check the result of a task (requires `taskId`).\n' +
-        '- "extend_music": Extend an existing track (requires `audioId`, `prompt`, `continueAt`).\n' +
-        '- "separate_vocals": Split a track into vocals and instrumental (requires `taskId`, `audioId`).\n' +
-        '- "create_music_video": Generate a video for a track (requires `taskId`, `audioId`).\n' +
-        '- "get_credits": Check remaining API credits.',
+        'What to do. Paid: "generate_music" (needs prompt), "generate_lyrics" (needs prompt), "extend_music" (needs audioId, prompt, continueAt), "separate_vocals" and "create_music_video" (need taskId and audioId). Free: "check_status" (needs taskId), "get_credits".',
       enum: [
         'generate_music',
         'generate_lyrics',
@@ -28,65 +30,63 @@ const sunoParameters = defineToolParameters({
     prompt: {
       type: 'string',
       description:
-        'The text prompt. Required for "generate_music" (song description), "generate_lyrics" (topic/style), and "extend_music" (extension description).',
+        'Song description, lyrics topic, or what the extension should sound like. In custom mode, the lyrics.',
     },
     model: {
       type: 'string',
-      description:
-        'The AI model to use. Defaults to "V5". Options: "V4", "V4_5", "V4_5PLUS", "V4_5ALL", "V5".',
-      enum: ['V4', 'V4_5', 'V4_5PLUS', 'V4_5ALL', 'V5'],
-      default: 'V5',
+      description: 'Suno model. Defaults to "V5".',
+      enum: MODELS,
     },
     customMode: {
       type: 'boolean',
-      description:
-        'Enable custom mode for "generate_music". If true, `style` and `title` are required, and `prompt` becomes the lyrics.',
-      default: false,
+      description: '"generate_music" only: true makes prompt the lyrics and needs style and title.',
     },
     instrumental: {
       type: 'boolean',
-      description:
-        'If true, generates an instrumental track (no vocals). Used in "generate_music".',
-      default: false,
+      description: '"generate_music" only: true for no vocals.',
     },
     style: {
       type: 'string',
-      description: 'The musical style/genre. Required if `customMode` is true.',
+      description: 'Musical style or genre. Required in custom mode.',
     },
     title: {
       type: 'string',
-      description: 'The title of the song. Required if `customMode` is true.',
+      description: 'Song title. Required in custom mode.',
     },
     taskId: {
       type: 'string',
-      description:
-        'The unique ID of a task. Required for "check_status", "separate_vocals", and "create_music_video". returned by generation actions.',
+      description: 'Task id returned by a paid action.',
     },
     audioId: {
       type: 'string',
-      description:
-        'The unique ID of an audio track. Required for "extend_music", "separate_vocals", and "create_music_video". Returned in the "check_status" result.',
+      description: 'Track id from a "check_status" result.',
     },
     continueAt: {
       type: 'number',
-      description:
-        'The timestamp (in seconds) where the music extension should start. Required for "extend_music".',
+      description: '"extend_music" only: second of the track where the extension starts.',
     },
     author: {
       type: 'string',
-      description: 'The author name to display. Optional for "create_music_video".',
+      description: '"create_music_video" only: author name to show.',
     },
     domainName: {
       type: 'string',
-      description: 'The domain/brand name to display. Optional for "create_music_video".',
+      description: '"create_music_video" only: brand or site name to show.',
     },
+    confirm: {
+      type: 'boolean',
+      description:
+        'Voice calls only: set true only after you told the user what it will do and its cost, and they said yes. Ignored in a note chat, where a confirmation window asks the user.',
+    },
+    // Spread with an inline enum: FORMAT_PARAMETER's readonly enum doesn't fit ToolParameter.
+    format: { ...FORMAT_PARAMETER, enum: ['text', 'json'] },
   },
   required: ['action'],
 } as const);
 
 export type SunoArgs = InferArgs<typeof sunoParameters>;
 
-interface SunoApiResponse<T = unknown> {
+export interface SunoApiResponse<T = unknown> {
   code: number;
   msg: string;
   data: T;
@@ -119,334 +119,403 @@ interface SunoCreditsData {
   credits: number;
 }
 
+/** What one action produced, before it is written as text or JSON. */
+interface SunoOutcome {
+  summary: string;
+  details: string[];
+  task_id: string | null;
+  status: string | null;
+  credits: number | null;
+  tracks: { id: string; title: string; audio_url: string; duration: number }[];
+  lyrics: string[];
+  stems: { instrumental_url: string; vocal_url: string } | null;
+}
+
 /**
- *
+ * Credits an action costs (Suno API price list as the plugin knows it).
+ * @param action - Action.
+ */
+export function sunoCost(action: string): number {
+  switch (action) {
+    case 'generate_music':
+    case 'extend_music':
+      return 12;
+    case 'separate_vocals':
+      return 10;
+    case 'create_music_video':
+      return 2;
+    case 'generate_lyrics':
+      return 0.4;
+    default:
+      return 0;
+  }
+}
+
+/** @param credits - Credits. */
+function spokenCost(credits: number): string {
+  return `${credits} credits, about $${(credits * USD_PER_CREDIT).toFixed(3)}`;
+}
+
+/**
+ * Suno music generation. Paid actions need the user's yes: the confirmation window in a note
+ * chat, or `confirm: true` after a spoken yes in a voice call.
  */
 export class SunoTool extends Tool<SunoArgs> {
   readonly name = 'suno_music_gen';
   readonly classification = 'AI';
   readonly description =
-    'A versatile tool for AI music creation using the Suno API. It can generate songs, lyrics, music videos, and perform audio manipulation like stem separation and track extension. Use this tool to turn text descriptions into complete musical compositions.';
+    'Makes music with the Suno API: songs, lyrics, longer versions of a track, separated vocals or a music video. ' +
+    "It also checks a task's result and the remaining credits. " +
+    'Use it only when the user asks for music. Generation runs in the background; call "check_status" with the task id after a minute or two. ' +
+    'Paid actions cost Suno credits (a song is 12 credits, about 6 US cents). In a note chat a confirmation window asks the user. In a voice call, first tell the user what you will make and the cost, ask, and only after they say yes call with confirm: true. "check_status" and "get_credits" are free.';
   readonly parameters = sunoParameters;
 
-  /**
-   *
-   */
+  /** The Suno API key from the endpoint named "Suno". */
   private get apiKey(): string | undefined {
     const sunoEndpoint = this.chat.plugin.settings.endpoints.find(e => e.name === 'Suno');
-    return sunoEndpoint?.apiKey;
+    const key = sunoEndpoint?.apiKey?.trim();
+    return key && key !== EmptyApiKey && key !== 'EMPTY' ? key : undefined;
   }
 
-  /**
-   *
-   */
+  /** Offered only with a Suno API key. */
   isAvailable(): boolean {
-    const key = this.apiKey;
-    return !!key && key !== 'EMPTY' && key !== '';
+    return !!this.apiKey;
   }
 
-  /**
-   *
-   * @param args
-   */
+  /** @param args - Action, its arguments, confirm and format. */
   async execute(args: SunoArgs): Promise<string> {
     const apiKey = this.apiKey;
     if (!apiKey) {
-      return 'Error: Suno API key not configured. Please add an endpoint named "Suno" with your API key in the plugin settings.';
+      return toolError('NotConfigured', 'No Suno API key is set.', [
+        'Ask the user to add an endpoint named "Suno" with their API key in the plugin settings.',
+      ]);
     }
 
-    // 1. Validation before confirmation
-    const validationError = this.validateArgs(args);
-    if (validationError) return `Validation Error: ${validationError}`;
+    const problem = this.validateArgs(args);
+    if (problem) return toolError('InvalidArgument', problem);
 
-    // 2. Cost calculation
-    const cost = this.calculateCost(args.action);
-
-    // 3. Confirmation modal
-    const detailsObj: Record<string, unknown> = { ...args };
-    delete detailsObj.action;
-    Object.keys(detailsObj).forEach(key => detailsObj[key] === undefined && delete detailsObj[key]);
-    const details = JSON.stringify(detailsObj, null, 2);
-
-    const confirmed = await new Promise<boolean>(resolve => {
-      new SunoConfirmationModal(this.chat.plugin.app, args.action, cost, details, resolve).open();
-    });
-
-    if (!confirmed) {
-      return 'Action cancelled by user.';
-    }
-
-    // 4. Send request
-    return await this.sendRequest(args, apiKey);
-  }
-
-  /**
-   *
-   * @param args
-   */
-  private validateArgs(args: SunoArgs): string | null {
-    const { action, prompt, customMode, style, title, taskId, audioId, continueAt } = args;
-
-    switch (action) {
-      case 'generate_music':
-        if (!prompt) return '"prompt" is required.';
-        if (customMode) {
-          if (!style) return '"style" is required in custom mode.';
-          if (!title) return '"title" is required in custom mode.';
+    const cost = sunoCost(args.action);
+    if (cost > 0) {
+      const layer = layerForRole(this.chat.role);
+      if (layer === 'voice') {
+        if (args.confirm !== true) {
+          return toolError(
+            'ConfirmationNeeded',
+            `Not started: "${args.action}" costs ${spokenCost(cost)}.`,
+            [
+              'Tell the user what you will make and that cost, and ask if they want it.',
+              'Only after they say yes, call again with the same arguments and confirm: true.',
+            ],
+          );
         }
-        break;
-      case 'generate_lyrics':
-        if (!prompt) return '"prompt" is required.';
-        break;
-      case 'check_status':
-        if (!taskId) return '"taskId" is required.';
-        break;
-      case 'extend_music':
-        if (!audioId) return '"audioId" is required.';
-        if (!prompt) return '"prompt" is required.';
-        if (typeof continueAt !== 'number') return '"continueAt" is required as a number.';
-        break;
-      case 'separate_vocals':
-      case 'create_music_video':
-        if (!audioId) return '"audioId" is required.';
-        if (!taskId) return '"taskId" is required.';
-        break;
+      } else if (layer === 'chat') {
+        // Note chat: the user confirms in a window; `confirm` is ignored here.
+        const details: Record<string, unknown> = { ...args };
+        for (const k of ['action', 'confirm', 'format']) delete details[k];
+        Object.keys(details).forEach(k => details[k] === undefined && delete details[k]);
+        const confirmed = await new Promise<boolean>(resolve => {
+          new SunoConfirmationModal(
+            this.chat.plugin.app,
+            args.action,
+            cost,
+            details,
+            resolve,
+          ).open();
+        });
+        if (!confirmed) {
+          return toolError(
+            'Declined',
+            `The user didn't approve "${args.action}"; nothing was spent.`,
+            ['Ask the user what they want instead.'],
+          );
+        }
+      } else {
+        return toolError(
+          'NotAllowed',
+          'Paid Suno actions need the user present to approve the cost.',
+          ['Report what you would make to the user instead.'],
+        );
+      }
     }
-    return null;
-  }
 
-  /**
-   *
-   * @param action
-   */
-  private calculateCost(action: string): number {
-    switch (action) {
-      case 'generate_music':
-      case 'extend_music':
-        return 12;
-      case 'separate_vocals':
-        return 10;
-      case 'create_music_video':
-        return 2;
-      case 'generate_lyrics':
-        return 0.4;
-      default:
-        return 0;
-    }
-  }
-
-  /**
-   *
-   * @param args
-   * @param apiKey
-   */
-  private async sendRequest(args: SunoArgs, apiKey: string): Promise<string> {
-    const {
-      action,
-      prompt,
-      model,
-      customMode,
-      instrumental,
-      style,
-      title,
-      taskId,
-      audioId,
-      continueAt,
-      author,
-      domainName,
-    } = args;
-    const baseUrl = 'https://api.sunoapi.org/api/v1';
-
+    let outcome: SunoOutcome;
     try {
-      if (action === 'get_credits') {
-        const response = await requestUrl({
-          url: `${baseUrl}/get-credits`,
-          headers: { Authorization: `Bearer ${apiKey}` },
-        });
-        const result = response.json as SunoApiResponse<SunoCreditsData>;
-        if (result.code !== 200) return `Error: ${result.msg}`;
-        return `Remaining credits: ${result.data.credits}`;
-      }
-
-      if (action === 'create_music_video') {
-        void this.status(`Creating music video...`);
-        const response = await requestUrl({
-          url: `${baseUrl}/generate/video`,
-          method: 'POST',
-          headers: {
-            Authorization: `Bearer ${apiKey}`,
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            taskId,
-            audioId,
-            author,
-            domainName,
-          }),
-        });
-        const result = response.json as SunoApiResponse<SunoTaskResult>;
-        if (result.code !== 200) return `Error: ${result.msg}`;
-        return `Music video generation task started. Task ID: ${result.data.taskId}`;
-      }
-
-      if (action === 'generate_music') {
-        void this.status(`Generating music with Suno...`);
-        const response = await requestUrl({
-          url: `${baseUrl}/generate`,
-          method: 'POST',
-          headers: {
-            Authorization: `Bearer ${apiKey}`,
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            prompt,
-            model,
-            customMode,
-            instrumental,
-            style,
-            title,
-            callBackUrl: 'https://api.example.com/callback',
-          }),
-        });
-        const result = response.json as SunoApiResponse<SunoTaskResult>;
-        if (result.code !== 200) return `Error: ${result.msg}`;
-        return `Music generation task started. Task ID: ${result.data.taskId}\nUse "check_status" with this taskId to see results. Generation usually takes 1-2 minutes.`;
-      }
-
-      if (action === 'generate_lyrics') {
-        void this.status(`Generating lyrics with Suno...`);
-        const response = await requestUrl({
-          url: `${baseUrl}/lyrics`,
-          method: 'POST',
-          headers: {
-            Authorization: `Bearer ${apiKey}`,
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({ prompt }),
-        });
-        const result = response.json as SunoApiResponse<SunoTaskResult>;
-        if (result.code !== 200) return `Error: ${result.msg}`;
-        return `Lyrics generation task started. Task ID: ${result.data.taskId}\nUse "check_status" with this taskId to see results.`;
-      }
-
-      if (action === 'check_status') {
-        void this.status(`Checking status for task ${taskId}...`);
-        const response = await requestUrl({
-          url: `${baseUrl}/generate/record-info?taskId=${taskId}`,
-          headers: { Authorization: `Bearer ${apiKey}` },
-        });
-        const result = response.json as SunoApiResponse<SunoStatusData>;
-        if (result.code !== 200) return `Error: ${result.msg}`;
-
-        const status = result.data.status;
-        if (status === 'SUCCESS') {
-          const respData = result.data.response;
-          if (respData && Array.isArray(respData.data)) {
-            let output = 'Task successful!\n\n';
-            respData.data.forEach((item, i) => {
-              if (item.audio_url) {
-                output += `Track ${i + 1}:\n`;
-                output += `- Title: ${item.title || 'Untitled'}\n`;
-                output += `- URL: ${item.audio_url}\n`;
-                output += `- Duration: ${item.duration || 0}s\n`;
-                output += `- ID: ${item.id}\n\n`;
-              } else if (item.text) {
-                output += `Lyrics/Text ${i + 1}:\n${item.text}\n\n`;
-              }
-            });
-            return output.trim();
-          } else if (result.data.vocal_removal_info) {
-            const v = result.data.vocal_removal_info;
-            return `Vocal separation successful!\n- Instrumental: ${v.instrumental_url}\n- Vocals: ${v.vocal_url}`;
-          }
-          return `Task successful. Result: ${JSON.stringify(result.data.response || result.data)}`;
-        }
-        return `Task status: ${status}. Please check again in a few moments if it's still processing.`;
-      }
-
-      if (action === 'extend_music') {
-        void this.status(`Extending music...`);
-        const response = await requestUrl({
-          url: `${baseUrl}/generate/extend`,
-          method: 'POST',
-          headers: {
-            Authorization: `Bearer ${apiKey}`,
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            audioId,
-            prompt,
-            continueAt,
-            model,
-          }),
-        });
-        const result = response.json as SunoApiResponse<SunoTaskResult>;
-        if (result.code !== 200) return `Error: ${result.msg}`;
-        return `Music extension task started. Task ID: ${result.data.taskId}`;
-      }
-
-      if (action === 'separate_vocals') {
-        void this.status(`Separating vocals...`);
-        const response = await requestUrl({
-          url: `${baseUrl}/vocal-removal/generate`,
-          method: 'POST',
-          headers: {
-            Authorization: `Bearer ${apiKey}`,
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            taskId,
-            audioId,
-          }),
-        });
-        const result = response.json as SunoApiResponse<SunoTaskResult>;
-        if (result.code !== 200) return `Error: ${result.msg}`;
-        return `Vocal separation task started. Task ID: ${result.data.taskId}`;
-      }
+      outcome = await this.run(args, apiKey);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      return `Error: ${message}`;
+      return toolError('SunoApiError', message, [
+        'Check the Suno API key and remaining credits ("get_credits").',
+        'Try again in a moment.',
+      ]);
     }
 
-    return 'Error: Invalid action or parameters.';
+    if (wantsJson(args)) {
+      return jsonResult({
+        action: args.action,
+        cost_credits: cost,
+        summary: outcome.summary,
+        task_id: outcome.task_id,
+        status: outcome.status,
+        credits: outcome.credits,
+        tracks: outcome.tracks,
+        lyrics: outcome.lyrics,
+        stems: outcome.stems,
+      });
+    }
+    return [outcome.summary, ...outcome.details].join('\n');
+  }
+
+  /** @param args - Arguments to check before anything is spent. */
+  private validateArgs(args: SunoArgs): string | null {
+    const { action, prompt, customMode, style, title, taskId, audioId, continueAt, model } = args;
+    if (model !== undefined && !MODELS.includes(model)) {
+      return `Unknown model "${model}"; use one of ${MODELS.join(', ')}.`;
+    }
+    switch (action) {
+      case 'generate_music':
+        if (!prompt?.trim()) return '"prompt" is required.';
+        if (customMode) {
+          if (!style?.trim()) return '"style" is required in custom mode.';
+          if (!title?.trim()) return '"title" is required in custom mode.';
+        }
+        return null;
+      case 'generate_lyrics':
+        return prompt?.trim() ? null : '"prompt" is required.';
+      case 'check_status':
+        return taskId?.trim() ? null : '"taskId" is required.';
+      case 'extend_music':
+        if (!audioId?.trim()) return '"audioId" is required.';
+        if (!prompt?.trim()) return '"prompt" is required.';
+        if (typeof continueAt !== 'number' || !Number.isFinite(continueAt) || continueAt < 0)
+          return '"continueAt" is required: the second where the extension starts.';
+        return null;
+      case 'separate_vocals':
+      case 'create_music_video':
+        if (!audioId?.trim()) return '"audioId" is required.';
+        if (!taskId?.trim()) return '"taskId" is required.';
+        return null;
+      case 'get_credits':
+        return null;
+      default:
+        return `Unknown action "${String(action)}".`;
+    }
+  }
+
+  /**
+   * One Suno API call. Throws on a transport or API error.
+   * @param path - Path under the API base.
+   * @param apiKey - Suno API key.
+   * @param body - JSON body for a POST; none for a GET.
+   */
+  protected async call<T>(path: string, apiKey: string, body?: object): Promise<T> {
+    const response = await requestUrl({
+      url: `${BASE_URL}${path}`,
+      method: body ? 'POST' : 'GET',
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        ...(body ? { 'Content-Type': 'application/json' } : {}),
+      },
+      ...(body ? { body: JSON.stringify(body) } : {}),
+      throw: false,
+    });
+    const result = response.json as SunoApiResponse<T> | undefined;
+    if (response.status >= 400 || !result || result.code !== 200) {
+      throw new Error(result?.msg || `Suno answered HTTP ${response.status}.`);
+    }
+    return result.data;
+  }
+
+  /**
+   * @param args - Validated arguments.
+   * @param apiKey - Suno API key.
+   */
+  private async run(args: SunoArgs, apiKey: string): Promise<SunoOutcome> {
+    const { action, prompt, customMode, instrumental, style, title, taskId, audioId } = args;
+    const model = args.model ?? 'V5';
+    const out: SunoOutcome = {
+      summary: '',
+      details: [],
+      task_id: null,
+      status: null,
+      credits: null,
+      tracks: [],
+      lyrics: [],
+      stems: null,
+    };
+    const started = async (path: string, body: object, what: string, wait: string) => {
+      void this.status(`Suno: ${what}...`);
+      const data = await this.call<SunoTaskResult>(path, apiKey, body);
+      out.task_id = data.taskId;
+      out.status = 'PENDING';
+      out.summary = `Started ${what}; it usually takes ${wait}.`;
+      out.details = [
+        `Task id: ${data.taskId}`,
+        'Call check_status with this task id for the result.',
+      ];
+      return out;
+    };
+
+    switch (action) {
+      case 'get_credits': {
+        const data = await this.call<SunoCreditsData>('/get-credits', apiKey);
+        out.credits = data.credits;
+        out.summary = `You have ${data.credits} Suno credits left.`;
+        return out;
+      }
+      case 'generate_music':
+        return started(
+          '/generate',
+          {
+            prompt,
+            model,
+            customMode: !!customMode,
+            instrumental: !!instrumental,
+            style,
+            title,
+            // The API requires a callback URL; results are fetched with check_status instead.
+            callBackUrl: 'https://api.example.com/callback',
+          },
+          'making the song',
+          'one to two minutes',
+        );
+      case 'generate_lyrics':
+        return started('/lyrics', { prompt }, 'writing the lyrics', 'under a minute');
+      case 'extend_music':
+        return started(
+          '/generate/extend',
+          { audioId, prompt, continueAt: args.continueAt, model },
+          'extending the track',
+          'one to two minutes',
+        );
+      case 'separate_vocals':
+        return started(
+          '/vocal-removal/generate',
+          { taskId, audioId },
+          'separating the vocals',
+          'about a minute',
+        );
+      case 'create_music_video':
+        return started(
+          '/generate/video',
+          { taskId, audioId, author: args.author, domainName: args.domainName },
+          'making the music video',
+          'a few minutes',
+        );
+      case 'check_status':
+        return this.checkStatus(String(taskId), apiKey, out);
+      default:
+        throw new Error(`Unknown action "${String(action)}".`);
+    }
+  }
+
+  /**
+   * @param taskId - Task id.
+   * @param apiKey - Suno API key.
+   * @param out - Outcome to fill.
+   */
+  private async checkStatus(
+    taskId: string,
+    apiKey: string,
+    out: SunoOutcome,
+  ): Promise<SunoOutcome> {
+    void this.status(`Checking Suno task ${taskId}...`);
+    const data = await this.call<SunoStatusData>(
+      `/generate/record-info?taskId=${encodeURIComponent(taskId.trim())}`,
+      apiKey,
+    );
+    out.task_id = taskId;
+    out.status = data.status;
+    if (data.status !== 'SUCCESS') {
+      out.summary = `The task is still ${String(data.status).toLowerCase().replace(/_/g, ' ')}; check again in a minute.`;
+      return out;
+    }
+    for (const item of data.response?.data ?? []) {
+      if (item.audio_url) {
+        out.tracks.push({
+          id: item.id,
+          title: item.title || 'Untitled',
+          audio_url: item.audio_url,
+          duration: item.duration || 0,
+        });
+      } else if (item.text) {
+        out.lyrics.push(item.text);
+      }
+    }
+    if (data.vocal_removal_info) {
+      out.stems = {
+        instrumental_url: data.vocal_removal_info.instrumental_url,
+        vocal_url: data.vocal_removal_info.vocal_url,
+      };
+    }
+    const parts = [
+      out.tracks.length ? `${out.tracks.length} track${out.tracks.length === 1 ? '' : 's'}` : '',
+      out.lyrics.length
+        ? `${out.lyrics.length} set${out.lyrics.length === 1 ? '' : 's'} of lyrics`
+        : '',
+      out.stems ? 'separated vocals and instrumental' : '',
+    ].filter(Boolean);
+    out.summary = parts.length
+      ? `Done: ${parts.join(' and ')}.`
+      : 'Done, but Suno returned no files.';
+    out.tracks.forEach((t, i) =>
+      out.details.push(
+        `Track ${i + 1}: ${t.title} (${Math.round(t.duration)}s)`,
+        `- URL: ${t.audio_url}`,
+        `- Audio id: ${t.id}`,
+      ),
+    );
+    out.lyrics.forEach((text, i) => out.details.push(`Lyrics ${i + 1}:`, text));
+    if (out.stems) {
+      out.details.push(
+        `Instrumental: ${out.stems.instrumental_url}`,
+        `Vocals: ${out.stems.vocal_url}`,
+      );
+    }
+    return out;
   }
 }
 
 /**
- *
+ * Shows a paid action and its cost and waits for the user. Closing it, or no answer within a
+ * few minutes, counts as no.
  */
-class SunoConfirmationModal extends Modal {
-  action: string;
-  cost: number;
-  details: string;
-  onResolve: (confirmed: boolean) => void;
-  resolved = false;
+export class SunoConfirmationModal extends Modal {
+  private resolved = false;
+  private timer = 0;
 
   /**
-   *
-   * @param app
-   * @param action
-   * @param cost
-   * @param details
-   * @param onResolve
+   * @param app - Obsidian app.
+   * @param action - Suno action.
+   * @param cost - Credits.
+   * @param details - Arguments to show.
+   * @param onResolve - Called once with the answer.
    */
   constructor(
     app: App,
-    action: string,
-    cost: number,
-    details: string,
-    onResolve: (confirmed: boolean) => void,
+    readonly action: string,
+    readonly cost: number,
+    readonly details: Record<string, unknown>,
+    readonly onResolve: (confirmed: boolean) => void,
   ) {
     super(app);
-    this.action = action;
-    this.cost = cost;
-    this.details = details;
-    this.onResolve = onResolve;
   }
 
-  /**
-   *
-   */
+  /** @param confirmed - The answer. */
+  finish(confirmed: boolean): void {
+    if (this.resolved) return;
+    this.resolved = true;
+    window.clearTimeout(this.timer);
+    this.onResolve(confirmed);
+    this.close();
+  }
+
+  /** Opens the window and starts the no-answer timer. */
+  open(): void {
+    this.timer = window.setTimeout(() => this.finish(false), CONFIRM_TIMEOUT_MS);
+    super.open();
+  }
+
+  /** Draws the action and its cost. */
   onOpen() {
     const { contentEl } = this;
     contentEl.empty();
@@ -455,43 +524,26 @@ class SunoConfirmationModal extends Modal {
     this.setTitle('Confirm Suno API action');
     new Setting(contentEl)
       .setHeading()
-      .setName(`The agent is requesting to perform: ${this.action}`)
-      .setDesc(
-        `Estimated cost: ${this.cost} credits (~$${this.cost > 0 ? (this.cost * 0.005).toFixed(4) : 'free'} USD)`,
-      );
+      .setName(`The agent wants to run: ${this.action}`)
+      .setDesc(`Estimated cost: ${spokenCost(this.cost)} (US dollars)`);
 
-    new Setting(contentEl).setName('Parameters').setDesc(this.details).setHeading();
-
-    Object.entries(JSON.parse(this.details) as Record<string, unknown>).forEach(([key, value]) => {
+    for (const [key, value] of Object.entries(this.details)) {
       new Setting(contentEl).setName(key).setDesc(String(value));
-    });
+    }
 
     new Setting(contentEl)
       .addButton(btn =>
         btn
           .setButtonText('Confirm & run')
           .setCta()
-          .onClick(() => {
-            this.resolved = true;
-            this.onResolve(true);
-            this.close();
-          }),
+          .onClick(() => this.finish(true)),
       )
-      .addButton(btn =>
-        btn.setButtonText('Cancel').onClick(() => {
-          this.resolved = true;
-          this.onResolve(false);
-          this.close();
-        }),
-      );
+      .addButton(btn => btn.setButtonText('Cancel').onClick(() => this.finish(false)));
   }
 
-  /**
-   *
-   */
+  /** Closing without an answer counts as no. */
   onClose() {
-    if (!this.resolved) {
-      this.onResolve(false);
-    }
+    this.contentEl.empty();
+    this.finish(false);
   }
 }

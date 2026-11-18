@@ -1,460 +1,386 @@
-import { Notice } from 'obsidian';
-import { IToolExecutor, IVoiceCallProvider, VoiceCallConfig } from './IVoiceCallProvider';
+import { arrayBufferToBase64, base64ToArrayBuffer, PcmCapture, PcmPlayer } from '../audio/pcm';
+import { geminiSupportsScheduling, geminiSupportsThinking } from '../voiceCatalog';
+import {
+  geminiFunctionResponse,
+  geminiNonBlockingMode,
+  toGeminiFunctionDeclaration,
+} from '../toolAdapters';
+import { BaseVoiceProvider } from './BaseVoiceProvider';
+import type { VoiceCallConfig } from './IVoiceCallProvider';
 
-const PCM_PROCESSOR_CODE = `
-class PCMProcessor extends AudioWorkletProcessor {
-  process(inputs, outputs, parameters) {
-    const input = inputs[0];
-    if (input && input.length > 0) {
-      const float32 = input[0];
-      const int16 = new Int16Array(float32.length);
-      for (let i = 0; i < float32.length; i++) {
-        const s = Math.max(-1, Math.min(1, float32[i]));
-        int16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
-      }
-      this.port.postMessage(int16.buffer, [int16.buffer]);
-    }
-    return true;
-  }
+const LIVE_ENDPOINT =
+  'wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent';
+
+interface GeminiPart {
+  text?: string;
+  inlineData?: { mimeType: string; data: string };
 }
-registerProcessor('pcm-processor', PCMProcessor);
-`;
 
-type JsonValue = string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue };
-
-interface GeminiMessage {
-  setupComplete?: boolean;
+interface GeminiServerMessage {
+  setupComplete?: Record<string, never>;
   serverContent?: {
-    modelTurn?: {
-      parts?: Array<{
-        inlineData?: {
-          mimeType: string;
-          data: string;
-        };
-      }>;
-    };
+    modelTurn?: { parts?: GeminiPart[] };
+    turnComplete?: boolean;
+    generationComplete?: boolean;
+    interrupted?: boolean;
+    inputTranscription?: { text?: string; finished?: boolean };
+    outputTranscription?: { text?: string; finished?: boolean };
   };
   toolCall?: {
-    functionCalls: Array<{
-      id: string;
-      name: string;
-      args: Record<string, unknown>;
-    }>;
+    functionCalls?: Array<{ id: string; name: string; args?: Record<string, unknown> }>;
   };
+  toolCallCancellation?: { ids?: string[] };
+  goAway?: { timeLeft?: string };
+  sessionResumptionUpdate?: { newHandle?: string; resumable?: boolean };
+  error?: { message?: string };
 }
 
-interface GeminiSetup {
-  setup: {
-    model: string;
-    generationConfig: {
-      responseModalities: string[];
-      speechConfig: {
-        voiceConfig: {
-          prebuiltVoiceConfig: {
-            voiceName: string;
-          };
-        };
-      };
-    };
-    systemInstruction?: {
-      parts: { text: string }[];
-    };
-    tools?: Array<{
-      function_declarations: Array<{
-        name: string;
-        description: string;
-        parameters: JsonValue;
-      }>;
-    }>;
-  };
-}
+const SENSITIVITY: Record<string, Record<string, string>> = {
+  start: { high: 'START_SENSITIVITY_HIGH', low: 'START_SENSITIVITY_LOW' },
+  end: { high: 'END_SENSITIVITY_HIGH', low: 'END_SENSITIVITY_LOW' },
+};
 
 /**
- * Google Gemini Live API provider
- * Uses WebSocket and AudioWorklet
+ * Google Gemini Live API (v1beta) over WebSocket.
+ *
+ * - Models: gemini-3.8-live (default), gemini-3.8-live-extended-thinking, 2.5 native audio.
+ * - Input: 16 kHz PCM via `realtimeInput.audio` (the old `mediaChunks` field is deprecated).
+ * - Output: 24 kHz PCM, flushed instantly on `serverContent.interrupted` (barge-in).
+ * - Tools: `functionDeclarations` with `parametersJsonSchema`, optional NON_BLOCKING behaviour and
+ *   response `scheduling`; `toolCallCancellation` drops cancelled calls; optional Google Search.
+ * - Long calls: context window compression and session resumption with automatic reconnect on
+ *   `goAway`.
+ *
+ * Docs: https://ai.google.dev/api/live and https://ai.google.dev/gemini-api/docs/live-api/thinking
  */
-export class GeminiLiveProvider implements IVoiceCallProvider {
+export class GeminiLiveProvider extends BaseVoiceProvider {
   private ws: WebSocket | null = null;
-  private audioContext: AudioContext | null = null;
-  private workletNode: AudioWorkletNode | null = null;
-  private sourceNode: MediaStreamAudioSourceNode | null = null;
+  private capture: PcmCapture | null = null;
+  private player = new PcmPlayer();
+  private resumeHandle: string | null = null;
+  private cancelled = new Set<string>();
+  private closing = false;
+  private muted = false;
+  private generating = false;
+  private reconnecting = false;
+  private userText = '';
+  private assistantText = '';
 
-  // Audio playback queue
-  private nextStartTime = 0;
-  private audioQueue: ArrayBuffer[] = [];
-  private isPlaying = false;
-
-  // Callbacks
-  private onRemoteTrackCallback?: (stream: MediaStream) => void;
-  private onMessageCallback?: (event: unknown) => void;
-  private onErrorCallback?: (error: Error) => void;
-
-  /**
-   *
-   * @param toolExecutor
-   */
-  constructor(private toolExecutor?: IToolExecutor) {}
-
-  /**
-   *
-   */
+  /** Display name. */
   getName(): string {
-    return this.toolExecutor ? 'Google Gemini Live (Tools)' : 'Google Gemini Live';
+    return this.toolExecutor ? 'Gemini Live (tools)' : 'Gemini Live';
   }
 
   /**
-   *
-   * @param callback
+   * Builds the BidiGenerateContentSetup message.
+   * @param config - Call config.
    */
-  onRemoteTrack(callback: (stream: MediaStream) => void): void {
-    this.onRemoteTrackCallback = callback;
+  buildSetup(config: VoiceCallConfig): Record<string, unknown> {
+    const g = config.settings.gemini;
+    const model = g.model.startsWith('models/') ? g.model : `models/${g.model}`;
+
+    const speechConfig: Record<string, unknown> = {
+      voiceConfig: { prebuiltVoiceConfig: { voiceName: g.voice } },
+      ...(g.languageCode ? { languageCode: g.languageCode } : {}),
+    };
+    const generationConfig: Record<string, unknown> = {
+      responseModalities: ['AUDIO'],
+      speechConfig,
+      ...(g.thinkingLevel !== 'default' && geminiSupportsThinking(g.model)
+        ? { thinkingConfig: { thinkingLevel: g.thinkingLevel.toUpperCase() } }
+        : {}),
+    };
+
+    const activityDetection: Record<string, unknown> = {};
+    if (SENSITIVITY.start[g.startSensitivity]) {
+      activityDetection.startOfSpeechSensitivity = SENSITIVITY.start[g.startSensitivity];
+    }
+    if (SENSITIVITY.end[g.endSensitivity]) {
+      activityDetection.endOfSpeechSensitivity = SENSITIVITY.end[g.endSensitivity];
+    }
+    if (g.silenceDurationMs > 0) activityDetection.silenceDurationMs = g.silenceDurationMs;
+
+    const tools: Record<string, unknown>[] = [];
+    if (this.toolExecutor && config.tools.length) {
+      const nonBlocking = geminiNonBlockingMode(
+        g.nonBlockingTools,
+        geminiSupportsScheduling(g.model),
+      );
+      tools.push({
+        functionDeclarations: config.tools.map(t => toGeminiFunctionDeclaration(t, nonBlocking)),
+      });
+    }
+    if (g.googleSearch) tools.push({ googleSearch: {} });
+
+    return {
+      setup: {
+        model,
+        generationConfig,
+        systemInstruction: { parts: [{ text: config.instructions }] },
+        ...(tools.length ? { tools } : {}),
+        ...(Object.keys(activityDetection).length || !config.settings.fullDuplex
+          ? {
+              realtimeInputConfig: {
+                ...(Object.keys(activityDetection).length
+                  ? { automaticActivityDetection: activityDetection }
+                  : {}),
+                // Half duplex: the user's speech does not cut the model off.
+                ...(config.settings.fullDuplex ? {} : { activityHandling: 'NO_INTERRUPTION' }),
+              },
+            }
+          : {}),
+        ...(g.transcription ? { inputAudioTranscription: {}, outputAudioTranscription: {} } : {}),
+        ...(g.contextCompression ? { contextWindowCompression: { slidingWindow: {} } } : {}),
+        ...(g.sessionResumption
+          ? { sessionResumption: this.resumeHandle ? { handle: this.resumeHandle } : {} }
+          : {}),
+        ...(g.proactiveAudio ? { proactivity: { proactiveAudio: true } } : {}),
+      },
+    };
   }
 
   /**
-   *
-   * @param callback
-   */
-  onMessage(callback: (event: unknown) => void): void {
-    this.onMessageCallback = callback;
-  }
-
-  /**
-   *
-   * @param callback
-   */
-  onError(callback: (error: Error) => void): void {
-    this.onErrorCallback = callback;
-  }
-
-  /**
-   *
-   * @param localStream
-   * @param config
+   * Connects, sends setup and starts streaming the microphone.
+   * @param localStream - Microphone stream.
+   * @param config - Call config.
    */
   async connect(localStream: MediaStream, config: VoiceCallConfig): Promise<void> {
+    this.config = config;
+    this.closing = false;
     try {
-      const endpoint = `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContent?key=${config.apiKey}`;
-
-      this.ws = new WebSocket(endpoint);
-      this.ws.binaryType = 'arraybuffer';
-
-      // Setup Audio Context (16kHz for input to Gemini)
-      this.audioContext = new AudioContext({ sampleRate: 16000 }); // Gemini likes 16kHz input
-
-      // Load AudioWorklet
-      const blob = new Blob([PCM_PROCESSOR_CODE], { type: 'application/javascript' });
-      const url = URL.createObjectURL(blob);
-      await this.audioContext.audioWorklet.addModule(url);
-      URL.revokeObjectURL(url); // Cleanup
-
-      // Setup processing pipeline
-      this.sourceNode = this.audioContext.createMediaStreamSource(localStream);
-      this.workletNode = new AudioWorkletNode(this.audioContext, 'pcm-processor');
-
-      this.workletNode.port.onmessage = event => {
-        // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
-        this.sendAudioChunk(event.data);
-      };
-
-      this.sourceNode.connect(this.workletNode);
-      this.workletNode.connect(this.audioContext.destination);
-
-      // Wait for WS Open
-      await new Promise<void>((resolve, reject) => {
-        if (!this.ws) return reject(new Error('No WS'));
-
-        const timer = setTimeout(() => reject(new Error('Timeout')), 10000);
-
-        this.ws.onopen = () => {
-          clearTimeout(timer);
-          this.sendSetup(config);
-          resolve();
-        };
-
-        this.ws.onerror = err => {
-          clearTimeout(timer);
-          console.error('WS Error during connect', err);
-        };
-
-        this.ws.onmessage = event => this.handleMessage(event);
-        this.ws.onclose = () => void this.disconnect();
-      });
-
-      // Resume context if needed
-      if (this.audioContext.state === 'suspended') {
-        await this.audioContext.resume();
-      }
+      await this.openSocket(config);
+      this.capture = new PcmCapture(16000, pcm => this.sendAudio(pcm));
+      await this.capture.start(localStream);
     } catch (error) {
-      if (this.onErrorCallback && error instanceof Error) {
-        this.onErrorCallback(error);
-      }
+      this.fail(error);
       throw error;
     }
   }
 
   /**
-   *
+   * Opens the WebSocket and waits for `setupComplete`.
+   * @param config - Call config.
    */
-  async disconnect(): Promise<void> {
-    if (this.ws) {
-      this.ws.close();
-      this.ws = null;
-    }
-    if (this.sourceNode) {
-      this.sourceNode.disconnect();
-      this.sourceNode = null;
-    }
-    if (this.workletNode) {
-      this.workletNode.disconnect();
-      this.workletNode.port.onmessage = null;
-      this.workletNode = null;
-    }
-    if (this.audioContext) {
-      await this.audioContext.close();
-      this.audioContext = null;
-    }
-    this.audioQueue = [];
-    this.isPlaying = false;
+  private openSocket(config: VoiceCallConfig): Promise<void> {
+    return new Promise<void>((resolve, reject) => {
+      const ws = new WebSocket(`${LIVE_ENDPOINT}?key=${encodeURIComponent(config.apiKey)}`);
+      ws.binaryType = 'arraybuffer';
+      this.ws = ws;
+      let ready = false;
+      const timer = window.setTimeout(() => {
+        if (!ready) reject(new Error('Gemini Live setup timed out'));
+      }, 15000);
+
+      ws.onopen = () => ws.send(JSON.stringify(this.buildSetup(config)));
+      ws.onerror = () => {
+        if (!ready) {
+          window.clearTimeout(timer);
+          reject(new Error('Gemini Live connection failed'));
+        }
+      };
+      ws.onclose = event => {
+        if (!ready) {
+          window.clearTimeout(timer);
+          reject(new Error(`Gemini Live closed: ${event.reason || event.code}`));
+          return;
+        }
+        if (ws === this.ws && !this.closing && !this.reconnecting) {
+          if (this.resumeHandle) void this.reconnect();
+          else this.fail(new Error(`Gemini Live disconnected: ${event.reason || event.code}`));
+        }
+      };
+      ws.onmessage = event => {
+        const msg = this.parse(event.data);
+        if (!msg) return;
+        if (msg.setupComplete && !ready) {
+          ready = true;
+          window.clearTimeout(timer);
+          this.emit({ type: 'ready' });
+          resolve();
+        }
+        this.handleMessage(msg);
+      };
+    });
   }
 
-  /**
-   *
-   * @param event
-   */
-  send(event: unknown): void {
-    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-      this.ws.send(JSON.stringify(event));
-    }
-  }
-
-  /**
-   *
-   * @param config
-   */
-  private sendSetup(config: VoiceCallConfig) {
-    const setup: GeminiSetup = {
-      setup: {
-        model: config.model || 'models/gemini-2.0-flash-exp',
-        generationConfig: {
-          responseModalities: ['AUDIO'],
-          speechConfig: {
-            voiceConfig: {
-              prebuiltVoiceConfig: {
-                voiceName: config.voice || 'Puck',
-              },
-            },
-          },
-        },
-        systemInstruction: {
-          parts: [{ text: config.instructions || 'You are a helpful assistant.' }],
-        },
-      },
-    };
-
-    if (this.toolExecutor && config.tools) {
-      const functionDeclarations = config.tools.map(t => ({
-        name: t.function.name,
-        description: t.function.description,
-        parameters: this.removeAdditionalProperties(t.function.parameters),
-      }));
-
-      if (functionDeclarations.length > 0) {
-        setup.setup.tools = [{ function_declarations: functionDeclarations }];
-      }
-    }
-
-    this.ws?.send(JSON.stringify(setup));
-  }
-
-  /**
-   *
-   * @param data
-   */
-  private sendAudioChunk(data: ArrayBuffer) {
-    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
-
-    const base64 = this.arrayBufferToBase64(data);
-    const msg = {
-      realtimeInput: {
-        mediaChunks: [
-          {
-            mimeType: 'audio/pcm;rate=16000',
-            data: base64,
-          },
-        ],
-      },
-    };
-    this.ws.send(JSON.stringify(msg));
-  }
-
-  /**
-   *
-   * @param event
-   */
-  private handleMessage(event: MessageEvent) {
-    let data: GeminiMessage;
+  /** Reconnects with the latest resumption handle (after goAway or a dropped socket). */
+  private async reconnect(): Promise<void> {
+    if (!this.config || this.reconnecting || this.closing) return;
+    this.reconnecting = true;
+    const old = this.ws;
     try {
-      if (event.data instanceof ArrayBuffer) {
-        data = JSON.parse(new TextDecoder().decode(event.data)) as GeminiMessage;
-      } else {
-        data = JSON.parse(event.data as string) as GeminiMessage;
+      this.emit({ type: 'status', text: 'Resuming Gemini session…' });
+      await this.openSocket(this.config);
+      old?.close();
+    } catch (error) {
+      this.fail(error);
+    } finally {
+      this.reconnecting = false;
+    }
+  }
+
+  /** Ends the session. */
+  async disconnect(): Promise<void> {
+    this.closing = true;
+    this.ws?.close();
+    this.ws = null;
+    await this.capture?.stop();
+    this.capture = null;
+    await this.player.close();
+    this.resumeHandle = null;
+    this.cancelled.clear();
+    this.clearNotices();
+    this.generating = false;
+  }
+
+  /** Busy while the model generates or its audio plays. */
+  protected isBusy(): boolean {
+    return this.generating || this.player.isPlaying;
+  }
+
+  /**
+   * Gemini Live has no documented way to add context mid-session without a reply, so quiet
+   * updates are left for check_tasks.
+   */
+  protected get supportsSilentNotices(): boolean {
+    return false;
+  }
+
+  /** Stops local playback so an urgent update can go first. */
+  protected interruptSpeech(): void {
+    this.player.flush();
+    this.emit({ type: 'speaking', active: false });
+  }
+
+  /**
+   * Sends the update as realtime text input, which Gemini Live answers like a spoken turn.
+   * @param text - Update text.
+   */
+  protected deliverNotice(text: string): void {
+    this.send({ realtimeInput: { text } });
+  }
+
+  /** @param event - Client message. */
+  send(event: unknown): void {
+    if (this.ws?.readyState === WebSocket.OPEN) this.ws.send(JSON.stringify(event));
+  }
+
+  /**
+   * On mute, tell the server the audio stream paused so VAD can close the turn.
+   * @param muted - Microphone state.
+   */
+  setMuted(muted: boolean): void {
+    this.muted = muted;
+    if (muted) this.send({ realtimeInput: { audioStreamEnd: true } });
+  }
+
+  /** @param pcm - 16 kHz PCM16 frame. */
+  private sendAudio(pcm: ArrayBuffer): void {
+    if (this.muted || this.reconnecting) return;
+    // Half duplex: keep the microphone closed while the model's audio plays.
+    if (!this.fullDuplex && this.player.isPlaying) return;
+    this.send({
+      realtimeInput: {
+        audio: { data: arrayBufferToBase64(pcm), mimeType: 'audio/pcm;rate=16000' },
+      },
+    });
+  }
+
+  /** @param data - Raw socket payload. */
+  private parse(data: unknown): GeminiServerMessage | null {
+    try {
+      const text = data instanceof ArrayBuffer ? new TextDecoder().decode(data) : String(data);
+      return JSON.parse(text) as GeminiServerMessage;
+    } catch {
+      return null;
+    }
+  }
+
+  /** @param msg - Server message. */
+  private handleMessage(msg: GeminiServerMessage): void {
+    this.emit({ type: 'raw', event: msg });
+    const content = msg.serverContent;
+    if (content) {
+      if (content.interrupted) {
+        this.player.flush();
+        this.emit({ type: 'speaking', active: false });
       }
-    } catch (e) {
-      console.error('Parse error', e);
-      return;
-    }
-
-    if (data.setupComplete && this.onMessageCallback) {
-      this.onMessageCallback({ type: 'connected' });
-    }
-
-    // Audio
-    if (data.serverContent?.modelTurn?.parts) {
-      for (const part of data.serverContent.modelTurn.parts) {
-        if (part.inlineData?.mimeType?.startsWith('audio/pcm') && part.inlineData.data) {
-          const pcmData = this.base64ToArrayBuffer(part.inlineData.data);
-          this.queueAudio(pcmData);
+      if (content.modelTurn) this.generating = true;
+      for (const part of content.modelTurn?.parts ?? []) {
+        const inline = part.inlineData;
+        if (inline?.data && inline.mimeType.startsWith('audio/pcm')) {
+          const rate = Number(/rate=(\d+)/.exec(inline.mimeType)?.[1] ?? 24000);
+          this.player.enqueue(base64ToArrayBuffer(inline.data), rate);
+          this.emit({ type: 'speaking', active: true });
         }
       }
-    }
-
-    // Tools
-    if (data.toolCall) {
-      void this.handleToolCall(data.toolCall);
-    }
-  }
-
-  /**
-   *
-   * @param data
-   */
-  private queueAudio(data: ArrayBuffer) {
-    this.audioQueue.push(data);
-    if (!this.isPlaying) {
-      void this.playQueue();
-    }
-  }
-
-  /**
-   *
-   */
-  private async playQueue() {
-    if (!this.audioContext || this.audioQueue.length === 0) {
-      this.isPlaying = false;
-      return;
-    }
-    this.isPlaying = true;
-
-    const chunk = this.audioQueue.shift();
-    if (!chunk) {
-      this.isPlaying = false;
-      return;
-    }
-
-    const pcm16 = new Int16Array(chunk);
-    const float32 = new Float32Array(pcm16.length);
-    for (let i = 0; i < pcm16.length; i++) {
-      float32[i] = pcm16[i] / 32768.0;
-    }
-
-    const buffer = this.audioContext.createBuffer(1, float32.length, 24000);
-    buffer.copyToChannel(float32, 0);
-
-    const source = this.audioContext.createBufferSource();
-    source.buffer = buffer;
-    source.connect(this.audioContext.destination);
-
-    const now = this.audioContext.currentTime;
-    const start = Math.max(now, this.nextStartTime);
-    source.start(start);
-    this.nextStartTime = start + buffer.duration;
-
-    source.onended = () => {
-      void this.playQueue();
-    };
-  }
-
-  /**
-   *
-   * @param toolCall
-   */
-  private async handleToolCall(toolCall: NonNullable<GeminiMessage['toolCall']>) {
-    if (!this.toolExecutor || !toolCall.functionCalls) return;
-
-    const responses = [];
-    for (const call of toolCall.functionCalls) {
-      try {
-        new Notice(`Executing ${call.name}`);
-        const result = await this.toolExecutor.executeTool(call.name, call.args);
-        responses.push({
-          id: call.id,
-          name: call.name,
-          response: { result },
+      if (content.inputTranscription?.text) {
+        this.userText += content.inputTranscription.text;
+        this.emit({ type: 'transcript', role: 'user', text: this.userText, final: false });
+      }
+      if (content.outputTranscription?.text) {
+        if (this.userText) {
+          this.emit({ type: 'transcript', role: 'user', text: this.userText, final: true });
+          this.userText = '';
+        }
+        this.assistantText += content.outputTranscription.text;
+        this.emit({
+          type: 'transcript',
+          role: 'assistant',
+          text: this.assistantText,
+          final: false,
         });
-      } catch (e) {
-        const msg = e instanceof Error ? e.message : String(e);
-        responses.push({
-          id: call.id,
-          name: call.name,
-          response: { error: msg },
-        });
+      }
+      if (content.turnComplete || content.interrupted) this.generating = false;
+      if (content.turnComplete) {
+        if (this.assistantText) {
+          this.emit({
+            type: 'transcript',
+            role: 'assistant',
+            text: this.assistantText,
+            final: true,
+          });
+        }
+        this.assistantText = '';
       }
     }
 
-    const responseMsg = {
-      toolResponse: {
-        functionResponses: responses,
-      },
-    };
-    this.send(responseMsg);
-  }
+    if (msg.toolCall?.functionCalls?.length) void this.handleToolCall(msg.toolCall.functionCalls);
+    for (const id of msg.toolCallCancellation?.ids ?? []) this.cancelled.add(id);
 
-  // Helpers
-  /**
-   *
-   * @param buffer
-   */
-  private arrayBufferToBase64(buffer: ArrayBuffer): string {
-    let binary = '';
-    const bytes = new Uint8Array(buffer);
-    for (let i = 0; i < bytes.byteLength; i++) {
-      binary += String.fromCharCode(bytes[i]);
+    if (msg.sessionResumptionUpdate?.resumable && msg.sessionResumptionUpdate.newHandle) {
+      this.resumeHandle = msg.sessionResumptionUpdate.newHandle;
     }
-    return btoa(binary);
+    if (msg.goAway) {
+      if (this.resumeHandle) void this.reconnect();
+      else this.emit({ type: 'status', text: 'Gemini will end this session shortly.' });
+    }
+    if (msg.error?.message) this.emit({ type: 'status', text: `Gemini: ${msg.error.message}` });
   }
 
   /**
-   *
-   * @param base64
+   * Runs function calls and returns their results, skipping cancelled ones.
+   * @param calls - Function calls from the server.
    */
-  private base64ToArrayBuffer(base64: string): ArrayBuffer {
-    const binary = atob(base64);
-    const bytes = new Uint8Array(binary.length);
-    for (let i = 0; i < binary.length; i++) {
-      bytes[i] = binary.charCodeAt(i);
-    }
-    return bytes.buffer;
-  }
+  private async handleToolCall(
+    calls: Array<{ id: string; name: string; args?: Record<string, unknown> }>,
+  ): Promise<void> {
+    const g = this.config?.settings.gemini;
+    const scheduling =
+      g && geminiSupportsScheduling(g.model) && g.nonBlockingTools ? g.toolScheduling : undefined;
 
-  /**
-   *
-   * @param obj
-   */
-  private removeAdditionalProperties(obj: unknown): JsonValue {
-    if (typeof obj !== 'object' || obj === null) return obj as JsonValue;
-
-    if (Array.isArray(obj)) {
-      return obj.map(i => this.removeAdditionalProperties(i));
-    }
-
-    const newObj: Record<string, JsonValue> = {};
-    const record = obj as Record<string, unknown>;
-
-    for (const key of Object.keys(record)) {
-      if (key !== 'additionalProperties') {
-        newObj[key] = this.removeAdditionalProperties(record[key]);
-      }
-    }
-    return newObj;
+    const responses = await Promise.all(
+      calls.map(async call => {
+        const output = await this.runTool(call.name, call.args ?? {});
+        return {
+          id: call.id,
+          name: call.name,
+          response: geminiFunctionResponse(output),
+          ...(scheduling ? { scheduling } : {}),
+        };
+      }),
+    );
+    const live = responses.filter(r => !this.cancelled.has(r.id));
+    if (live.length) this.send({ toolResponse: { functionResponses: live } });
   }
 }

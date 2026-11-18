@@ -1,6 +1,8 @@
 import { Notice } from 'obsidian';
+import { describeCallError } from './support';
 import { CallState } from '../types';
-import { IVoiceCallProvider, VoiceCallConfig } from './providers/IVoiceCallProvider';
+import type { NoticeMode } from '../agents/types';
+import { IVoiceCallProvider, VoiceCallConfig, VoiceEvent } from './providers/IVoiceCallProvider';
 
 /**
  * Manages voice call sessions using a provider pattern.
@@ -27,7 +29,7 @@ export class VoiceCall {
     private provider: IVoiceCallProvider,
     private config: VoiceCallConfig,
     private onStateChange: (state: CallState) => void,
-    private onServerEvent?: (event: unknown) => void,
+    private onServerEvent?: (event: VoiceEvent) => void,
     private onRemoteTrack?: (stream: MediaStream) => void,
   ) {
     // Wire up provider callbacks
@@ -52,7 +54,7 @@ export class VoiceCall {
   /**
    * Initializes and starts a voice call
    */
-  async startCall(): Promise<void> {
+  async startCall(): Promise<boolean> {
     try {
       this.updateState({ status: 'connecting', error: undefined });
 
@@ -73,9 +75,10 @@ export class VoiceCall {
 
       this.updateState({ status: 'connected' });
       new Notice(`Call started with ${this.provider.getName()}`);
+      return true;
     } catch (error) {
       console.error('Failed to start call:', error);
-      const errorMessage = error instanceof Error ? error.message : 'Failed to start voice call';
+      const errorMessage = describeCallError(error);
       this.updateState({ status: 'error', error: errorMessage });
 
       // Clean up stream if acquired but connection failed
@@ -83,12 +86,8 @@ export class VoiceCall {
         this.localStream.getTracks().forEach(track => track.stop());
         this.localStream = null;
       }
-
-      if (errorMessage.includes('Permission denied') || errorMessage.includes('NotAllowedError')) {
-        new Notice('Microphone permission denied. Please allow microphone access.');
-      } else {
-        new Notice(`Call connection failed: ${errorMessage}`);
-      }
+      new Notice(`Call failed: ${errorMessage}`);
+      return false;
     }
   }
 
@@ -103,6 +102,14 @@ export class VoiceCall {
   }
 
   /**
+   * Passes a background update (from a sub-agent) to the voice model.
+   * @param text - Update text.
+   */
+  notify(text: string, mode: NoticeMode = 'pause'): void {
+    if (this.state.status === 'connected') this.provider.notify?.(text, mode);
+  }
+
+  /**
    * Toggles microphone mute state
    */
   toggleMute(): void {
@@ -112,6 +119,7 @@ export class VoiceCall {
         track.enabled = !track.enabled;
       });
       this.state.isMuted = !this.state.isMuted;
+      this.provider.setMuted?.(this.state.isMuted);
       this.onStateChange({ ...this.state });
       new Notice(this.state.isMuted ? 'Microphone muted' : 'Microphone unmuted');
     }

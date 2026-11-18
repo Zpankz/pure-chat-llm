@@ -1,15 +1,21 @@
 import { App, EditorRange, Notice, TFile } from 'obsidian';
+import type { SubAgentTask } from '../agents/types';
 import { Chatsysprompt, EmptyApiKey, Selectionsysprompt } from 'src/assets/constants';
 import PureChatLLM, { StreamNotice } from '../main';
 import { ToolRegistry } from '../tools';
+import { diagnostics, requestDetail } from '../diagnostics/DiagnosticsLog';
 import { ActiveContextTool } from '../tools/ActiveContext';
+import { MEMORY_TOOLS } from '../tools/Memory';
+import { memoryWithModels } from '../memory/pluginModels';
 import { BacklinksTool } from '../tools/Backlinks';
+import { GraphCliTool, TraverseGraphTool, VaultOntologyTool } from '../tools/TraverseGraph';
 import { CreateNoteTool } from '../tools/CreateNote';
 import { DeleteNoteTool } from '../tools/DeleteNote';
 import { GlobFilesTool } from '../tools/GlobFiles';
 import { ImageGenerationTool } from '../tools/ImageGen';
 import { ListFoldersTool } from '../tools/ListFolders';
 import { ManageWorkspaceTool } from '../tools/ManageWorkspace';
+import { RunCommandTool } from '../tools/RunCommand';
 import { PatchNoteTool } from '../tools/PatchNote';
 import { PluginSettingsTool } from '../tools/PluginSettings';
 import { ReadFileTool } from '../tools/ReadFile';
@@ -20,7 +26,13 @@ import { WriteNoteSectionTool } from '../tools/WriteNoteSection';
 import { ShowNoticeTool } from '../tools/ShowNotice';
 import { SmartConnectionsRetrievalTool } from '../tools/SmartConnectionsRetrieval';
 import { SunoTool } from '../tools/Suno';
+import { CodeModeTool } from '../tools/CodeMode';
+import { ActivateSkillTool, ReadSkillFileTool } from '../tools/Skills';
+import { McpTool } from '../tools/McpTool';
 import { TemplatesTool } from '../tools/Templates';
+import { AGENT_TOOLS } from '../tools/Orchestrator';
+import { LAYER_TOOLS } from '../tools/LayerTools';
+import { NewTopicTool } from '../tools/TopicTool';
 import {
   ChatMessage,
   ChatOptions,
@@ -77,6 +89,24 @@ export class PureChatLLMChat {
   file: TFile;
   toolregistry: ToolRegistry = new ToolRegistry(this);
   llmService: LLMService;
+  /**
+   * What this chat's model is for: `agent` (ordinary chat with tools), `orchestrator` (a voice
+   * model that delegates to background sub-agents itself), `voice` (the voice layer of the
+   * layered setup, which relays to the orchestrator agent), `orchestrator-agent` (the layered
+   * orchestrator), `subagent` (a background task) or `direct-voice` (a voice model using tools
+   * itself, with no orchestrator). Layer tools are only offered in their role.
+   */
+  role: 'agent' | 'orchestrator' | 'voice' | 'orchestrator-agent' | 'subagent' | 'direct-voice' =
+    'agent';
+  /** Task id when this chat runs a sub-agent. */
+  subAgentTaskId?: string;
+  /** The task this chat runs, when it is a sub-agent (writes and reviewers read its request). */
+  task?: SubAgentTask;
+  /**
+   * Fires when the work this chat is doing is cancelled or timed out. Tools that write check it
+   * right before writing, so a cancelled or timed-out run never lands a change later.
+   */
+  abortSignal?: AbortSignal;
 
   /**
    *
@@ -106,7 +136,7 @@ export class PureChatLLMChat {
       this.plugin.settings.useYAMLFrontMatter,
       this.plugin.settings.agentMode,
     );
-    this.toolExecutor = new ToolExecutor(this.toolregistry);
+    this.toolExecutor = new ToolExecutor(this.toolregistry, this);
   }
 
   // Delegate to session for backward compatibility
@@ -175,10 +205,20 @@ export class PureChatLLMChat {
     this.session.validChat = value;
   }
 
+  private toolsRegistered = false;
+
   /**
-   *
+   * Registers every tool once. Runs in the constructor when agent mode is on; voice orchestrators
+   * and sub-agents call it themselves because they always need tools.
    */
-  private registerAvailableTools() {
+  registerAvailableTools() {
+    if (this.toolsRegistered) return;
+    this.toolsRegistered = true;
+    for (const tool of [...AGENT_TOOLS, ...LAYER_TOOLS, NewTopicTool, ...MEMORY_TOOLS]) {
+      this.toolregistry.registerTool(tool);
+    }
+    // Deprecated: kept so chats that name it still work, but not offered by default.
+    this.toolregistry.disable('patch_note');
     this.toolregistry
       .registerTool(ImageGenerationTool)
       .registerTool(CreateNoteTool)
@@ -189,6 +229,9 @@ export class PureChatLLMChat {
       .registerTool(SearchVaultTool)
       .registerTool(PatchNoteTool)
       .registerTool(BacklinksTool)
+      .registerTool(TraverseGraphTool)
+      .registerTool(VaultOntologyTool)
+      .registerTool(GraphCliTool)
       .registerTool(ListFoldersTool)
       .registerTool(DeleteNoteTool)
       .registerTool(TemplatesTool)
@@ -198,7 +241,14 @@ export class PureChatLLMChat {
       .registerTool(ActiveContextTool)
       .registerTool(ShowNoticeTool)
       .registerTool(PluginSettingsTool)
-      .registerTool(SunoTool);
+      .registerTool(SunoTool)
+      .registerTool(RunCommandTool)
+      .registerTool(CodeModeTool)
+      .registerTool(ActivateSkillTool)
+      .registerTool(ReadSkillFileTool);
+    for (const bridged of this.plugin.mcp?.bridgedTools() ?? []) {
+      this.toolregistry.registerDynamic(new McpTool(this, this.toolregistry, bridged));
+    }
     if (!this.plugin.settings.useImageGeneration)
       this.toolregistry.disable(ImageGenerationTool._name);
   }
@@ -427,12 +477,65 @@ export class PureChatLLMChat {
       ?.map(t => this.toolregistry.getTool(t)?.getDefinition())
       .filter(t => t !== undefined);
 
+    // Agent chats share the memory the voice agent, orchestrator and workers keep: its standing
+    // part in the system prompt (it changes only when a preference or instruction does), and what
+    // it recalls for this turn with the last message.
+    const usesMemory = !!tools?.some(t => t.function.name.startsWith('memory_'));
+    const memory = usesMemory ? this.plugin.memory?.standingBrief('chat') : '';
+    if (memory) {
+      const first = messages[0];
+      if (first?.role === 'system' && typeof first.content === 'string') {
+        messages[0] = { ...first, content: `${first.content}\n\n${memory}` };
+      } else {
+        messages.unshift({ role: 'system', content: memory });
+      }
+    }
+    if (memory) await this.addMemoryContext(messages, activeFile);
+
     // return the whole object sent to the API
     return {
       ...this.options,
       messages,
       tools,
     };
+  }
+
+  /**
+   * Adds what the shared memory recalls for the newest user message to it (not to the note), with
+   * this note as one of the things the turn is about. Never fails the turn.
+   * @param messages - Messages to send, changed in place.
+   * @param activeFile - The chat's note.
+   */
+  private async addMemoryContext(
+    messages: ChatRequestOptions['messages'],
+    activeFile: TFile,
+  ): Promise<void> {
+    let index = -1;
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i].role === 'user') {
+        index = i;
+        break;
+      }
+    }
+    if (index < 0) return;
+    const last = messages[index];
+    const text =
+      typeof last.content === 'string'
+        ? last.content
+        : Array.isArray(last.content)
+          ? last.content.map(p => (p.type === 'text' ? p.text : '')).join('\n')
+          : '';
+    if (!text.trim()) return;
+    const recalled = await memoryWithModels(this.plugin)?.context('chat', text.slice(-4000), {
+      about: activeFile?.path ? [`[[${activeFile.path}]]`] : [],
+    });
+    if (!recalled) return;
+    messages[index] =
+      typeof last.content === 'string'
+        ? { ...last, content: `${last.content}\n\n${recalled}` }
+        : Array.isArray(last.content)
+          ? { ...last, content: [...last.content, { type: 'text', text: recalled }] }
+          : last;
   }
 
   /**
@@ -606,12 +709,39 @@ export class PureChatLLMChat {
     options: ChatRequestOptions,
     streamcallback?: (textFragment: StreamDelta) => Promise<boolean>,
   ): Promise<ChatResponse> {
-    const response = await this.llmService.fetchResponse(
-      this.endpoint,
-      options,
-      status => this.plugin.status(status),
-      streamcallback,
-    );
+    const id = diagnostics.enabled ? diagnostics.nextId('m') : '';
+    if (id) {
+      diagnostics.record('model', 'request', {
+        id,
+        layer: 'chat',
+        role: this.role,
+        endpoint: this.endpoint.name,
+        ...requestDetail(options),
+      });
+    }
+    const started = Date.now();
+    const response = await this.llmService
+      .fetchResponse(this.endpoint, options, status => this.plugin.status(status), streamcallback)
+      .catch((error: unknown) => {
+        if (id) {
+          diagnostics.record('model', 'error', {
+            id,
+            layer: 'chat',
+            error,
+            ms: Date.now() - started,
+          });
+        }
+        throw error;
+      });
+    if (id) {
+      diagnostics.record('model', 'response', {
+        id,
+        layer: 'chat',
+        model: options.model,
+        response,
+        ms: Date.now() - started,
+      });
+    }
 
     if (response.tool_calls) {
       if (await this.handleToolCalls(response.tool_calls, options, streamcallback, response)) {
@@ -705,8 +835,8 @@ export class PureChatLLMChat {
    * @throws {Error} If the API request fails or the response is invalid.
    */
   getAllModels(): Promise<string[]> {
-    const { name: endpointName, endpoint } =
-      this.plugin.settings.endpoints[this.plugin.settings.endpoint];
+    // The chat's own provider, so browsing another provider's models leaves the default alone.
+    const { name: endpointName, endpoint } = this.endpoint;
     const cached = this.plugin.settings.ModelsOnEndpoint[endpointName];
     if (cached?.length) return Promise.resolve(cached);
     this.console.log(`Fetching models from ${endpointName} API...`);

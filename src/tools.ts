@@ -6,6 +6,8 @@ import type {
   ToolParameter,
   ToolParameters,
 } from './types';
+import { diagnostics } from './diagnostics/DiagnosticsLog';
+import { allowedIn, layerForRole, toolError, toolErrorType } from './tools/toolContract';
 
 // Abstract base class for all tools
 /**
@@ -16,6 +18,12 @@ export abstract class Tool<TArgs = Record<string, unknown>> {
   abstract readonly description: string;
   abstract readonly parameters: ToolParameters;
   abstract readonly classification: ToolClassification;
+  /**
+   * Part of the agent pipeline (relays, tasks, memory, skills, code mode). The tool-group
+   * switches don't turn these off: without them the agents can't work at all, and the
+   * switches predate the agents.
+   */
+  readonly agentCore: boolean = false;
 
   /**
    *
@@ -163,6 +171,11 @@ export class ToolRegistry {
     return settings.enabledToolClassifications?.[classification] ?? true;
   }
 
+  /** @param tool - Whether its tool group is on, or it is part of the agent pipeline. */
+  private groupAllows(tool: Tool<Record<string, unknown>>): boolean {
+    return tool.agentCore || this.isClassificationEnabled(tool.classification);
+  }
+
   /**
    *
    * @param names
@@ -174,7 +187,8 @@ export class ToolRegistry {
         (tool): tool is Tool<Record<string, unknown>> =>
           tool !== undefined &&
           tool.isAvailable() &&
-          this.isClassificationEnabled(tool.classification),
+          this.groupAllows(tool) &&
+          allowedIn(tool.name, layerForRole(this.chat.role)),
       );
   }
 
@@ -184,7 +198,7 @@ export class ToolRegistry {
   getNameList(): string[] {
     return Array.from(this.enabledTools).filter(name => {
       const tool = this.allTools.get(name);
-      return tool && tool.isAvailable() && this.isClassificationEnabled(tool.classification);
+      return tool && tool.isAvailable() && this.groupAllows(tool);
     });
   }
 
@@ -206,9 +220,7 @@ export class ToolRegistry {
       .map(name => this.allTools.get(name))
       .filter(
         (tool): tool is Tool<Record<string, unknown>> =>
-          tool !== undefined &&
-          tool.isAvailable() &&
-          this.isClassificationEnabled(tool.classification),
+          tool !== undefined && tool.isAvailable() && this.groupAllows(tool),
       );
   }
 
@@ -252,6 +264,23 @@ export class ToolRegistry {
   }
 
   /**
+   * Registers a tool instance built at runtime (for example a remote MCP tool) and enables it.
+   * @param tool - The tool instance.
+   */
+  registerDynamic(tool: Tool<Record<string, unknown>>): this {
+    this.allTools.set(tool.name, tool);
+    this.enabledTools.add(tool.name);
+    return this;
+  }
+
+  /**
+   * Definitions of tools that are enabled, available and in an enabled classification.
+   */
+  getEnabledDefinitions(): ToolDefinition[] {
+    return this.tools.map(tool => tool.getDefinition());
+  }
+
+  /**
    *
    */
   getAllDefinitions(): ToolDefinition[] {
@@ -266,16 +295,51 @@ export class ToolRegistry {
    * @param args
    */
   async executeTool(name: string, args: Record<string, unknown>): Promise<string> {
+    if (!diagnostics.enabled) return this.runTool(name, args);
+    const started = Date.now();
+    const id = diagnostics.nextId('t');
+    diagnostics.record('tool', 'start', { id, name, role: this.chat.role, args });
+    const result = await this.runTool(name, args).catch((error: unknown) => {
+      diagnostics.record('tool', 'end', {
+        id,
+        name,
+        role: this.chat.role,
+        ok: false,
+        error,
+        ms: Date.now() - started,
+      });
+      throw error;
+    });
+    diagnostics.record('tool', 'end', {
+      id,
+      name,
+      role: this.chat.role,
+      ok: !toolErrorType(result),
+      errorType: toolErrorType(result),
+      result,
+      ms: Date.now() - started,
+    });
+    return result;
+  }
+
+  private async runTool(name: string, args: Record<string, unknown>): Promise<string> {
     const tool = this.getTool(name);
     if (!tool) {
-      return `Error: Unknown tool '${name}' `;
+      return toolError('UnknownTool', `There is no tool named "${name}".`);
+    }
+    const layer = layerForRole(this.chat.role);
+    if (!allowedIn(name, layer)) {
+      return toolError(
+        'NotAllowed',
+        `${name} is not available to ${layer === 'worker' ? 'background workers' : `the ${layer} layer`}.`,
+      );
     }
 
     try {
       return await tool.execute(args);
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : String(error);
-      return `Error: ${message}`;
+      return toolError('ToolFailed', message);
     }
   }
 }

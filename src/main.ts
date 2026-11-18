@@ -1,3 +1,5 @@
+import type { ReviewHost } from './tools/EditReview';
+import type { TaskList } from './harness/durableTasks';
 import {
   addIcon,
   App,
@@ -7,10 +9,13 @@ import {
   EditorSuggestContext,
   EditorSuggestTriggerInfo,
   FuzzySuggestModal,
+  loadMathJax,
   MarkdownView,
   Menu,
   Modal,
+  normalizePath,
   Notice,
+  Platform,
   Plugin,
   Setting,
   TFile,
@@ -18,6 +23,25 @@ import {
 } from 'obsidian';
 
 import { DEFAULT_SETTINGS, EmptyApiKey } from './assets/constants';
+import { DEFAULT_DIAGNOSTICS, diagnostics } from './diagnostics/DiagnosticsLog';
+import { DEFAULT_MEMORY, MemoryService } from './memory/MemoryService';
+import { memoryWithModels } from './memory/pluginModels';
+import { mergeVoiceSettings } from './realtime/voiceCatalog';
+import { DEFAULT_MCP_SERVER, McpManager } from './mcp/McpManager';
+import { SubAgentManager } from './agents/SubAgentManager';
+import { OrchestratorAgent } from './agents/OrchestratorAgent';
+import type { Orchestrator } from './agents/OrchestratorAgent';
+import { CallRecorder } from './agents/CallRecorder';
+import { pendingProposals, ProposalPicker } from './ui/ProposalPicker';
+import { mergeLayers } from './agents/layers';
+import { ChatGPTAuth } from './auth/ChatGPTAuth';
+import { GoogleAuth } from './auth/GoogleAuth';
+import { hydrateMcpTokens, withoutSecrets } from './auth/mcpTokens';
+
+/** The id this fork was installed under before it became Voice Agent. */
+const LEGACY_PLUGIN_ID = 'pure-chat-llm';
+import { handleOAuthCallback, OAUTH_ACTION } from './mcp/McpOAuth';
+import { SkillsCatalog } from './skills/SkillsCatalog';
 import { ObsidianFileSystemAdapter } from './adapters/ObsidianFileSystemAdapter';
 import { BlueFileResolver } from './core/BlueFileResolver';
 import { PureChatLLMChat } from './core/Chat';
@@ -27,6 +51,7 @@ import {
   PURE_CHAT_LLM_ICON_NAME,
   PURE_CHAT_LLM_ICON_SVG,
   PURE_CHAT_LLM_VIEW_TYPE,
+  LEGACY_VIEW_TYPES,
   PureChatLLMSettings,
   RoleType,
   VOICE_CALL_VIEW_TYPE,
@@ -46,6 +71,7 @@ import { BrowserConsole } from './utils/BrowserConsole';
 import { codelanguages } from './utils/codelanguages';
 import { replaceNonKeyboardChars } from './utils/replaceNonKeyboard';
 import { toTitleCase } from './utils/toTitleCase';
+import { DurableEngine } from './harness/pluginHost';
 
 /**
  * The main plugin class for the Pure Chat LLM Obsidian plugin.
@@ -78,6 +104,51 @@ export default class PureChatLLM extends Plugin {
   codeBlock: { from: number; to: number } | null = null;
   blueFileResolver: BlueFileResolver;
   blueView: BlueResolutionTreeView | null = null;
+  /** Remote MCP servers shared by every chat and voice session. */
+  mcp: McpManager;
+  /** Background sub-agents run for orchestrators (voice calls). */
+  agents: SubAgentManager;
+  /** The Classic engine's orchestrator agent. */
+  classicOrchestrator: OrchestratorAgent;
+  /**
+   * The layered setup's orchestrator (between the voice layer and the workers), on the engine
+   * chosen in settings. A call keeps the one it started with.
+   */
+  get orchestrator(): Orchestrator {
+    if (this.callOrchestrator) return this.callOrchestrator;
+    return this.durable?.enabled ? this.durable.orchestrator : this.classicOrchestrator;
+  }
+  /**
+   * The orchestrator a live call started with. Changing the engine mid-call takes effect on the
+   * next call, so one call never splits between two orchestrators (review W6).
+   */
+  callOrchestrator: Orchestrator | null = null;
+  /** The conversation panel, while open: shows agent edits for approval inline (EditReview). */
+  reviewHost: ReviewHost | null = null;
+  /** The background tasks of the engine in use, for the voice tools, the panel and call notes. */
+  get taskList(): TaskList {
+    // The durable orchestrator only runs behind a layered voice; otherwise tasks are Classic.
+    const durable = this.callOrchestrator
+      ? this.callOrchestrator === this.durable?.orchestrator
+      : this.durable?.enabled && this.settings.orchestrator.voiceRole === 'layered';
+    return durable ? this.durable.tasks : this.agents;
+  }
+  /** True when this load took its settings from the old `pure-chat-llm` plugin folder. */
+  private migratedLegacySettings = false;
+  /** Saves voice calls, the orchestrator's conversation and sub-threads as linked notes. */
+  calls: CallRecorder;
+  /** Sign in with ChatGPT for layers that run on the user's ChatGPT plan. */
+  chatgpt: ChatGPTAuth;
+  /** Google sign-in for Gemini layers (the user's own Cloud OAuth client). */
+  google: GoogleAuth;
+  /** Agent Skills discovered in the vault. */
+  skills: SkillsCatalog;
+  /** The Pi Durable engine, opened on first use when settings choose it (desktop only). */
+  durable: DurableEngine;
+  /** The agents' shared memory graph (relate), when turned on in settings. */
+  memory: MemoryService;
+  /** Small key/value store that persists code mode `store()` values for this session. */
+  codeModeStore: Map<string, string> = new Map();
 
   /**
    * Initializes the plugin by loading settings, registering views, commands, and setting up the UI.
@@ -93,6 +164,44 @@ export default class PureChatLLM extends Plugin {
 
     this.pureChatStatusElement = this.addStatusBarItem();
     void this.status('Loading...');
+    // The diagnostics log starts first, so it sees the rest of startup.
+    diagnostics.configure({
+      settings: () => this.settings.diagnostics,
+      store: this.app.vault.adapter,
+      secretsFrom: () => this.settings,
+      about: () => ({
+        version: this.manifest.version,
+        id: this.manifest.id,
+        mobile: Platform.isMobile,
+        voiceRole: this.settings.orchestrator.voiceRole,
+        engine: this.settings.orchestrator.engine,
+        voiceProvider: this.settings.voice.provider,
+      }),
+    });
+    await diagnostics.start();
+    this.memory = new MemoryService({
+      settings: () => this.settings.memory,
+      store: this.app.vault.adapter,
+      onProblem: problem =>
+        new Notice(
+          problem
+            ? `Shared memory is not being saved: ${problem}`
+            : 'Shared memory is being saved again.',
+          problem ? 10000 : 4000,
+        ),
+    });
+    // Open the memory early so the first call's agents start with their brief; sync can bring
+    // another device's copy, which is merged in.
+    this.app.workspace.onLayoutReady(() => {
+      if (this.memory.enabled) {
+        void this.memory.open().catch(error => this.console?.error?.('Memory', error));
+      }
+      // The librarian and recall use the worker model and an embeddings endpoint.
+      memoryWithModels(this);
+    });
+    this.registerEvent(
+      this.app.vault.on('modify', file => void this.memory.onFileChanged(file.path)),
+    );
     this.console = new BrowserConsole(this.settings.debug, 'PureChatLLM');
     this.console.log('settings loaded', this.settings);
     //runTest(this.settings.endpoints[0].apiKey); // Run the test function to check if the plugin is working
@@ -101,10 +210,53 @@ export default class PureChatLLM extends Plugin {
     const fileSystem = new ObsidianFileSystemAdapter(this.app);
     this.blueFileResolver = new BlueFileResolver(this, fileSystem);
 
+    // Remote MCP servers: discover tools in the background so startup stays fast.
+    this.mcp = new McpManager(this);
+    this.agents = new SubAgentManager(this);
+    this.classicOrchestrator = new OrchestratorAgent(this);
+    this.calls = new CallRecorder(this);
+    this.durable = new DurableEngine(this);
+    this.chatgpt = new ChatGPTAuth(this.app);
+    this.google = new GoogleAuth(this.app);
+    // Read the sign-ins once, after startup, so the settings tab and the first request answer
+    // from memory and never wait on the system keyring (see auth/secrets.ts).
+    this.app.workspace.onLayoutReady(() => {
+      void this.chatgpt.email;
+      void this.google.projectId;
+      void this.google.signedIn;
+    });
+    // OAuth sign-in for remote MCP servers returns to obsidian://pure-chat-llm-oauth.
+    this.registerObsidianProtocolHandler(OAUTH_ACTION, params => handleOAuthCallback(params));
+    this.app.workspace.onLayoutReady(() => void this.mcp.refreshAll(false));
+    this.app.workspace.onLayoutReady(() => this.moveLegacyPanels());
+
+    // Agent Skills (agentskills.io): keep the catalogue in sync with the skills folder.
+    this.skills = new SkillsCatalog(this);
+    this.app.workspace.onLayoutReady(() => void this.skills.refresh());
+    // Answers in the panels may hold LaTeX; load the math renderer once, before the first one.
+    this.app.workspace.onLayoutReady(() => void loadMathJax().catch(() => {}));
+    for (const event of ['create', 'modify', 'delete'] as const) {
+      this.registerEvent(
+        this.app.vault.on(event as 'create', file => this.skills.onVaultChange(file)),
+      );
+    }
+    this.registerEvent(
+      this.app.vault.on('rename', (file, oldPath) => {
+        this.skills.onVaultChange(file);
+        this.skills.onVaultChange(oldPath);
+      }),
+    );
+
     this.registerView(PURE_CHAT_LLM_VIEW_TYPE, leaf => new PureChatLLMSideView(leaf, this));
     this.registerView(CODE_PREVIEW_VIEW_TYPE, leaf => new CodePreview(leaf, this));
     this.registerView(VOICE_CALL_VIEW_TYPE, leaf => new VoiceCallSideView(leaf, this));
     this.registerView(BLUE_RESOLUTION_VIEW_TYPE, leaf => new BlueResolutionTreeView(leaf, this));
+    // Wikilinks in the side panels preview on hover (Page preview core plugin, Mod-hover).
+    this.registerHoverLinkSource(VOICE_CALL_VIEW_TYPE, { display: 'Voice call', defaultMod: true });
+    this.registerHoverLinkSource(PURE_CHAT_LLM_VIEW_TYPE, {
+      display: 'Conversation overview',
+      defaultMod: true,
+    });
 
     this.addRibbonIcon(
       PURE_CHAT_LLM_ICON_NAME,
@@ -255,6 +407,16 @@ export default class PureChatLLM extends Plugin {
    * @returns {void}
    */
   private setupChatCommandHandlers() {
+    this.addCommand({
+      id: 'review-proposals',
+      name: 'Review proposals from background tasks',
+      icon: 'git-pull-request',
+      callback: () => {
+        const proposals = pendingProposals(this.app);
+        if (!proposals.length) new Notice('No proposals are waiting for review.');
+        else new ProposalPicker(this.app, proposals).open();
+      },
+    });
     this.addCommand({
       id: 'complete-chat-response',
       name: 'Complete chat response',
@@ -420,14 +582,14 @@ export default class PureChatLLM extends Plugin {
   /**
    * Updates the status bar with the provided text.
    *
-   * Displays a message in the status bar prefixed with '[Pure Chat LLM]'.
+   * Displays a message in the status bar prefixed with '[Voice Agent]'.
    *
    * @param {string} text - The message text to display in the status bar.
    * @returns {void}
    */
   status(text: string) {
     // Display a message in the status bar
-    this.pureChatStatusElement.setText(`[Pure Chat LLM] ${text}`);
+    this.pureChatStatusElement.setText(`[Voice Agent] ${text}`);
   }
 
   /**
@@ -461,7 +623,7 @@ export default class PureChatLLM extends Plugin {
     // make sure this stays up to date as the documentation does'nt include all the functions used here
     await this.app.setting.open();
     this.app.setting.openTabById('hotkeys');
-    this.app.setting.activeTab.searchComponent.setValue('Pure Chat LLM');
+    this.app.setting.activeTab.searchComponent.setValue(this.manifest.name);
     this.app.setting.activeTab.searchComponent.onChanged();
   }
 
@@ -470,7 +632,7 @@ export default class PureChatLLM extends Plugin {
    */
   async openSettings(): Promise<void> {
     await this.app.setting.open();
-    this.app.setting.openTabById('pure-chat-llm');
+    this.app.setting.openTabById(this.manifest.id);
   }
 
   /**
@@ -734,10 +896,30 @@ export default class PureChatLLM extends Plugin {
    *
    * @returns {Promise<void>}
    */
+  /**
+   * This plugin's saved data, or on first load under the `voice-agent` id, the settings saved
+   * under the previous `pure-chat-llm` id. The old file is left as it was.
+   */
+  private async loadOwnOrLegacyData(): Promise<unknown> {
+    const own: unknown = await this.loadData();
+    if (own) return own;
+    const path = normalizePath(`${this.app.vault.configDir}/plugins/${LEGACY_PLUGIN_ID}/data.json`);
+    try {
+      const adapter = this.app.vault.adapter;
+      if (!(await adapter.exists(path))) return own;
+      const data: unknown = JSON.parse(await adapter.read(path));
+      this.migratedLegacySettings = true;
+      return data;
+    } catch (error) {
+      console.error('Voice Agent: could not read the old Pure Chat LLM settings', error);
+      return own;
+    }
+  }
+
   async loadSettings() {
     const loadedData: PureChatLLMSettings = {
       ...DEFAULT_SETTINGS,
-      ...((await this.loadData()) as PureChatLLMSettings),
+      ...((await this.loadOwnOrLegacyData()) as PureChatLLMSettings),
     };
 
     this.settings = { ...loadedData };
@@ -751,6 +933,32 @@ export default class PureChatLLM extends Plugin {
         ...DEFAULT_SETTINGS.selectionTemplates,
         ...loadedData.selectionTemplates,
       },
+      enabledToolClassifications: {
+        ...DEFAULT_SETTINGS.enabledToolClassifications,
+        ...loadedData.enabledToolClassifications,
+      },
+      voice: mergeVoiceSettings(loadedData.voice),
+      mcpServers: (loadedData.mcpServers ?? []).map(server => ({
+        ...DEFAULT_MCP_SERVER,
+        ...server,
+      })),
+      codeMode: { ...DEFAULT_SETTINGS.codeMode, ...loadedData.codeMode },
+      orchestrator: {
+        ...DEFAULT_SETTINGS.orchestrator,
+        ...loadedData.orchestrator,
+        routes: {
+          ...DEFAULT_SETTINGS.orchestrator.routes,
+          ...loadedData.orchestrator?.routes,
+        },
+        writes: {
+          ...DEFAULT_SETTINGS.orchestrator.writes,
+          ...loadedData.orchestrator?.writes,
+        },
+        layers: mergeLayers(loadedData.orchestrator),
+      },
+      graph: { ...DEFAULT_SETTINGS.graph, ...loadedData.graph },
+      diagnostics: { ...DEFAULT_DIAGNOSTICS, ...loadedData.diagnostics },
+      memory: { ...DEFAULT_MEMORY, ...loadedData.memory },
     };
 
     const toSentenceCase = (str: string) =>
@@ -800,6 +1008,27 @@ export default class PureChatLLM extends Plugin {
         this.settings.endpoints.find(e => e.name === endpoint.name) ||
         this.settings.endpoints.push(endpoint),
     );
+    // MCP sign-in tokens live in secret storage; older versions saved them in this file.
+    // Hani asked to approve agents' edits in the conversation: move the old "reviewers decide"
+    // default for background edits and deletions to "ask me", once.
+    const o = this.settings.orchestrator;
+    let askDefaultMoved = false;
+    if (!loadedData.orchestrator?.writesAskDefault) {
+      for (const action of ['edit', 'delete'] as const) {
+        if (o.writes[action] === 'peer') o.writes[action] = 'review';
+      }
+      o.writesAskDefault = true;
+      askDefaultMoved = true;
+    }
+    const moved = hydrateMcpTokens(this.app, this.settings.mcpServers);
+    if (moved || askDefaultMoved || this.migratedLegacySettings) await this.saveSettings();
+    if (this.migratedLegacySettings) {
+      this.migratedLegacySettings = false;
+      new Notice(
+        'Voice Agent carried your Pure Chat LLM settings over. Hotkeys need binding again, and turn off Pure Chat LLM if it is still on.',
+        15000,
+      );
+    }
   }
 
   /**
@@ -820,14 +1049,40 @@ export default class PureChatLLM extends Plugin {
         .map(key => [key, this.settings.chatTemplates[key]])
         .filter(([key, value]) => key && value),
     ) as { [key: string]: string };
-    await this.saveData(this.settings);
+    await this.saveData(withoutSecrets(this.app, this.settings));
+    // A changed key is redacted from the log from now on.
+    diagnostics.refreshSecrets();
   }
 
   /**
    *
    */
+  /**
+   * Panels saved under the view names used before 2.0.0-beta.7 reopen under the new ones,
+   * unless the original Pure Chat LLM is enabled and owns those names.
+   */
+  private moveLegacyPanels(): void {
+    const plugins = (this.app as unknown as { plugins?: { enabledPlugins?: Set<string> } }).plugins;
+    if (plugins?.enabledPlugins?.has('pure-chat-llm')) return;
+    this.app.workspace.iterateAllLeaves(leaf => {
+      const state = leaf.getViewState();
+      const moved = LEGACY_VIEW_TYPES[state.type];
+      if (moved) void leaf.setViewState({ ...state, type: moved });
+    });
+  }
+
   onunload() {
-    // Cleanup code if needed
+    void diagnostics.stop();
+    // Give a running librarian pass a moment to save what it learned, then close.
+    const memory = this.memory;
+    void Promise.race([memory?.idle(), new Promise(r => window.setTimeout(r, 3000))]).then(() =>
+      memory?.close(),
+    );
+    this.mcp?.dispose();
+    this.classicOrchestrator?.dispose();
+    this.calls?.dispose();
+    this.agents?.dispose();
+    void this.durable?.dispose();
   }
 }
 
@@ -954,7 +1209,7 @@ export class SelectionPromptEditor extends Modal {
     new Setting(this.contentEl)
       .setName('All templates')
 
-      .setDesc('Manage all prompt templates for the Pure Chat LLM plugin.')
+      .setDesc('Manage all prompt templates for the Voice Agent plugin.')
       .setHeading()
       .addExtraButton(btn =>
         btn

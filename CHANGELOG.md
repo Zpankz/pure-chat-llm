@@ -5,6 +5,119 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.0-beta.8] - 2026-11-18
+
+Everything in beta.7, plus a typed message box, approving edits in the conversation, native rendering and a much better memory:
+
+- **Typed message box** under the conversation in the Voice Agent panel, talking to the same orchestrator as a call, with or without one. `[[` and `@` offer notes (`@` attaches the note), `/` offers stop, new, clear and your skills. The + menu adds the current note, selected text, any note or file, a skill, a tool, a photo or the camera. Images are saved to the vault and sent to the model. The send button becomes stop while the orchestrator works.
+- **Approve edits in the conversation.** An agent's edit or deletion shows as a card with the lines changed, a preview, and Approve, Reject and Open in window. Background tasks now ask you by default (installs still on the old "reviewers decide" default are moved once; you can change it back in settings). Their changes wait as proposals when the panel is closed and come back as cards when it opens.
+- **Native rendering** in answers: mermaid and pele diagrams (drawn with pele), LaTeX (`$…$`, `$$…$$`, `\(…\)`, `\[…\]`), tables, images, embedded notes and PDFs. A narrow panel shows a PDF as a link and shrinks long equations.
+- **Memory (from the beta.7 audit):** a librarian on the worker model files what each call, task and long stretch of a call taught, confirming what it knew, correcting or closing what changed, each fact linked to where it came from, and writes a real summary of each call. Each request to the orchestrator, each worker brief and each note-chat turn gets a few relevant facts; the fixed instructions change only when your standing preferences do, so prompt caching works. One entity per name whatever its kind, near-copies confirm instead of duplicating, and observations fade after about a month. Recall finds paraphrases with embeddings from a provider you have a key for, and searches task results and call summaries. The topic, task progress and each request are shared with every agent. A task's result can add facts but never a preference or instruction, and recalled task results are quoted, not passed on as instructions. New settings: Learn from calls and tasks, Embeddings for recall, Embedding model. Times in memory are local.
+- Stopping a turn no longer reports a timeout or logs an error.
+
+## [2.0.0-beta.7] - 2026-11-18
+
+Everything in beta.6, plus fixes for the orchestrator and background agents not starting, and for the caret:
+
+- **Agents start again.** OpenAI (Responses) requests no longer fail on strict tool checking. Workers run on the orchestrator's model when the worker model has no key, and a worker that can't start is said at once. A failed background task, or an orchestrator turn that fails while it is set up, is always told to you. The agent tools (relays, tasks, memory, skills, code mode) stay on whichever tool groups you switch off.
+- **Durable engine:** the voice's check_tasks and cancel_task, the call panel and the call notes now see its workers, and you can stop them from the voice or the panel. Code mode can no longer start hidden Classic workers, and a report queued behind a failed run is kept.
+- **Caret:** only the newest unfinished line blinks. An interrupted speaker finishes their own line in place instead of repeating it below, and a speaker's new line closes their old one (GPT-Live and OpenAI Realtime).
+- Voice Agent and Pure Chat LLM can be enabled together (own view names; panels saved under the old names reopen).
+- **Memory:** a file that sync is still writing is read again before giving up, and a notice says when saving stops or resumes. Changing the memory folder copies the memory there and leaves the old file. Agents' own queries get a row limit. Tasks cut off by an earlier quit are closed. When two devices' copies merge, a cleared shared value stays cleared and each slot keeps only its newest fact.
+- **Safety:** the settings tool can't change safety settings, agents can't write in the app's config folder or the memory file, and each orchestrator tool call has its own deadline.
+- **Smaller fixes:** the model chooser no longer loops when the first provider has no key and no longer changes your default provider; the error box is readable; tool cards read "Searching…" while running and "Couldn't…" when they fail; Reset settings keeps your keys and added providers; a call that drops stops listening.
+- The API key box is masked and asks about the provider you picked. The conversation overview redraws at most every quarter second while you type, not while hidden, and both panels unload old rendered Markdown instead of piling it up.
+- Settings say which worker limits the durable engine doesn't use yet, that the task routes apply only in the Orchestrator role, and that Agent mode is about note chats. The log folder applies when you leave the field, and Refresh list of models asks only providers with a key and shows one notice.
+- Screen readers hear each card's state, task titles work from the keyboard, and the overview's settings button has a label.
+
+## [2.0.0-beta.6] - 2026-11-18
+
+Everything in beta.5, plus:
+
+- The voice call conversation is no longer squeezed to a sliver by the agents list below it.
+
+## [2.0.0-beta.5] - 2026-11-18
+
+Everything in beta.4, plus a redesigned conversation in the voice call panel and the conversation overview:
+
+- **Turns:** your turns on the right in accent-tinted bubbles, the agent's on the left with an avatar; words still being heard are dimmed with a caret.
+- **Tool and skill cards:** one card per call with an icon and colour by kind (skill, memory, vault read, search, graph, write, delete, agent, MCP), a plain label, the telling argument, a live timer, then a tick or a cross and the duration. A card opens to the arguments and the rendered result. Skills show their name as a chip. The "Running tool" notices are gone.
+- **Agents:** updates from background agents and the orchestrator are cards with their message; ones that cut in are marked. Background agents show status, a live elapsed time and progress bar, what each is doing now, its question or result, its steps on demand, and buttons to open its thread or stop it.
+- **Wikilinks** in both panels open on click (Ctrl/Cmd-click for a new tab) and preview on hover, like in a note.
+- Light, dark and mobile follow your theme.
+
+## [2.0.0-beta.4] - 2026-11-18
+
+Everything in beta.3, plus:
+
+- **Shared memory** (Settings → Shared memory, off by default). One graph database, [relate](https://relatedb.ai) compiled to WebAssembly and built into the plugin, that the voice agent, the orchestrator (Classic and Durable), workers and agent chats all read and write, saved as `Voice Agent/Memory/memory.json` so new sessions and other devices start from it. It holds facts (preferences, instructions, decisions, todos, summaries, observations) linked to the people, projects and notes they are about, the calls, app sessions and tasks that ran, and shared state. Each agent's instructions start with a short brief from it.
+- **Memory tools:** `memory_recall` (full-text and by subject), `memory_remember` (with slots and corrections that close the old fact; nothing is deleted), `memory_forget`, `memory_state` (values every agent sees now, per call or global) and `memory_query` (an agent's own read-only Cypher, with bound parameters and a row cap; writes are refused).
+- Copies of memory.json from two devices are merged, and a memory file that can't be read is never replaced.
+- main.js is larger (about 4.4 MB) because it carries the graph engine.
+
+## [2.0.0-beta.3] - 2026-11-18
+
+Everything in beta.2, plus:
+
+- **Diagnostics log** (Settings → Diagnostics log, off by default). Records console output, every model request and response, every tool call with its arguments, result and duration, voice transcripts and the orchestrator's steps, as one JSON line per event in `Voice Agent/Diagnostics/<date>/<session>.jsonl`. API keys, tokens and auth headers are always removed. Files are capped at 5 MB (a session continues in a new part), day folders older than 14 days are removed at startup, and each call note links its log file under `diagnostics:`.
+
+## [2.0.0-beta.2] - 2026-11-17
+
+Second test build, for trying the durable engine. Everything in beta.1, plus:
+
+- **Agent engine setting** under the orchestrator settings: Classic (as before) or Durable (in testing, desktop only). A call keeps the engine it started with.
+- **Durable engine** (Pi Durable): the orchestrator's conversation, its tool calls and its background workers are kept in the app's storage, so a reload or crash resumes where it stopped and workers report back after a restart.
+- **Voice calls on the durable engine:** requests reach the durable orchestrator, `tell_user` speaks in the call, an answer without it is still spoken, and a failed request is said in words. The call notes record what the orchestrator did.
+- **Durable workers** take questions back to the orchestrator, timed check-ins (a quiet note while they move, one stuck report when they stop) and follow-ups after they finish.
+
+Not yet in this build: durable workers don't show in the call panel's task list.
+
+## [2.0.0-beta.1] - 2026-11-15
+
+Test build of Voice Agent 2.0 for installing with BRAT. It holds everything listed under Unreleased below, plus:
+
+- **Settings tab no longer freezes Obsidian** when Agent settings render the code mode section.
+- **Groundwork for a durable engine** (Pi Durable). It is not switched on in this build: calls run on the Classic engine as before.
+
+This is a pre-release: settings move from Pure Chat LLM to the new `voice-agent` id on first load, and hotkeys need binding again.
+
+## [Unreleased]
+
+### Added
+
+- **New voice providers**: OpenAI GPT-Live (`gpt-live-1`, full duplex) and xAI Grok voice (`grok-voice-latest`).
+- **GPT-Live duplex agent settings**: choose OpenAI Responses or this plugin as the backend agent, with backend model, instructions, reasoning effort, tool choice, parallel calls, service tier, web search, acknowledgement delay and session storage.
+- **Code mode tool** (`codemode`): models write one sandboxed JavaScript script that calls several tools, with tool search, a key/value store between runs and inline limits.
+- **Agent Skills**: skills in the agentskills.io format load from a vault folder with progressive disclosure (`activate_skill`, `read_skill_file`).
+- **Remote MCP servers**: Streamable HTTP client for MCP 2026-07-28 with fallback to 2025-11-25, bearer tokens, custom headers, tool allow-lists, and bridge or native mode. Tools appear under a new MCP tool category.
+- **Layered voice agents**: voice, orchestrator, worker and optional evaluator layers, each with its own provider, model, reasoning effort and API. The orchestrator agent sees the whole call and short worker summaries and reads a worker's thread on demand; the voice sees what the orchestrator says and an overview of its activity; workers see only their brief.
+- **Background workers** with hooks for started, progress, needs advice, stuck, timed check-ins, finished, failed and cancelled; per-event routing; GPT-Live-style timing with a relevance check that interrupts only when an update changes what you are saying.
+- **Two-reviewer writes**: workers create notes freely; edits and deletes need two independent reviewers, with a backup before edits and deletes to the trash.
+- **Sign in with ChatGPT** (desktop) for layers that run on a ChatGPT plan, through the Responses API. Tokens are kept in Obsidian's secret storage.
+- **Responses API** support for OpenAI layers (needed for tool calls on newer models).
+- **Meta** endpoint (`api.meta.ai`) for Muse models.
+- **Typed graph tools**: `traverse_graph` with typed relations, `vault_ontology` and `graph_cli` with saved traversal commands.
+- **djs engine** for code mode, with the Web Worker as fallback.
+- **OAuth sign-in for remote MCP servers**, with tokens in secret storage.
+- **Voice settings** for every provider, a live transcript in the voice call panel, and a choice to expose all tools or only code mode to voice models.
+- **Calls saved as linked notes**: each voice call saves its transcript, the orchestrator's conversation and every worker thread as notes in a folder you choose (default `Voice Agent`). The call note links to the orchestrator note, which links to each thread, and each thread links back.
+- **Duplex agent settings in six groups**: Voice, Orchestrator, Workers, Evaluator, Interruptions and Check-ins.
+- **Sign in with Google** (desktop) for Gemini layers, using an OAuth client in your own Google Cloud project. Tokens are kept in Obsidian's secret storage.
+- **Install with BRAT**: a release workflow attaches `main.js`, `manifest.json` and `styles.css` to a GitHub release for each version tag, after checking the tag matches the manifest and running the tests.
+- **Unit tests**: `npm test` runs tools against an in-memory vault with Node's built-in test runner.
+
+### Changed
+
+- **Renamed to Voice Agent**, with the new plugin id `voice-agent`. Your Pure Chat LLM settings are copied on first load and sign-ins carry over. Hotkeys need binding again, and Pure Chat LLM should be turned off if it is still on.
+- **One tool contract**: every tool reports failures in one format (`Error: Type: reason` with what to try), data tools can return compact JSON (code mode asks for it by default), and each tool lists the layers it may run in. Background workers no longer get tools that open dialogs, change your tabs or flash notices.
+- **Voice calls fail gracefully** on phones and other devices without microphone access, WebRTC or audio worklets: the call button explains why and what still works, and a call that fails to connect no longer leaves a call note.
+- Skills can name their main file after the skill folder instead of `SKILL.md`.
+- Code mode scripts can't call image or music generation or change plugin settings, so they have no network beyond MCP servers.
+- Folder lookups and search accept folder names in any case; search can be limited to a folder.
+
+- **OpenAI realtime** now uses the GA session shape with `gpt-realtime-2.1`, semantic VAD, noise reduction, input transcription, reasoning effort and parallel tool calls.
+- **Gemini live** now defaults to `gemini-3.8-live`, sends audio with `realtimeInput.audio`, and supports non-blocking tools with scheduling, context compression, session resumption, `goAway` reconnects, transcripts, proactive audio and thinking levels.
+
 ## [1.12.1] - 2026-02-09
 
 ### Added

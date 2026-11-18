@@ -1,6 +1,6 @@
 {
-  "name": "pure-chat-llm",
-  "version": "1.12.1",
+  "name": "voice-agent",
+  "version": "2.0.0-beta.8",
   "description": "Turn notes into conversations with chatGPT",
   "main": "main.js",
   "scripts": {
@@ -11,7 +11,8 @@
     "release": "bash Release.sh",
     "lint": "eslint \"src/**/*.ts\"",
     "lint:fix": "eslint \"src/**/*.ts\" --fix",
-    "copy-to-mobile-vault": "kioclient5 --overwrite copy styles.css manifest.json main.js \"mtp:/Armor X31 Pro/Internal shared storage/Documents/Obsidian/.obsidian/plugins/pure-chat-llm/\""
+    "copy-to-mobile-vault": "kioclient5 --overwrite copy styles.css manifest.json main.js \"mtp:/Armor X31 Pro/Internal shared storage/Documents/Obsidian/.obsidian/plugins/pure-chat-llm/\"",
+    "test": "node tests/unit/run.mjs"
   },
   "keywords": [
     "obsidian",
@@ -30,10 +31,10 @@
     "@types/glob-to-regexp": "^0.4.4",
     "@types/node": "^25.0.2",
     "builtin-modules": "5.0.0",
-    "esbuild": "^0.27.2",
+    "esbuild": "0.28.2",
     "eslint": "^9.39.2",
-    "eslint-plugin-obsidianmd": "^0.1.9",
     "eslint-plugin-jsdoc": "^62.5.4",
+    "eslint-plugin-obsidianmd": "^0.1.9",
     "globals": "^16.5.0",
     "obsidian": "latest",
     "prettier": "^3.7.4",
@@ -43,7 +44,16 @@
     "typescript-eslint": "^8.50.1"
   },
   "dependencies": {
+    "@earendil-works/chord": "1.5.2",
+    "@earendil-works/pi-ai": "1.5.2",
+    "@earendil-works/pi-durable": "1.5.2",
+    "@earendil-works/pi-schema": "1.5.2",
+    "@relate/relate-wasm": "1.1.0",
     "diff": "^8.0.3",
-    "glob-to-regexp": "^0.4.1"
+    "glob-to-regexp": "^0.4.1",
+    "pele": "1.13.0"
+  },
+  "overrides": {
+    "ws": "8.21.0"
   }
 }

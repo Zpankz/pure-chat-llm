@@ -29,17 +29,20 @@ export class AskForAPI extends Modal {
   app: App;
   private apiKey: string;
   private modal: string;
+  private index: number;
 
   /**
    *
    * @param app
    * @param plugin
+   * @param endpointIndex - The provider to ask about; the default provider when left out.
    */
-  constructor(app: App, plugin: PureChatLLM) {
+  constructor(app: App, plugin: PureChatLLM, endpointIndex = plugin.settings.endpoint) {
     super(app);
     this.plugin = plugin;
     this.app = app;
-    const endpoint = plugin.settings.endpoints[plugin.settings.endpoint];
+    this.index = endpointIndex;
+    const endpoint = plugin.settings.endpoints[endpointIndex];
     this.apiKey = endpoint.apiKey;
     this.setTitle(`Enter your ${endpoint.name} API key`);
 
@@ -50,15 +53,17 @@ export class AskForAPI extends Modal {
    *
    */
   private buildUI() {
-    const endpoint = this.plugin.settings.endpoints[this.plugin.settings.endpoint];
+    const endpoint = this.plugin.settings.endpoints[this.index];
 
     new Setting(this.contentEl)
       .setName('API key')
       .setDesc(`Enter your ${endpoint.name} API key.`)
       .addText(text => {
+        // Masked, and never shown as the placeholder, so a screen share doesn't show it (C3).
+        text.inputEl.type = 'password';
         text
-          .setPlaceholder(this.apiKey)
-          .setValue(this.apiKey)
+          .setPlaceholder('Paste the key')
+          .setValue(this.apiKey === EmptyApiKey ? '' : this.apiKey)
           .onChange(value => {
             this.apiKey = value.trim();
           });
@@ -101,8 +106,7 @@ export class AskForAPI extends Modal {
    *
    */
   private async saveAndClose() {
-    this.plugin.settings.endpoints[this.plugin.settings.endpoint].apiKey =
-      this.apiKey || EmptyApiKey;
+    this.plugin.settings.endpoints[this.index].apiKey = this.apiKey || EmptyApiKey;
     await this.plugin.saveSettings();
     this.close();
   }

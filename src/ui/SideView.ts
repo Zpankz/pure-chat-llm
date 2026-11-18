@@ -1,11 +1,11 @@
 import {
   App,
+  Component,
   Editor,
   EditorRange,
   ExtraButtonComponent,
   FuzzySuggestModal,
   ItemView,
-  MarkdownRenderer,
   MarkdownView,
   Notice,
   Platform,
@@ -15,12 +15,15 @@ import {
 import { alloptions, EmptyApiKey } from 'src/assets/constants';
 import { PureChatLLMChat } from '../core/Chat';
 import PureChatLLM from '../main';
-import { PURE_CHAT_LLM_ICON_NAME, PURE_CHAT_LLM_VIEW_TYPE } from '../types';
+import { PURE_CHAT_LLM_ICON_NAME, PURE_CHAT_LLM_VIEW_TYPE, TOOL_CLASSIFICATIONS } from '../types';
 import { BrowserConsole } from '../utils/BrowserConsole';
 import { toTitleCase } from '../utils/toTitleCase';
 import { CodeHandling, SectionHandling } from './CodeHandling';
 import { CODE_PREVIEW_VIEW_TYPE } from './CodePreview';
 import { AskForAPI } from './Modals';
+import { drawToolCard, drawTurnHeader, renderMarkdown, wireLinks } from './conversation';
+import { clipPreview } from './conversationModel';
+import { isToolError } from '../tools/toolContract';
 
 /**
  * Represents the side view for the Pure Chat LLM plugin in Obsidian.
@@ -46,6 +49,11 @@ import { AskForAPI } from './Modals';
  */
 export class PureChatLLMSideView extends ItemView {
   ischat = false;
+  /** Owns the Markdown of the current redraw. */
+  private renderOwner: Component | null = null;
+  private updateTimer: number | null = null;
+  /** An edit came in while the panel was hidden. */
+  private stale = false;
   isExpanded = false;
   icon: string = PURE_CHAT_LLM_ICON_NAME;
   console: BrowserConsole = new BrowserConsole(this.plugin.settings.debug, 'PureChatLLMSideView');
@@ -83,12 +91,27 @@ export class PureChatLLMSideView extends ItemView {
    *
    */
   async onOpen() {
+    // Wikilinks in the previews open on click and preview on hover, like in a note.
+    wireLinks(
+      this.app,
+      this,
+      this.contentEl,
+      PURE_CHAT_LLM_VIEW_TYPE,
+      () => this.app.workspace.getActiveFile()?.path ?? '',
+    );
     // when a file is loaded or changed, update the view
 
     this.registerEvent(
       this.app.workspace.on('editor-change', (editor: Editor, view: MarkdownView) => {
-        // if the user is typing in the editor, update the view
-        if (!this.plugin.isresponding) this.update(editor, view);
+        // While typing, redraw at most every 250 ms, and not while the panel is hidden (U3).
+        if (!this.plugin.isresponding) this.scheduleUpdate(editor, view);
+      }),
+    );
+    this.registerEvent(
+      this.app.workspace.on('layout-change', () => {
+        if (!this.stale || !this.containerEl.isShown()) return;
+        const view = this.app.workspace.getActiveViewOfType(MarkdownView);
+        if (view?.editor) this.update(view.editor, view);
       }),
     );
     this.registerEvent(
@@ -144,7 +167,7 @@ export class PureChatLLMSideView extends ItemView {
     this.contentEl.empty();
 
     new Setting(this.contentEl)
-      .setName('Pure Chat LLM')
+      .setName('Voice Agent')
       .setClass('PUREfloattop')
       .setHeading()
       .addButton(btn => btn.setButtonText('Hot keys').onClick(() => this.plugin.openHotkeys()))
@@ -158,7 +181,12 @@ export class PureChatLLMSideView extends ItemView {
               .setTooltip('Choose model and provider'),
           );
       })
-      .addExtraButton(btn => btn.setIcon('settings').onClick(() => this.plugin.openSettings()))
+      .addExtraButton(btn =>
+        btn
+          .setIcon('settings')
+          .setTooltip('Settings')
+          .onClick(() => this.plugin.openSettings()),
+      )
       .addExtraButton(btn =>
         btn
           .setIcon('phone')
@@ -200,7 +228,25 @@ export class PureChatLLMSideView extends ItemView {
    * @param editor
    * @param view
    */
+  scheduleUpdate(editor: Editor, view: MarkdownView) {
+    if (!this.containerEl.isShown()) {
+      this.stale = true;
+      return;
+    }
+    if (this.updateTimer !== null) window.clearTimeout(this.updateTimer);
+    this.updateTimer = window.setTimeout(() => {
+      this.updateTimer = null;
+      this.update(editor, view);
+    }, 250);
+  }
+
+  /**
+   * Redraws the overview from the editor's text now.
+   * @param editor - Editor.
+   * @param view - Its view.
+   */
   update(editor: Editor, view: MarkdownView) {
+    this.stale = false;
     //MetadataCache
     //resolveSubpath
     const editorValue = editor.getValue();
@@ -211,6 +257,10 @@ export class PureChatLLMSideView extends ItemView {
     );
     this.ischat = chat.validChat;
     const container = this.contentEl;
+    // Each redraw owns its rendered Markdown, so embeds and code blocks from the last one are
+    // unloaded rather than piling up on the view (U3).
+    if (this.renderOwner) this.removeChild(this.renderOwner);
+    this.renderOwner = this.addChild(new Component());
     container.empty();
     if (!chat.validChat || !editorValue) {
       this.defaultContent();
@@ -291,7 +341,7 @@ export class PureChatLLMSideView extends ItemView {
     //});
     if (this.isExpanded) {
       new Setting(container).setName('Tools used in this chat').then(s => {
-        (['Vault', 'UI', 'System', 'AI'] as const).forEach(classification => {
+        TOOL_CLASSIFICATIONS.forEach(classification => {
           s.addButton(btn => {
             const en = chat.isEnabled(classification);
             if (en) btn.setCta();
@@ -344,25 +394,67 @@ export class PureChatLLMSideView extends ItemView {
     editor: Editor,
     view: MarkdownView,
   ) {
+    container.addClass('va-conversation', 'va-overview');
+    const owner = this.renderOwner ?? this;
+    const sourcePath = view.file?.path ?? '';
+    const speaker = (role: string) =>
+      role === 'user' ? 'user' : role === 'assistant' || role === 'tool' ? 'agent' : 'system';
     chat.messages.forEach((message, index) => {
-      const preview = message.content.substring(0, 400);
+      const preview = clipPreview(message.content, 500);
+      const who = speaker(message.role);
+      const prev = chat.messages[index - 1];
+      const continued = !!prev && who !== 'system' && speaker(prev.role) === who;
+      const select = (evt?: MouseEvent) => {
+        // A click on a link opens the link; anywhere else selects the message in the note.
+        if ((evt?.target as HTMLElement | null)?.closest('a')) return;
+        this.goToPostion(editor, chat.clines[index], true);
+      };
 
-      // Role header with clickable position jump
       container.createDiv({ text: '' }, contain => {
-        contain.addClass('PURE', 'messageContainer', message.role);
-        contain.createEl('h1', { text: toTitleCase(message.role) }, el => {
-          el.onClickEvent(() => this.goToPostion(editor, chat.clines[index]));
-          el.addClass('PURE', 'messageHeader', message.role);
-        });
-        // Preview of message content with copy button
+        contain.addClass('va-row', `va-row--${who}`, `va-role-${message.role}`);
+        if (continued) contain.addClass('is-continued');
+        else {
+          const name = who === 'user' ? 'You' : who === 'agent' ? 'Assistant' : 'Instructions';
+          const head = drawTurnHeader(contain, who, name);
+          head.addClass('is-clickable');
+          head.setAttr('aria-label', 'Jump to this message in the note');
+          head.onClickEvent(() => this.goToPostion(editor, chat.clines[index]));
+        }
+        if (message.role === 'tool') {
+          const failed = isToolError(message.content);
+          drawToolCard(
+            this.app,
+            owner,
+            contain,
+            {
+              id: `m${index}`,
+              name: 'tool',
+              status: failed ? 'failed' : 'done',
+              result: message.content,
+              startedAt: 0,
+            },
+            sourcePath,
+            {
+              label: failed ? 'Tool error' : 'Tool result',
+              preview: message.content.trim().split('\n')[0].slice(0, 60),
+            },
+          );
+        } else if (who === 'system' && preview) {
+          const details = contain.createEl('details', { cls: 'va-system' });
+          details.createEl('summary', {
+            text: `${toTitleCase(message.role)} prompt · ${message.content.length} characters`,
+          });
+          renderMarkdown(this.app, owner, preview, details.createDiv(), sourcePath);
+        } else if (preview) {
+          const bubble = contain.createDiv({ cls: `va-bubble va-bubble--${who}` });
+          bubble.onClickEvent(select);
+          renderMarkdown(this.app, owner, preview, bubble, sourcePath);
+        } else if (message.role === 'assistant') {
+          contain.createDiv({ cls: 'va-muted va-small', text: 'Called tools' });
+        }
+        // Actions on the message: shown on hover, always on touch screens.
         contain.createEl('div', '', div => {
-          div.addClass('PURE', 'preview', message.role);
-          if (preview)
-            div.createDiv({ text: '' }, el => {
-              el.onClickEvent(() => this.goToPostion(editor, chat.clines[index], true));
-              el.addClass('PURE', 'messageMarkdown', message.role);
-              void MarkdownRenderer.render(this.app, preview, el, view.file?.basename || '', this);
-            });
+          div.addClass('va-actions');
           if (preview)
             new ExtraButtonComponent(div)
               .setIcon('copy')
@@ -503,7 +595,8 @@ export class PureChatLLMSideView extends ItemView {
    *
    */
   async onClose() {
-    // Nothing to clean up.
+    if (this.updateTimer !== null) window.clearTimeout(this.updateTimer);
+    this.updateTimer = null;
   }
 }
 
@@ -582,16 +675,23 @@ export class ModelAndProviderChooser extends FuzzySuggestModal<ModelAndProvider>
    * @param endpointIndex
    */
   updatemodelist(endpointIndex: number): void {
-    this.currentmodel = this.plugin.settings.endpoints[endpointIndex].name;
-    this.plugin.settings.endpoint = endpointIndex;
-    const endpoint = this.plugin.settings.endpoints[this.plugin.settings.endpoint];
+    const { endpoints } = this.plugin.settings;
+    let endpoint = endpoints[endpointIndex];
     if (endpoint.apiKey === EmptyApiKey) {
-      if (this.firstrun) return this.updatemodelist(0);
-      new AskForAPI(this.app, this.plugin).open();
-      return;
+      // On opening, fall back once to a provider that has a key; never loop (U6).
+      const keyed = this.firstrun ? endpoints.find(e => e.apiKey !== EmptyApiKey) : undefined;
+      if (!keyed) {
+        new AskForAPI(this.app, this.plugin, endpointIndex).open();
+        return;
+      }
+      endpoint = keyed;
     }
+    this.currentmodel = endpoint.name;
+    // Browse this provider without making it the default provider for every chat (U6).
+    const chat = new PureChatLLMChat(this.plugin);
+    chat.endpoint = endpoint;
     this.plugin.modellist = [];
-    void new PureChatLLMChat(this.plugin).getAllModels().then(models => {
+    void chat.getAllModels().then(models => {
       this.plugin.modellist = models;
       this.plugin.settings.ModelsOnEndpoint[endpoint.name] = models;
       void this.plugin.saveSettings();

@@ -9,7 +9,7 @@ export interface CodeSnippetState {
   editor: Editor;
 }
 
-export const CODE_PREVIEW_VIEW_TYPE = 'pure-chat-llm-code-preview';
+export const CODE_PREVIEW_VIEW_TYPE = 'voice-agent-code-preview';
 /**
  *
  * @param app
