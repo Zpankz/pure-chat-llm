@@ -1,4 +1,3 @@
-import { Notice } from 'obsidian';
 import { clipToolOutput } from '../toolAdapters';
 import type { NoticeMode } from '../../agents/types';
 import { toolError } from '../../tools/toolContract';
@@ -124,6 +123,8 @@ export abstract class BaseVoiceProvider implements IVoiceCallProvider {
     return this.config?.settings.fullDuplex ?? true;
   }
 
+  private toolSeq = 0;
+
   /** @param event - Event to report. */
   protected emit(event: VoiceEvent): void {
     if (event.type === 'transcript' && event.role === 'user') this.lastUserSpeech = Date.now();
@@ -143,16 +144,25 @@ export abstract class BaseVoiceProvider implements IVoiceCallProvider {
    */
   protected async runTool(name: string, args: Record<string, unknown>): Promise<string> {
     if (!this.toolExecutor) return 'Error: tools are disabled (agent mode is off).';
-    this.emit({ type: 'tool', name, phase: 'start' });
-    new Notice(`Running tool: ${name}`, 2000);
+    const id = `tool-${++this.toolSeq}`;
+    const started = Date.now();
+    // The call panel shows the call as a card, so no notice is needed.
+    this.emit({ type: 'tool', name, phase: 'start', id, args: args ?? {} });
     try {
       const result = await this.toolExecutor.executeTool(name, args ?? {});
       const text = typeof result === 'string' ? result : JSON.stringify(result);
-      this.emit({ type: 'tool', name, phase: 'end' });
+      this.emit({
+        type: 'tool',
+        name,
+        phase: 'end',
+        id,
+        result: text.slice(0, 4000),
+        ms: Date.now() - started,
+      });
       return clipToolOutput(text, this.config?.settings.maxToolOutputChars ?? 6000);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      this.emit({ type: 'tool', name, phase: 'end', error: message });
+      this.emit({ type: 'tool', name, phase: 'end', id, error: message, ms: Date.now() - started });
       return toolError('ToolFailed', message);
     }
   }

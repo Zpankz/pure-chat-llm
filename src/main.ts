@@ -218,6 +218,12 @@ export default class PureChatLLM extends Plugin {
     this.registerView(CODE_PREVIEW_VIEW_TYPE, leaf => new CodePreview(leaf, this));
     this.registerView(VOICE_CALL_VIEW_TYPE, leaf => new VoiceCallSideView(leaf, this));
     this.registerView(BLUE_RESOLUTION_VIEW_TYPE, leaf => new BlueResolutionTreeView(leaf, this));
+    // Wikilinks in the side panels preview on hover (Page preview core plugin, Mod-hover).
+    this.registerHoverLinkSource(VOICE_CALL_VIEW_TYPE, { display: 'Voice call', defaultMod: true });
+    this.registerHoverLinkSource(PURE_CHAT_LLM_VIEW_TYPE, {
+      display: 'Conversation overview',
+      defaultMod: true,
+    });
 
     this.addRibbonIcon(
       PURE_CHAT_LLM_ICON_NAME,

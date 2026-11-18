@@ -1,4 +1,4 @@
-import { ItemView, WorkspaceLeaf, Setting, Notice, TFile } from 'obsidian';
+import { Component, ItemView, WorkspaceLeaf, Setting, Notice, TFile, setIcon } from 'obsidian';
 import { diagnostics } from '../diagnostics/DiagnosticsLog';
 import { VoiceCall } from '../realtime/VoiceCall';
 import {
@@ -38,6 +38,20 @@ import { voiceUnsupportedReason } from '../realtime/support';
 import type { NoticeMode, SubAgentEvent } from '../agents/types';
 import { TOPIC_GUIDANCE } from '../tools/TopicTool';
 import { shouldInterrupt } from '../agents/relevance';
+import { applyVoiceEvent, continuesTurn, type TranscriptLine } from './conversationModel';
+import {
+  drawStatus,
+  drawTaskCard,
+  drawToolCard,
+  drawTurnHeader,
+  drawUpdate,
+  renderMarkdown,
+  tickElapsed,
+  wireLinks,
+} from './conversation';
+
+/** Lines the pane keeps drawn; the whole call is kept for the saved notes. */
+const VISIBLE_LINES = 80;
 
 /**
  * Turns a sub-agent event into the message the voice model receives.
@@ -66,13 +80,6 @@ export function formatAgentUpdate(event: SubAgentEvent): string {
   }
 }
 
-interface TranscriptLine {
-  role: 'user' | 'assistant' | 'tool';
-  text: string;
-  final: boolean;
-  at?: number;
-}
-
 /**
  * Side panel view for managing voice calls in Obsidian.
  */
@@ -91,6 +98,13 @@ export class VoiceCallSideView extends ItemView {
   private remoteAudioElement: HTMLAudioElement | null = null;
   private tasksEl: HTMLElement | null = null;
   private stopAgentWatch: Array<() => void> = [];
+  /** What is drawn in the transcript pane, so a change redraws only its own line. */
+  private drawn = new Map<TranscriptLine, { el: HTMLElement; rev: number; continued: boolean }>();
+  private drawnIn: HTMLElement | null = null;
+  /** Owns what the Markdown renderer adds to the transcript; replaced on a full redraw. */
+  private lineOwner: Component | null = null;
+  /** Background agents whose steps the user opened. */
+  private openSteps = new Set<string>();
 
   /**
    *
@@ -124,7 +138,16 @@ export class VoiceCallSideView extends ItemView {
    *
    */
   async onOpen(): Promise<void> {
+    // Wikilinks anywhere in the pane open on click and preview on hover, like in a note.
+    wireLinks(this.app, this, this.contentEl, VOICE_CALL_VIEW_TYPE, () => this.sourcePath());
+    const tick = () => tickElapsed(this.contentEl);
+    this.registerInterval(window.setInterval(tick, 1000));
     this.renderView();
+  }
+
+  /** The note links resolve from: the call's note while one is live. */
+  private sourcePath(): string {
+    return this.plugin.calls?.current?.callPath ?? this.app.workspace.getActiveFile()?.path ?? '';
   }
 
   /**
@@ -139,7 +162,7 @@ export class VoiceCallSideView extends ItemView {
     this.renderStatus(contentEl);
     this.renderControls(contentEl);
     this.createRemoteAudioElement(contentEl);
-    this.transcriptEl = contentEl.createDiv({ cls: 'voice-call-transcript' });
+    this.transcriptEl = contentEl.createDiv({ cls: 'va-conversation voice-call-transcript' });
     this.renderTranscript();
     this.tasksEl = contentEl.createDiv({ cls: 'voice-call-tasks' });
     this.renderTasks();
@@ -472,7 +495,13 @@ export class VoiceCallSideView extends ItemView {
         orchestrator.onSay((text, urgency, answersUser) =>
           text.startsWith('[Orchestrator activity]')
             ? this.voiceCall?.notify(text, 'silent')
-            : void this.deliver(`[Orchestrator] ${text}`, 'Orchestrator', urgency, !answersUser),
+            : void this.deliver(
+                `[Orchestrator] ${text}`,
+                'Orchestrator',
+                urgency,
+                !answersUser,
+                text,
+              ),
         ),
         () => orchestrator.setTranscriptSource(null),
       );
@@ -497,6 +526,7 @@ export class VoiceCallSideView extends ItemView {
       `${event.title}: ${event.kind.replace('_', ' ')}`,
       mode,
       auto && !event.tick,
+      event.text,
     );
   }
 
@@ -507,12 +537,14 @@ export class VoiceCallSideView extends ItemView {
    * @param label - Line for the transcript.
    * @param mode - Delivery.
    * @param checkRelevance - Run the relevance check on `pause` updates.
+   * @param detail - What the update said, shown on its card.
    */
   private async deliver(
     text: string,
     label: string,
     mode: NoticeMode,
     checkRelevance: boolean,
+    detail?: string,
   ): Promise<void> {
     const o = this.plugin.settings.orchestrator;
     let finalMode = mode;
@@ -530,6 +562,10 @@ export class VoiceCallSideView extends ItemView {
       text: `${label}${finalMode === 'interrupt' ? ' (cutting in)' : ''}`,
       final: true,
       at: Date.now(),
+      kind: 'update',
+      urgent: finalMode === 'interrupt',
+      detail,
+      rev: 0,
     });
     this.renderTranscript();
     this.voiceCall?.notify(
@@ -547,27 +583,35 @@ export class VoiceCallSideView extends ItemView {
     this.plugin.agents?.setProgressInterval(0);
   }
 
-  /** Renders background tasks with links to their notes. */
+  /** Renders background agents as live cards: status, time, what each is doing, its result. */
   private renderTasks(): void {
     const el = this.tasksEl;
     if (!el) return;
     el.empty();
     const tasks = this.plugin.agents?.list().slice(0, 8) ?? [];
     if (!tasks.length) return;
-    new Setting(el).setName('Background tasks').setHeading();
+    el.addClass('va-tasks');
+    const live = tasks.filter(t => ['running', 'queued', 'waiting'].includes(t.status)).length;
+    const head = el.createDiv({ cls: 'va-section-head' });
+    setIcon(head.createSpan({ cls: 'va-section-head__icon' }), 'bot');
+    head.createSpan({ text: 'Background agents' });
+    head.createSpan({ cls: 'va-pill', text: live ? `${live} running` : `${tasks.length}` });
     for (const task of tasks) {
-      const row = el.createDiv({ cls: `voice-call-task voice-call-task-${task.status}` });
-      row.createSpan({ cls: 'voice-call-task-status', text: task.status });
-      const name = row.createSpan({ cls: 'voice-call-task-title', text: task.title });
-      if (task.notePath) {
-        name.addClass('is-clickable');
-        name.setAttr('title', describeTask(task));
-        name.onclick = () =>
-          void this.app.workspace.openLinkText(task.notePath as string, '', 'tab');
-      }
-      if (task.status === 'running' || task.status === 'queued' || task.status === 'waiting') {
-        const stop = row.createEl('button', { text: 'Stop', cls: 'voice-call-task-stop' });
-        stop.onclick = () => this.plugin.agents.cancel(task.id);
+      const notePath = task.notePath;
+      const card = drawTaskCard(this.app, this, el, task, {
+        open: notePath
+          ? () => void this.app.workspace.openLinkText(notePath, '', 'tab')
+          : undefined,
+        stop: () => this.plugin.agents.cancel(task.id),
+      });
+      card.setAttr('title', describeTask(task));
+      const steps = card.querySelector<HTMLDetailsElement>('details.va-steps');
+      if (steps) {
+        if (this.openSteps.has(task.id)) steps.open = true;
+        steps.addEventListener('toggle', () => {
+          if (steps.open) this.openSteps.add(task.id);
+          else this.openSteps.delete(task.id);
+        });
       }
     }
   }
@@ -703,55 +747,103 @@ export class VoiceCallSideView extends ItemView {
     } else if (event.type === 'tool' && event.error) {
       diagnostics.record('voice', 'tool-error', { name: event.name, error: event.error });
     }
-    if (event.type === 'transcript') {
-      const last = this.transcript[this.transcript.length - 1];
-      if (last && last.role === event.role && !last.final) {
-        last.text = event.text;
-        last.final = event.final;
-        last.at = Date.now();
-      } else if (event.text.trim()) {
-        this.transcript.push({
-          role: event.role,
-          text: event.text,
-          final: event.final,
-          at: Date.now(),
-        });
-      }
-    } else if (event.type === 'tool') {
-      this.transcript.push({
-        role: 'tool',
-        text:
-          event.phase === 'start'
-            ? `Running ${event.name}…`
-            : event.error
-              ? `${event.name} failed: ${event.error}`
-              : `${event.name} finished`,
-        final: true,
-        at: Date.now(),
-      });
-    } else if (event.type === 'status') {
-      this.transcript.push({ role: 'tool', text: event.text, final: true, at: Date.now() });
-    } else {
-      return;
-    }
+    if (!applyVoiceEvent(this.transcript, event, Date.now())) return;
     // The whole call is kept for the saved call note; the pane shows the last lines.
     if (this.transcript.length > 5000) this.transcript.splice(0, this.transcript.length - 5000);
     this.renderTranscript();
   }
 
-  /** Renders the transcript pane. */
+  /**
+   * Draws the transcript: the user's turns on the right, the agent's on the left with its tool,
+   * skill and agent cards under them. Only lines that changed are redrawn.
+   */
   private renderTranscript(): void {
     const el = this.transcriptEl;
     if (!el) return;
-    el.empty();
-    for (const line of this.transcript.slice(-60)) {
-      el.createDiv({
-        cls: `voice-call-line voice-call-line-${line.role}`,
-        text:
-          line.role === 'tool' ? line.text : `${line.role === 'user' ? 'You' : 'AI'}: ${line.text}`,
-      });
+    if (el !== this.drawnIn) {
+      el.empty();
+      this.drawn.clear();
+      this.drawnIn = el;
+      if (this.lineOwner) this.removeChild(this.lineOwner);
+      this.lineOwner = this.addChild(new Component());
     }
-    el.scrollTop = el.scrollHeight;
+    const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 48;
+    const visible = this.transcript.slice(-VISIBLE_LINES);
+    const keep = new Set(visible);
+    for (const [line, entry] of this.drawn) {
+      if (!keep.has(line)) {
+        entry.el.remove();
+        this.drawn.delete(line);
+      }
+    }
+    if (!visible.length) {
+      const empty =
+        el.querySelector<HTMLElement>(':scope > .va-empty') ?? el.createDiv({ cls: 'va-empty' });
+      empty.setText(
+        this.callState.status === 'connected' ? 'Listening…' : 'The conversation shows here.',
+      );
+      return;
+    }
+    el.querySelector(':scope > .va-empty')?.remove();
+    let prevEl: HTMLElement | null = null;
+    visible.forEach((line, i) => {
+      const continued = continuesTurn(visible[i - 1], line);
+      const rev = line.rev ?? 0;
+      const entry = this.drawn.get(line);
+      if (entry && entry.rev === rev && entry.continued === continued) {
+        prevEl = entry.el;
+        return;
+      }
+      const row = this.drawLine(line, continued);
+      if (entry) entry.el.replaceWith(row);
+      else if (prevEl) prevEl.after(row);
+      else el.prepend(row);
+      this.drawn.set(line, { el: row, rev, continued });
+      prevEl = row;
+    });
+    if (atBottom) el.scrollTop = el.scrollHeight;
+  }
+
+  /**
+   * One transcript line as a row.
+   * @param line - Line.
+   * @param continued - It continues the same speaker's turn.
+   */
+  private drawLine(line: TranscriptLine, continued: boolean): HTMLElement {
+    const owner = this.lineOwner ?? this;
+    const path = this.sourcePath();
+    const row = this.contentEl.doc.createElement('div');
+    if (line.kind === 'status') {
+      row.addClass('va-row', 'va-row--status');
+      drawStatus(row, line.text);
+      return row;
+    }
+    const who = line.role === 'user' ? 'user' : 'agent';
+    row.addClass('va-row', `va-row--${who}`);
+    if (continued) row.addClass('is-continued');
+    else drawTurnHeader(row, who, who === 'user' ? 'You' : 'Voice Agent', line.at);
+    if (line.kind === 'tool' && line.tool) {
+      drawToolCard(this.app, owner, row, line.tool, path);
+    } else if (line.kind === 'update' || (line.role === 'tool' && !line.kind)) {
+      drawUpdate(
+        this.app,
+        owner,
+        row,
+        line.text.replace(/ \(cutting in\)$/, ''),
+        line.detail,
+        !!line.urgent,
+        path,
+      );
+    } else {
+      const bubble = row.createDiv({ cls: `va-bubble va-bubble--${who}` });
+      if (line.final) renderMarkdown(this.app, owner, line.text, bubble, path);
+      else {
+        bubble.addClass('is-interim');
+        bubble.createSpan({ text: line.text });
+        bubble.createSpan({ cls: 'va-caret' });
+      }
+    }
+    return row;
   }
 
   /**

@@ -33,7 +33,20 @@ export interface IToolExecutor {
 export type VoiceEvent =
   | { type: 'ready' }
   | { type: 'transcript'; role: 'user' | 'assistant'; text: string; final: boolean }
-  | { type: 'tool'; name: string; phase: 'start' | 'end'; error?: string }
+  | {
+      type: 'tool';
+      name: string;
+      phase: 'start' | 'end';
+      error?: string;
+      /** Pairs a start with its end. */
+      id?: string;
+      /** Arguments (on start). */
+      args?: Record<string, unknown>;
+      /** Result text, clipped (on end). */
+      result?: string;
+      /** How long it took (on end). */
+      ms?: number;
+    }
   | { type: 'speaking'; active: boolean }
   | { type: 'status'; text: string }
   | { type: 'raw'; event: unknown };

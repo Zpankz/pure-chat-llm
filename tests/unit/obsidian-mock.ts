@@ -164,6 +164,7 @@ export class PluginSettingTab {
   ) {}
 }
 export class MarkdownRenderer {}
+export const Keymap = { isModEvent: (): boolean => false };
 export class EditorSuggest {}
 export class FuzzySuggestModal {}
 export class ExtraButtonComponent {}

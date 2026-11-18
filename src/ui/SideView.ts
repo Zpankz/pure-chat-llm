@@ -5,7 +5,6 @@ import {
   ExtraButtonComponent,
   FuzzySuggestModal,
   ItemView,
-  MarkdownRenderer,
   MarkdownView,
   Notice,
   Platform,
@@ -21,6 +20,9 @@ import { toTitleCase } from '../utils/toTitleCase';
 import { CodeHandling, SectionHandling } from './CodeHandling';
 import { CODE_PREVIEW_VIEW_TYPE } from './CodePreview';
 import { AskForAPI } from './Modals';
+import { drawToolCard, drawTurnHeader, renderMarkdown, wireLinks } from './conversation';
+import { clipPreview } from './conversationModel';
+import { isToolError } from '../tools/toolContract';
 
 /**
  * Represents the side view for the Pure Chat LLM plugin in Obsidian.
@@ -83,6 +85,14 @@ export class PureChatLLMSideView extends ItemView {
    *
    */
   async onOpen() {
+    // Wikilinks in the previews open on click and preview on hover, like in a note.
+    wireLinks(
+      this.app,
+      this,
+      this.contentEl,
+      PURE_CHAT_LLM_VIEW_TYPE,
+      () => this.app.workspace.getActiveFile()?.path ?? '',
+    );
     // when a file is loaded or changed, update the view
 
     this.registerEvent(
@@ -344,25 +354,66 @@ export class PureChatLLMSideView extends ItemView {
     editor: Editor,
     view: MarkdownView,
   ) {
+    container.addClass('va-conversation', 'va-overview');
+    const sourcePath = view.file?.path ?? '';
+    const speaker = (role: string) =>
+      role === 'user' ? 'user' : role === 'assistant' || role === 'tool' ? 'agent' : 'system';
     chat.messages.forEach((message, index) => {
-      const preview = message.content.substring(0, 400);
+      const preview = clipPreview(message.content, 500);
+      const who = speaker(message.role);
+      const prev = chat.messages[index - 1];
+      const continued = !!prev && who !== 'system' && speaker(prev.role) === who;
+      const select = (evt?: MouseEvent) => {
+        // A click on a link opens the link; anywhere else selects the message in the note.
+        if ((evt?.target as HTMLElement | null)?.closest('a')) return;
+        this.goToPostion(editor, chat.clines[index], true);
+      };
 
-      // Role header with clickable position jump
       container.createDiv({ text: '' }, contain => {
-        contain.addClass('PURE', 'messageContainer', message.role);
-        contain.createEl('h1', { text: toTitleCase(message.role) }, el => {
-          el.onClickEvent(() => this.goToPostion(editor, chat.clines[index]));
-          el.addClass('PURE', 'messageHeader', message.role);
-        });
-        // Preview of message content with copy button
+        contain.addClass('va-row', `va-row--${who}`, `va-role-${message.role}`);
+        if (continued) contain.addClass('is-continued');
+        else {
+          const name = who === 'user' ? 'You' : who === 'agent' ? 'Assistant' : 'Instructions';
+          const head = drawTurnHeader(contain, who, name);
+          head.addClass('is-clickable');
+          head.setAttr('aria-label', 'Jump to this message in the note');
+          head.onClickEvent(() => this.goToPostion(editor, chat.clines[index]));
+        }
+        if (message.role === 'tool') {
+          const failed = isToolError(message.content);
+          drawToolCard(
+            this.app,
+            this,
+            contain,
+            {
+              id: `m${index}`,
+              name: 'tool',
+              status: failed ? 'failed' : 'done',
+              result: message.content,
+              startedAt: 0,
+            },
+            sourcePath,
+            {
+              label: failed ? 'Tool error' : 'Tool result',
+              preview: message.content.trim().split('\n')[0].slice(0, 60),
+            },
+          );
+        } else if (who === 'system' && preview) {
+          const details = contain.createEl('details', { cls: 'va-system' });
+          details.createEl('summary', {
+            text: `${toTitleCase(message.role)} prompt · ${message.content.length} characters`,
+          });
+          renderMarkdown(this.app, this, preview, details.createDiv(), sourcePath);
+        } else if (preview) {
+          const bubble = contain.createDiv({ cls: `va-bubble va-bubble--${who}` });
+          bubble.onClickEvent(select);
+          renderMarkdown(this.app, this, preview, bubble, sourcePath);
+        } else if (message.role === 'assistant') {
+          contain.createDiv({ cls: 'va-muted va-small', text: 'Called tools' });
+        }
+        // Actions on the message: shown on hover, always on touch screens.
         contain.createEl('div', '', div => {
-          div.addClass('PURE', 'preview', message.role);
-          if (preview)
-            div.createDiv({ text: '' }, el => {
-              el.onClickEvent(() => this.goToPostion(editor, chat.clines[index], true));
-              el.addClass('PURE', 'messageMarkdown', message.role);
-              void MarkdownRenderer.render(this.app, preview, el, view.file?.basename || '', this);
-            });
+          div.addClass('va-actions');
           if (preview)
             new ExtraButtonComponent(div)
               .setIcon('copy')
