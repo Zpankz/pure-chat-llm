@@ -9,6 +9,7 @@ import {
   EditorSuggestContext,
   EditorSuggestTriggerInfo,
   FuzzySuggestModal,
+  loadMathJax,
   MarkdownView,
   Menu,
   Modal,
@@ -229,6 +230,8 @@ export default class PureChatLLM extends Plugin {
     // Agent Skills (agentskills.io): keep the catalogue in sync with the skills folder.
     this.skills = new SkillsCatalog(this);
     this.app.workspace.onLayoutReady(() => void this.skills.refresh());
+    // Answers in the panels may hold LaTeX; load the math renderer once, before the first one.
+    this.app.workspace.onLayoutReady(() => void loadMathJax().catch(() => {}));
     for (const event of ['create', 'modify', 'delete'] as const) {
       this.registerEvent(
         this.app.vault.on(event as 'create', file => this.skills.onVaultChange(file)),

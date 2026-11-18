@@ -170,6 +170,8 @@ export class FuzzySuggestModal {}
 export class ExtraButtonComponent {}
 export class TextAreaComponent {}
 export class WorkspaceLeaf {}
+export class Menu {}
+export const loadMathJax = async (): Promise<void> => {};
 
 /** Minimal frontmatter parser: `key: value`, `key: [a, b]` and `key:\n  - a` lists. */
 export function parseFrontmatter(yaml: string): Record<string, unknown> {

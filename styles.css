@@ -1571,3 +1571,427 @@ pre.va-result {
   background: color-mix(in srgb, var(--color-orange, var(--text-warning)) 20%, transparent);
   color: var(--color-orange, var(--text-warning));
 }
+
+/* The typed message box under the conversation. */
+.va-composer-host {
+  flex-shrink: 0;
+}
+
+.va-composer {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: var(--size-4-1, 4px);
+}
+
+.va-composer__box {
+  display: flex;
+  align-items: flex-end;
+  gap: var(--size-4-1, 4px);
+  padding: var(--size-4-1, 4px);
+  border: var(--border-width) solid var(--background-modifier-border);
+  border-radius: var(--radius-l, 12px);
+  background: var(--background-primary);
+  transition: border-color 120ms ease;
+}
+
+.va-composer__box:focus-within {
+  border-color: var(--interactive-accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--interactive-accent) 20%, transparent);
+}
+
+.va-composer__input {
+  flex: 1;
+  min-width: 0;
+  min-height: 2em;
+  max-height: 12em;
+  resize: none;
+  border: none;
+  background: transparent;
+  box-shadow: none;
+  padding: 6px 4px;
+  font-size: var(--font-ui-medium, 14px);
+  line-height: 1.4;
+  color: var(--text-normal);
+}
+
+.va-composer__input:focus,
+.va-composer__input:focus-visible {
+  border: none;
+  box-shadow: none;
+  outline: none;
+}
+
+.va-composer__plus,
+.va-composer__send {
+  flex-shrink: 0;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+}
+
+.va-composer__send {
+  background: var(--interactive-accent);
+  color: var(--text-on-accent);
+  box-shadow: none;
+}
+
+.va-composer__send:hover:not(:disabled) {
+  background: var(--interactive-accent-hover);
+}
+
+.va-composer__send:disabled {
+  background: var(--background-modifier-border);
+  color: var(--text-faint);
+  cursor: default;
+}
+
+.va-composer__send.is-stop {
+  background: var(--text-normal);
+  color: var(--background-primary);
+}
+
+.va-composer__chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.va-composer__chips.is-empty {
+  display: none;
+}
+
+.va-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 100%;
+  padding: 2px 4px 2px 6px;
+  border: var(--border-width) solid var(--background-modifier-border);
+  border-radius: var(--radius-m);
+  background: var(--background-secondary);
+  font-size: var(--font-ui-smaller);
+  color: var(--text-muted);
+}
+
+.va-chip img {
+  width: 28px;
+  height: 28px;
+  object-fit: cover;
+  border-radius: var(--radius-s);
+}
+
+.va-chip__icon {
+  display: inline-flex;
+  --icon-size: 14px;
+}
+
+.va-chip--skill .va-chip__icon {
+  color: var(--color-purple);
+}
+
+.va-chip--tool .va-chip__icon {
+  color: var(--color-orange);
+}
+
+.va-chip__label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 16em;
+}
+
+.va-chip__remove {
+  display: inline-flex;
+  padding: 2px;
+  height: auto;
+  background: none;
+  box-shadow: none;
+  color: var(--text-faint);
+  --icon-size: 12px;
+}
+
+.va-chip__remove:hover {
+  color: var(--text-normal);
+}
+
+/* Suggestions for [[, @ and /, above the box. */
+.va-suggest {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: calc(100% + 4px);
+  z-index: var(--layer-popover, 30);
+  max-height: 16em;
+  overflow-y: auto;
+  padding: 4px;
+  border: var(--border-width) solid var(--background-modifier-border);
+  border-radius: var(--radius-m);
+  background: var(--background-primary);
+  box-shadow: var(--shadow-s);
+}
+
+.va-suggest__item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px;
+  border-radius: var(--radius-s);
+  cursor: pointer;
+}
+
+.va-suggest__item.is-selected,
+.va-suggest__item:hover {
+  background: var(--background-modifier-hover);
+}
+
+.va-suggest__icon {
+  display: inline-flex;
+  color: var(--text-muted);
+  --icon-size: 14px;
+}
+
+.va-suggest__text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.va-suggest__label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--font-ui-small);
+}
+
+.va-suggest__detail {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--font-ui-smaller);
+  color: var(--text-faint);
+}
+
+.va-camera {
+  width: 100%;
+  max-height: 60vh;
+  border-radius: var(--radius-m);
+  background: var(--background-secondary);
+  margin-bottom: var(--size-4-2, 8px);
+}
+
+.is-mobile .va-composer__input {
+  font-size: 16px;
+}
+
+.is-mobile .va-composer__plus,
+.is-mobile .va-composer__send {
+  width: 38px;
+  height: 38px;
+}
+
+/* An agent's change, approved or rejected in the conversation. */
+.va-review {
+  width: min(100%, 40em);
+  border: var(--border-width) solid var(--background-modifier-border);
+  border-left: 3px solid var(--color-yellow);
+  border-radius: var(--radius-m);
+  background: var(--background-primary-alt, var(--background-secondary));
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.va-review.is-approved {
+  border-left-color: var(--color-green);
+}
+
+.va-review.is-rejected,
+.va-review.is-cancelled {
+  border-left-color: var(--text-faint);
+  opacity: 0.85;
+}
+
+.va-review__head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.va-review__icon {
+  display: inline-flex;
+  color: var(--color-yellow);
+  --icon-size: 16px;
+}
+
+.va-review.is-approved .va-review__icon {
+  color: var(--color-green);
+}
+
+.va-review__title {
+  font-weight: var(--font-semibold);
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.va-review__why {
+  font-size: var(--font-ui-small);
+  color: var(--text-muted);
+}
+
+.va-review details > summary {
+  cursor: pointer;
+  font-size: var(--font-ui-smaller);
+  color: var(--text-muted);
+}
+
+.va-review__added {
+  color: var(--color-green);
+  margin-right: 4px;
+}
+
+.va-review__removed {
+  color: var(--color-red);
+  margin-right: 4px;
+}
+
+.va-review__lines {
+  margin-top: 4px;
+  max-height: 18em;
+  overflow: auto;
+  font-family: var(--font-monospace);
+  font-size: var(--font-smallest);
+  border-radius: var(--radius-s);
+  background: var(--background-primary);
+}
+
+.va-diff {
+  display: flex;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  padding: 0 6px;
+}
+
+.va-diff__mark {
+  flex: 0 0 1.2em;
+  color: var(--text-faint);
+  user-select: none;
+}
+
+.va-diff--added {
+  background: color-mix(in srgb, var(--color-green) 14%, transparent);
+}
+
+.va-diff--removed {
+  background: color-mix(in srgb, var(--color-red) 14%, transparent);
+}
+
+.va-diff--hunk {
+  color: var(--text-faint);
+  background: var(--background-secondary);
+}
+
+.va-review__preview > div {
+  margin-top: 4px;
+  padding: 6px 8px;
+  max-height: 20em;
+  overflow: auto;
+  border-radius: var(--radius-s);
+  background: var(--background-primary);
+}
+
+.va-review__actions {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.va-review__open {
+  margin-left: auto;
+}
+
+/* Native rendering in answers: tables, images, embeds, math and diagrams. */
+.va-md table {
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
+  border-collapse: collapse;
+  font-size: var(--font-ui-small);
+  margin: 0.4em 0;
+}
+
+.va-md th,
+.va-md td {
+  border: var(--border-width) solid var(--background-modifier-border);
+  padding: 2px 8px;
+}
+
+.va-md img {
+  max-width: 100%;
+  height: auto;
+  border-radius: var(--radius-s);
+}
+
+.va-md .internal-embed {
+  display: block;
+  max-width: 100%;
+  margin: 0.4em 0;
+}
+
+.va-md .markdown-embed {
+  border-left: 2px solid var(--interactive-accent);
+  padding-left: 8px;
+  max-height: 20em;
+  overflow: auto;
+}
+
+.va-md .pdf-embed,
+.va-md .internal-embed.pdf-embed {
+  height: 24em;
+  width: 100%;
+}
+
+.va-md mjx-container[display='true'] {
+  overflow-x: auto;
+  overflow-y: hidden;
+  max-width: 100%;
+}
+
+.va-diagram {
+  --pele-bg: transparent;
+  --pele-fg: var(--text-normal);
+  --pele-accent: var(--interactive-accent);
+  --pele-line: var(--text-muted);
+  --pele-surface: var(--background-primary);
+  --pele-surface-alt: var(--background-secondary);
+  --pele-border: var(--background-modifier-border);
+  --pele-muted: var(--text-muted);
+  --pele-font: var(--font-interface);
+  --pele-font-mono: var(--font-monospace);
+  --pele-radius: var(--radius-s);
+  --pele-series-1: var(--color-blue);
+  --pele-series-2: var(--color-green);
+  --pele-series-3: var(--color-orange);
+  --pele-series-4: var(--color-purple);
+  --pele-series-5: var(--color-cyan);
+  --pele-series-6: var(--color-pink);
+  --pele-series-7: var(--color-yellow);
+  --pele-series-8: var(--color-red);
+  --pele-error: var(--color-red);
+  --pele-critical: var(--color-red);
+  max-width: 100%;
+  overflow-x: auto;
+  margin: 0.4em 0;
+}
+
+.va-diagram svg {
+  max-width: 100%;
+  height: auto;
+}

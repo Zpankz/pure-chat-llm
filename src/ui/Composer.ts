@@ -153,7 +153,12 @@ export class Composer extends Component {
       if (item.kind === 'image') {
         chip.createEl('img', { attr: { src: item.dataUrl, alt: item.label } });
       } else {
-        const icon = { note: 'file-text', selection: 'text-cursor', skill: 'sparkles', tool: 'wrench' };
+        const icon = {
+          note: 'file-text',
+          selection: 'text-cursor',
+          skill: 'sparkles',
+          tool: 'wrench',
+        };
         setIcon(chip.createSpan({ cls: 'va-chip__icon' }), icon[item.kind]);
       }
       chip.createSpan({ cls: 'va-chip__label', text: item.label });
@@ -191,7 +196,9 @@ export class Composer extends Component {
       this.drawChips();
       this.autosize();
     } catch (error) {
-      new Notice(`Voice Agent: couldn't send: ${error instanceof Error ? error.message : String(error)}`);
+      new Notice(
+        `Voice Agent: couldn't send: ${error instanceof Error ? error.message : String(error)}`,
+      );
     } finally {
       this.sending = false;
       this.refresh();
@@ -261,7 +268,9 @@ export class Composer extends Component {
     }
     const files = this.app.vault
       .getFiles()
-      .filter(f => ['md', 'canvas', 'pdf', 'png', 'jpg', 'jpeg', 'webp', 'gif'].includes(f.extension));
+      .filter(f =>
+        ['md', 'canvas', 'pdf', 'png', 'jpg', 'jpeg', 'webp', 'gif'].includes(f.extension),
+      );
     const found = rank(files, trigger.query, f => f.path, 8);
     return found.map(file => ({
       label: file.extension === 'md' ? file.basename : file.name,
@@ -344,7 +353,12 @@ export class Composer extends Component {
           .setTitle('Selected text')
           .setIcon('text-cursor')
           .onClick(() =>
-            this.attach({ kind: 'selection', path: active.path, label: `Selection in ${active.basename}`, content: selection }),
+            this.attach({
+              kind: 'selection',
+              path: active.path,
+              label: `Selection in ${active.basename}`,
+              content: selection,
+            }),
           ),
       );
     }
@@ -353,8 +367,12 @@ export class Composer extends Component {
         .setTitle('Note or file…')
         .setIcon('file-search')
         .onClick(() =>
-          new PickModal(this.app, 'Attach a note or file', this.app.vault.getFiles(), f => f.path, f =>
-            void this.attachFile(f),
+          new PickModal(
+            this.app,
+            'Attach a note or file',
+            this.app.vault.getFiles(),
+            f => f.path,
+            f => void this.attachFile(f),
           ).open(),
         ),
     );
@@ -364,8 +382,12 @@ export class Composer extends Component {
         .setTitle('Skill…')
         .setIcon('sparkles')
         .onClick(() =>
-          new PickModal(this.app, 'Ask for a skill', this.host.skills(), s => s.name, s =>
-            this.attach({ kind: 'skill', name: s.name, label: s.name }),
+          new PickModal(
+            this.app,
+            'Ask for a skill',
+            this.host.skills(),
+            s => s.name,
+            s => this.attach({ kind: 'skill', name: s.name, label: s.name }),
           ).open(),
         ),
     );
@@ -374,8 +396,12 @@ export class Composer extends Component {
         .setTitle('Tool…')
         .setIcon('wrench')
         .onClick(() =>
-          new PickModal(this.app, 'Ask for a tool', this.host.tools(), t => t.name, t =>
-            this.attach({ kind: 'tool', name: t.name, label: t.name }),
+          new PickModal(
+            this.app,
+            'Ask for a tool',
+            this.host.tools(),
+            t => t.name,
+            t => this.attach({ kind: 'tool', name: t.name, label: t.name }),
           ).open(),
         ),
     );
@@ -390,7 +416,11 @@ export class Composer extends Component {
       i
         .setTitle('Take a photo')
         .setIcon('camera')
-        .onClick(() => (Platform.isMobile ? this.pickImages(true) : new CameraModal(this.app, url => this.attachImage(url, 'Photo')).open())),
+        .onClick(() =>
+          Platform.isMobile
+            ? this.pickImages(true)
+            : new CameraModal(this.app, url => this.attachImage(url, 'Photo')).open(),
+        ),
     );
     menu.showAtMouseEvent(e);
   }
@@ -410,7 +440,9 @@ export class Composer extends Component {
   private async attachFile(file: TFile): Promise<void> {
     if (['png', 'jpg', 'jpeg', 'webp', 'gif'].includes(file.extension)) {
       const data = await this.app.vault.readBinary(file);
-      const url = await downscale(new Blob([data], { type: `image/${file.extension === 'jpg' ? 'jpeg' : file.extension}` }));
+      const url = await downscale(
+        new Blob([data], { type: `image/${file.extension === 'jpg' ? 'jpeg' : file.extension}` }),
+      );
       this.attach({ kind: 'image', label: file.name, dataUrl: url, path: file.path });
       return;
     }
@@ -423,7 +455,9 @@ export class Composer extends Component {
     try {
       this.attachImage(await downscale(blob), 'name' in blob ? blob.name : 'Pasted image');
     } catch (error) {
-      new Notice(`Voice Agent: couldn't read the image: ${error instanceof Error ? error.message : String(error)}`);
+      new Notice(
+        `Voice Agent: couldn't read the image: ${error instanceof Error ? error.message : String(error)}`,
+      );
     }
   }
 
@@ -434,7 +468,9 @@ export class Composer extends Component {
   }
 
   private onPaste(e: ClipboardEvent): void {
-    const images = Array.from(e.clipboardData?.files ?? []).filter(f => f.type.startsWith('image/'));
+    const images = Array.from(e.clipboardData?.files ?? []).filter(f =>
+      f.type.startsWith('image/'),
+    );
     if (!images.length) return;
     e.preventDefault();
     for (const image of images) void this.attachBlob(image);
@@ -502,9 +538,15 @@ class CameraModal extends Modal {
   }
 
   onOpen(): void {
-    const video = this.contentEl.createEl('video', { cls: 'va-camera', attr: { autoplay: '', playsinline: '' } });
+    const video = this.contentEl.createEl('video', {
+      cls: 'va-camera',
+      attr: { autoplay: '', playsinline: '' },
+    });
     video.muted = true;
-    const status = this.contentEl.createDiv({ cls: 'va-muted va-small', text: 'Starting the camera…' });
+    const status = this.contentEl.createDiv({
+      cls: 'va-muted va-small',
+      text: 'Starting the camera…',
+    });
     const take = this.contentEl.createEl('button', { cls: 'mod-cta', text: 'Take photo' });
     take.disabled = true;
     navigator.mediaDevices
@@ -516,7 +558,9 @@ class CameraModal extends Modal {
         take.disabled = false;
       })
       .catch((error: unknown) => {
-        status.setText(`The camera isn't available: ${error instanceof Error ? error.message : String(error)}`);
+        status.setText(
+          `The camera isn't available: ${error instanceof Error ? error.message : String(error)}`,
+        );
       });
     take.addEventListener('click', () => {
       const canvas = document.createElement('canvas');

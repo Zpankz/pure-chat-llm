@@ -114,7 +114,12 @@ export interface RelayOptions {
  * @param waiting - They are waiting for the answer.
  * @param typed - They typed it in the panel.
  */
-export function relayLine(prefix: string, request: string, waiting: boolean, typed = false): string {
+export function relayLine(
+  prefix: string,
+  request: string,
+  waiting: boolean,
+  typed = false,
+): string {
   return typed
     ? `${prefix} The user typed this in the panel and is waiting; your answer is shown there as Markdown (links, tables, diagrams and math are fine): ${request}`
     : `${prefix} The user ${waiting ? 'is waiting for this' : 'asked this; they may keep talking'}: ${request}`;

@@ -165,7 +165,12 @@ export function askReview(
         };
         modal =
           change.action === 'delete'
-            ? new DeleteReviewModal(app, change.path, change.instruction ?? 'Delete this note', answer)
+            ? new DeleteReviewModal(
+                app,
+                change.path,
+                change.instruction ?? 'Delete this note',
+                answer,
+              )
             : new EditReviewModal(
                 app,
                 change.path,

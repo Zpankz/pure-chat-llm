@@ -4,6 +4,7 @@
 import { App, Component, Keymap, MarkdownRenderer, setIcon } from 'obsidian';
 import { mount as mountDiagram } from 'pele';
 import type { SubAgentTask } from '../agents/types';
+import { diffLines, type InlineReview } from '../tools/EditReview';
 import {
   argPreview,
   clipPreview,
@@ -267,6 +268,116 @@ export function drawUpdate(
       sourcePath,
     );
   }
+  return card;
+}
+
+/** Words for a review's state, shown on its card once decided. */
+const REVIEW_STATE: Record<InlineReview['status'], string> = {
+  pending: 'Waiting for you',
+  approved: 'Approved',
+  rejected: 'Rejected',
+  cancelled: 'Cancelled',
+};
+
+/**
+ * A change an agent wants to make, to approve or reject in the conversation: what it does, the
+ * diff, and the proposed note rendered as it will read.
+ * @param app - App.
+ * @param component - Owner of the rendered Markdown.
+ * @param parent - Row.
+ * @param review - The change waiting for a decision.
+ * @param sourcePath - Path links resolve from.
+ */
+export function drawReviewCard(
+  app: App,
+  component: Component,
+  parent: HTMLElement,
+  review: InlineReview,
+  sourcePath: string,
+): HTMLElement {
+  const card = parent.createDiv({ cls: `va-review is-${review.status}` });
+  const head = card.createDiv({ cls: 'va-review__head' });
+  setIcon(
+    head.createSpan({ cls: 'va-review__icon' }),
+    review.action === 'delete' ? 'trash-2' : review.action === 'create' ? 'file-plus' : 'file-pen',
+  );
+  const verb =
+    review.action === 'delete' ? 'Delete' : review.action === 'create' ? 'Create' : 'Edit';
+  const title = head.createSpan({ cls: 'va-review__title' });
+  title.appendText(`${verb} `);
+  title.createEl('a', {
+    cls: 'internal-link',
+    text: review.path,
+    attr: { 'data-href': review.path, href: review.path },
+  });
+  head.createSpan({ cls: 'va-pill va-review__state', text: REVIEW_STATE[review.status] });
+  if (review.instruction?.trim()) {
+    card.createDiv({ cls: 'va-review__why', text: review.instruction.trim() });
+  }
+
+  const lines = diffLines(review.path, review.original ?? '', review.content);
+  const changed = lines.filter(l => l.kind === 'added' || l.kind === 'removed');
+  const added = changed.filter(l => l.kind === 'added').length;
+  const removed = changed.length - added;
+  if (review.action !== 'delete' && lines.length) {
+    const details = card.createEl('details', { cls: 'va-review__diff' });
+    if (review.status === 'pending') details.open = true;
+    const summary = details.createEl('summary');
+    summary.createSpan({ cls: 'va-review__added', text: `+${added}` });
+    summary.createSpan({ cls: 'va-review__removed', text: `\u2212${removed}` });
+    summary.appendText(' lines changed');
+    const pre = details.createDiv({ cls: 'va-review__lines' });
+    for (const line of lines.slice(0, 400)) {
+      const row = pre.createDiv({ cls: `va-diff va-diff--${line.kind}` });
+      row.createSpan({
+        cls: 'va-diff__mark',
+        text:
+          line.kind === 'added'
+            ? '+'
+            : line.kind === 'removed'
+              ? '\u2212'
+              : line.kind === 'hunk'
+                ? ''
+                : ' ',
+      });
+      row.createSpan({ cls: 'va-diff__text', text: line.text });
+    }
+    if (lines.length > 400) {
+      pre.createDiv({ cls: 'va-muted va-small', text: 'Open in a window to see the rest.' });
+    }
+  }
+  if (review.action !== 'delete' && review.content.trim()) {
+    const preview = card.createEl('details', { cls: 'va-review__preview' });
+    preview.createEl('summary', { text: 'Preview' });
+    renderMarkdown(
+      app,
+      component,
+      clipPreview(review.content, 2400),
+      preview.createDiv(),
+      review.path,
+    );
+  }
+
+  if (review.status === 'pending') {
+    const actions = card.createDiv({ cls: 'va-review__actions' });
+    const approve = actions.createEl('button', {
+      cls: 'mod-cta',
+      text: review.action === 'delete' ? 'Delete' : 'Approve',
+      attr: { type: 'button' },
+    });
+    approve.addEventListener('click', () =>
+      review.decide({ approved: true, content: review.content }),
+    );
+    const reject = actions.createEl('button', { text: 'Reject', attr: { type: 'button' } });
+    reject.addEventListener('click', () => review.decide({ approved: false }));
+    const open = actions.createEl('button', {
+      cls: 'va-review__open',
+      text: 'Open in window',
+      attr: { type: 'button' },
+    });
+    open.addEventListener('click', () => review.openWindow());
+  }
+  void sourcePath;
   return card;
 }
 

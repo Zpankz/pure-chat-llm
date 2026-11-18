@@ -3,6 +3,7 @@
 // the conversation can be tested without Obsidian; conversation.ts draws it.
 import type { VoiceEvent } from '../realtime/providers/IVoiceCallProvider';
 import { isToolError } from '../tools/toolContract';
+import type { InlineReview } from '../tools/EditReview';
 
 /** What kind of thing a tool does, which sets its icon and colour. */
 export type ToolCategory =
@@ -205,8 +206,10 @@ export interface TranscriptLine {
   text: string;
   final: boolean;
   at?: number;
-  kind?: 'speech' | 'tool' | 'update' | 'status';
+  kind?: 'speech' | 'tool' | 'update' | 'status' | 'review';
   tool?: ToolCallView;
+  /** A change waiting for the user's approval in the conversation. */
+  review?: InlineReview;
   /** An update that cut in on what the user was saying. */
   urgent?: boolean;
   /** What an update said, shown under its title. */
@@ -459,7 +462,9 @@ function openBlockAt(text: string, offset: number): { start: number; end: number
     const trimmed = line.trim();
     if (open) {
       const closes =
-        open.marker === '$$' ? trimmed.endsWith('$$') : trimmed.startsWith(open.marker) && /^[`~]+$/.test(trimmed);
+        open.marker === '$$'
+          ? trimmed.endsWith('$$')
+          : trimmed.startsWith(open.marker) && /^[`~]+$/.test(trimmed);
       if (closes) {
         if (open.start < offset && offset < lineEnd) return { start: open.start, end: lineEnd };
         open = null;

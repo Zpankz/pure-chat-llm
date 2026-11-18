@@ -46,8 +46,12 @@ import {
   settleSpeech,
   type TranscriptLine,
 } from './conversationModel';
-import type { OrchestratorToolEvent } from '../agents/OrchestratorAgent';
+import type { Orchestrator, OrchestratorToolEvent } from '../agents/OrchestratorAgent';
+import type { InlineReview } from '../tools/EditReview';
+import { Composer } from './Composer';
+import { buildRequest, displayMessage, type ContextItem } from './composerModel';
 import {
+  drawReviewCard,
   drawStatus,
   drawTaskCard,
   drawToolCard,
@@ -117,6 +121,18 @@ export class VoiceCallSideView extends ItemView {
   private tasksOwner: Component | null = null;
   /** Background agents whose steps the user opened. */
   private openSteps = new Set<string>();
+  /** The typed message box, kept across redraws so a half-typed message survives. */
+  private composer: Composer | null = null;
+  private composerEl: HTMLElement | null = null;
+  /** Listens to the orchestrator for typed conversations, when no layered call does. */
+  private typedWatch: Array<() => void> = [];
+  private typedFor: Orchestrator | null = null;
+  /** A layered call is relaying the orchestrator, so typed listening stands aside. */
+  private callWatching = false;
+  /** The user has typed to the orchestrator, so its state shows even outside a call. */
+  private typedUsed = false;
+  /** A chat used only to list the tools agents can call. */
+  private toolChat: PureChatLLMChat | null = null;
 
   /**
    *
@@ -161,7 +177,211 @@ export class VoiceCallSideView extends ItemView {
       this.plugin.durable?.tasks.onChange(redraw),
     ];
     this.register(() => stops.forEach(stop => stop?.()));
+    this.composerEl = this.contentEl.doc.createElement('div');
+    this.composerEl.className = 'va-composer-host';
+    this.composer = this.addChild(
+      new Composer(this.app, this.composerEl, {
+        skills: () =>
+          (this.plugin.skills?.skills ?? []).map(s => ({
+            name: s.name,
+            description: s.description,
+          })),
+        tools: () => this.toolList(),
+        send: (text, context) => this.sendTyped(text, context),
+        command: name => this.runCommand(name),
+        busy: () => this.plugin.orchestrator?.state === 'thinking',
+        sourcePath: () => this.sourcePath(),
+      }),
+    );
+    this.watchTyped();
+    this.register(() => this.unwatchTyped());
+    // Agents' edits wait for approval here, in the conversation, while the panel is open.
+    const host = (review: InlineReview) => this.showReview(review);
+    this.plugin.reviewHost = host;
+    this.register(() => {
+      if (this.plugin.reviewHost === host) this.plugin.reviewHost = null;
+    });
     this.renderView();
+  }
+
+  /** Tools an agent can be asked to use, for the + menu. */
+  private toolList(): { name: string; description: string }[] {
+    try {
+      this.toolChat ??= new PureChatLLMChat(this.plugin);
+      return this.toolChat.toolregistry
+        .getEnabledDefinitions()
+        .map(d => ({ name: d.function.name, description: d.function.description ?? '' }))
+        .sort((a, b) => a.name.localeCompare(b.name));
+    } catch (error) {
+      console.error('[voice-agent] could not list tools', error);
+      return [];
+    }
+  }
+
+  /**
+   * Hears the orchestrator for typed conversations: its answers, its tool calls and its state.
+   * Follows the orchestrator the plugin currently uses, so a change of engine is picked up.
+   */
+  private watchTyped(): void {
+    const orchestrator = this.plugin.orchestrator;
+    if (!orchestrator || orchestrator === this.typedFor) return;
+    this.unwatchTyped();
+    this.typedFor = orchestrator;
+    this.typedWatch.push(
+      orchestrator.onSay(text => {
+        // During a layered call the call's own listener shows and speaks what it says.
+        if (this.callWatching || text.startsWith('[Orchestrator activity]')) return;
+        pushLine(this.transcript, {
+          role: 'assistant',
+          text,
+          final: true,
+          at: Date.now(),
+          kind: 'speech',
+          by: 'orchestrator',
+          rev: 0,
+        });
+        this.renderTranscript();
+      }),
+      orchestrator.onTool?.(event => {
+        if (!this.callWatching) this.onOrchestratorTool(event);
+      }) ?? (() => {}),
+      orchestrator.onChange(() => {
+        this.renderOrchestrator();
+        this.composer?.refresh();
+      }),
+    );
+  }
+
+  /** Stops hearing the orchestrator for typed conversations. */
+  private unwatchTyped(): void {
+    for (const stop of this.typedWatch) stop();
+    this.typedWatch = [];
+    this.typedFor = null;
+  }
+
+  /**
+   * Sends a typed message to the orchestrator, the same one a layered call talks to, and shows
+   * it in the conversation. Images are saved to the vault first, as when pasted into a note.
+   * @param text - What the user typed.
+   * @param context - What they attached.
+   */
+  private async sendTyped(text: string, context: ContextItem[]): Promise<void> {
+    this.watchTyped();
+    const orchestrator = this.plugin.callOrchestrator ?? this.plugin.orchestrator;
+    for (const item of context) {
+      if (item.kind === 'image' && !item.path) item.path = await this.saveImage(item.dataUrl);
+    }
+    const images = context.flatMap(item => (item.kind === 'image' ? [item.dataUrl] : []));
+    this.typedUsed = true;
+    pushLine(this.transcript, {
+      role: 'user',
+      text: displayMessage(text, context),
+      final: true,
+      at: Date.now(),
+      kind: 'speech',
+      rev: 0,
+    });
+    const ack = orchestrator.relay(buildRequest(text, context), true, { typed: true, images });
+    diagnostics.record('orchestrator', 'typed', { chars: text.length, attached: context.length });
+    if (ack.startsWith("The orchestrator can't run")) {
+      pushLine(this.transcript, {
+        role: 'tool',
+        text: ack.replace(/ Tell the user\.$/, ''),
+        final: true,
+        at: Date.now(),
+        kind: 'status',
+        rev: 0,
+      });
+    }
+    this.renderTranscript();
+    this.renderOrchestrator();
+    this.composer?.refresh();
+  }
+
+  /**
+   * Saves an attached image next to the current note, like a pasted image.
+   * @param dataUrl - The image.
+   * @returns Its vault path, or undefined when it could not be saved.
+   */
+  private async saveImage(dataUrl: string): Promise<string | undefined> {
+    const match = /^data:image\/(\w+);base64,(.*)$/.exec(dataUrl);
+    if (!match) return undefined;
+    try {
+      const ext = match[1] === 'jpeg' ? 'jpg' : match[1];
+      const stamp = window.moment().format('YYYYMMDDHHmmss');
+      const path = await this.app.fileManager.getAvailablePathForAttachment(
+        'Voice Agent image ' + stamp + '.' + ext,
+        this.sourcePath(),
+      );
+      const bytes = Uint8Array.from(atob(match[2]), c => c.charCodeAt(0));
+      await this.app.vault.createBinary(path, bytes.buffer);
+      return path;
+    } catch (error) {
+      console.error('[voice-agent] could not save the image', error);
+      new Notice("Couldn't save the image to the vault; it is sent without a note link.");
+      return undefined;
+    }
+  }
+
+  /**
+   * Runs one of the typed box's own commands.
+   * @param name - `stop`, `new` or `clear`.
+   */
+  private runCommand(name: string): void {
+    const orchestrator = this.plugin.callOrchestrator ?? this.plugin.orchestrator;
+    const status = (text: string) =>
+      pushLine(this.transcript, {
+        role: 'tool',
+        text,
+        final: true,
+        at: Date.now(),
+        kind: 'status',
+        rev: 0,
+      });
+    if (name === 'stop') {
+      orchestrator.cancelTurn();
+      status('Stopped the orchestrator');
+    } else if (name === 'new') {
+      orchestrator.reset();
+      status('New topic');
+    } else if (name === 'clear') {
+      if (this.plugin.calls?.isLive) {
+        new Notice('The conversation is kept while a call is on, for its notes.');
+        return;
+      }
+      this.transcript = [];
+    }
+    this.renderTranscript();
+    this.composer?.refresh();
+  }
+
+  /**
+   * Shows a change an agent wants to make as a card in the conversation.
+   * @param review - The change.
+   * @returns Whether it is shown here (otherwise a window opens).
+   */
+  private showReview(review: InlineReview): boolean {
+    if (!this.contentEl.isConnected) return false;
+    const line = pushLine(this.transcript, {
+      role: 'assistant',
+      text: `Proposed ${review.action} of [[${review.path}]]`,
+      final: true,
+      at: Date.now(),
+      kind: 'review',
+      review,
+      by: 'orchestrator',
+      rev: 0,
+    });
+    review.onChange = () => {
+      line.text = `Proposed ${review.action} of [[${review.path}]]: ${review.status}`;
+      line.rev = (line.rev ?? 0) + 1;
+      this.renderTranscript();
+      this.composer?.refresh();
+    };
+    this.renderTranscript();
+    void this.app.workspace.revealLeaf(this.leaf);
+    new Notice(`Review the change to ${review.path} in the Voice Agent panel.`);
+    return true;
   }
 
   /** The note links resolve from: the call's note while one is live. */
@@ -185,6 +405,7 @@ export class VoiceCallSideView extends ItemView {
     this.renderOrchestrator();
     this.transcriptEl = contentEl.createDiv({ cls: 'va-conversation voice-call-transcript' });
     this.renderTranscript();
+    if (this.composerEl) contentEl.appendChild(this.composerEl);
     this.tasksEl = contentEl.createDiv({ cls: 'voice-call-tasks' });
     this.renderTasks();
 
@@ -506,7 +727,9 @@ export class VoiceCallSideView extends ItemView {
       const orchestrator = this.plugin.orchestrator;
       // The call keeps this orchestrator until it ends, whatever the engine setting does.
       this.plugin.callOrchestrator = orchestrator;
+      this.callWatching = true;
       this.stopAgentWatch.push(() => {
+        this.callWatching = false;
         if (this.plugin.callOrchestrator === orchestrator) this.plugin.callOrchestrator = null;
       });
       orchestrator.setTranscriptSource(() =>
@@ -622,7 +845,7 @@ export class VoiceCallSideView extends ItemView {
     if (!el) return;
     el.empty();
     const orchestrator = this.plugin.orchestrator;
-    if (!orchestrator?.active) {
+    if (!orchestrator?.active && !(this.typedUsed && orchestrator)) {
       el.hide();
       return;
     }
@@ -908,7 +1131,9 @@ export class VoiceCallSideView extends ItemView {
     else if (line.by === 'orchestrator')
       drawTurnHeader(row, 'orchestrator', 'Orchestrator', line.at);
     else drawTurnHeader(row, who, who === 'user' ? 'You' : 'Voice Agent', line.at);
-    if (line.kind === 'tool' && line.tool) {
+    if (line.kind === 'review' && line.review) {
+      drawReviewCard(this.app, owner, row, line.review, path);
+    } else if (line.kind === 'tool' && line.tool) {
       drawToolCard(this.app, owner, row, line.tool, path);
     } else if (line.kind === 'update' || (line.role === 'tool' && !line.kind)) {
       drawUpdate(
