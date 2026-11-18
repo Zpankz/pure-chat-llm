@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.0-beta.4] - 2026-11-18
+
+Everything in beta.3, plus:
+
+- **Shared memory** (Settings → Shared memory, off by default). One graph database, [relate](https://relatedb.ai) compiled to WebAssembly and built into the plugin, that the voice agent, the orchestrator (Classic and Durable), workers and agent chats all read and write, saved as `Voice Agent/Memory/memory.json` so new sessions and other devices start from it. It holds facts (preferences, instructions, decisions, todos, summaries, observations) linked to the people, projects and notes they are about, the calls, app sessions and tasks that ran, and shared state. Each agent's instructions start with a short brief from it.
+- **Memory tools:** `memory_recall` (full-text and by subject), `memory_remember` (with slots and corrections that close the old fact; nothing is deleted), `memory_forget`, `memory_state` (values every agent sees now, per call or global) and `memory_query` (an agent's own read-only Cypher, with bound parameters and a row cap; writes are refused).
+- Copies of memory.json from two devices are merged, and a memory file that can't be read is never replaced.
+- main.js is larger (about 4.4 MB) because it carries the graph engine.
+
 ## [2.0.0-beta.3] - 2026-11-18
 
 Everything in beta.2, plus:
