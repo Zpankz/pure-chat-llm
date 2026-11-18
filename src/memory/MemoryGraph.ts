@@ -166,6 +166,31 @@ function num(value: unknown, fallback: number): number {
   return typeof value === 'number' && Number.isFinite(value) ? value : fallback;
 }
 
+/** Largest `range()` an agent's own query may build (review M1: a huge one froze the app). */
+const MAX_RANGE = 10_000;
+
+/**
+ * Why a read-only statement would run without bound, if it would.
+ * @param cypher - Statement.
+ */
+export function unboundedReason(cypher: string): string {
+  for (const m of cypher.matchAll(/\brange\s*\(\s*[^,()]+,\s*([-\d.eE+]+)/gi)) {
+    if (Math.abs(Number(m[1])) > MAX_RANGE)
+      return `range() is limited to ${MAX_RANGE} values in memory queries.`;
+  }
+  return '';
+}
+
+/**
+ * Adds a LIMIT to a statement that returns rows and has none, so the engine stops early.
+ * @param cypher - Statement.
+ * @param maxRows - Rows wanted; one more is fetched to tell whether there were more.
+ */
+export function withRowLimit(cypher: string, maxRows: number): string {
+  if (!/\bRETURN\b/i.test(cypher) || /\bLIMIT\b/i.test(cypher)) return cypher;
+  return `${cypher} LIMIT ${Math.max(1, maxRows) + 1}`;
+}
+
 export class MemoryGraph {
   private engine: GraphEngine;
   /** Changes not yet saved. */
@@ -654,9 +679,12 @@ export class MemoryGraph {
     params: Record<string, unknown> = {},
     maxRows = 50,
   ): { columns: string[]; rows: Record<string, unknown>[]; truncated: boolean; changed: boolean } {
-    const refused = this.engine.writeCheck(cypher, params);
+    const refused = this.engine.writeCheck(cypher, params) || unboundedReason(cypher);
     if (refused) throw new Error(`Refused: ${refused}`);
-    const result = this.engine.must(cypher.trim().replace(/;\s*$/, ''), params);
+    const result = this.engine.must(
+      withRowLimit(cypher.trim().replace(/;\s*$/, ''), maxRows),
+      params,
+    );
     const changed = Object.values(result.stats).some(v => typeof v === 'number' && v > 0);
     return {
       columns: result.columns,

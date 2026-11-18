@@ -760,6 +760,7 @@ export class VoiceCallSideView extends ItemView {
         tools,
         settings: voice,
         nativeMcp,
+        ...(layered ? { backendGuidance: VOICE_LAYER_GUIDANCE } : {}),
         runBackend: transcript =>
           layered
             ? this.relayFromTranscript(transcript)

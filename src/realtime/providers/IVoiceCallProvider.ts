@@ -19,6 +19,11 @@ export interface VoiceCallConfig {
    * should know. Receives the recent conversation transcript.
    */
   runBackend?: (transcript: string) => Promise<string>;
+  /**
+   * Added to the instructions of a hosted backend that holds the tools (GPT-Live's Responses
+   * delegation), which never sees `instructions`: in the layered setup, how to relay.
+   */
+  backendGuidance?: string;
 }
 
 /**

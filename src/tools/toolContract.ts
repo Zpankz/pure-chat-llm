@@ -77,7 +77,8 @@ export const TOOL_LAYERS: Record<string, ToolLayer[]> = {
   memory_remember: ALL,
   memory_forget: ALL,
   memory_state: ALL,
-  memory_query: ALL,
+  // Its own Cypher can run long on the main thread, so never while a voice waits (review M1).
+  memory_query: ['chat', 'orchestrator', 'worker', 'codemode'],
 };
 
 /**

@@ -69,6 +69,10 @@ export class MemoryService {
       settings: () => MemorySettings;
       store: MemoryStore;
       now?: () => number;
+      /** Told when the file stops or starts being saved, so the user can hear about it. */
+      onProblem?: (problem: string | null) => void;
+      /** Waits between reads of a file that sync may still be writing. */
+      sleep?: (ms: number) => Promise<void>;
     },
   ) {
     const now = this.now();
@@ -101,6 +105,45 @@ export class MemoryService {
     return `${this.folder}/${FILE}`;
   }
 
+  /**
+   * Sets or clears the reason the file isn't saved, and says so when it changes.
+   * @param problem - Reason, or null when saving can go on.
+   */
+  private setBlocked(problem: string | null): void {
+    if (problem === this.blocked) return;
+    this.blocked = problem;
+    diagnostics.record('memory', problem ? 'blocked' : 'unblocked', { path: this.path });
+    try {
+      this.options.onProblem?.(problem);
+    } catch {
+      // A listener's failure must not stop memory.
+    }
+  }
+
+  /**
+   * Reads the file, trying again when it is empty or half-written (sync may be mid-write).
+   * Returns the text and its snapshot, or the text and the parse error after the last try.
+   */
+  private async readFile(): Promise<{ text: string; snapshot?: MemorySnapshot; error?: Error }> {
+    const store = this.options.store;
+    const sleep = this.options.sleep ?? (ms => new Promise(r => setTimeout(r, ms)));
+    let last: { text: string; snapshot?: MemorySnapshot; error?: Error } = { text: '' };
+    for (let attempt = 0; attempt < 3; attempt++) {
+      if (attempt) await sleep(400 * attempt);
+      const text = (await store.exists(this.path)) ? await store.read(this.path) : '';
+      if (!text.trim()) {
+        last = { text };
+        continue;
+      }
+      try {
+        return { text, snapshot: JSON.parse(text) as MemorySnapshot };
+      } catch (error) {
+        last = { text, error: error as Error };
+      }
+    }
+    return last;
+  }
+
   /** Why the memory file is not being written, if it is not. */
   get problem(): string | null {
     return this.blocked;
@@ -112,18 +155,16 @@ export class MemoryService {
     this.opening ??= (async () => {
       await loadRelate();
       const graph = new MemoryGraph({ now: () => this.now() });
-      const text = (await this.options.store.exists(this.path))
-        ? await this.options.store.read(this.path)
-        : '';
-      if (text.trim()) {
-        try {
-          graph.load(JSON.parse(text) as MemorySnapshot);
-        } catch (error) {
-          // Never replace a file we could not read: keep working in memory, save nothing.
-          this.blocked = `${this.path} could not be read (${(error as Error).message}), so memory is not saved until it is fixed or moved.`;
-          diagnostics.record('memory', 'blocked', { path: this.path, error: String(error) });
-        }
+      const read = await this.readFile();
+      if (read.snapshot) graph.load(read.snapshot);
+      else if (read.error) {
+        // Never replace a file we could not read: keep working in memory, save nothing until
+        // a later read of it succeeds.
+        this.setBlocked(
+          `${this.path} could not be read (${read.error.message}), so memory is not saved until it is fixed or moved.`,
+        );
       }
+      const text = read.text;
       this.lastText = text;
       this.graph = graph;
       if (this.settings.autoRecord) graph.startSession(this.appSession, 'app', 'Obsidian session');
@@ -229,11 +270,18 @@ export class MemoryService {
     }
     this.saving = this.saving.then(async () => {
       const graph = this.graph;
-      if (!graph || !graph.dirty || this.blocked) return;
+      if (!graph || !graph.dirty) return;
       try {
         const store = this.options.store;
+        // While blocked, look again: a sync that has finished leaves a readable file.
+        if (this.blocked) {
+          const read = await this.readFile();
+          if (!read.snapshot) return;
+          this.mergeSnapshot(graph, read.snapshot, read.text);
+          this.setBlocked(null);
+        }
         const onDisk = (await store.exists(this.path)) ? await store.read(this.path) : '';
-        if (onDisk && onDisk !== this.lastText) this.mergeText(graph, onDisk);
+        if (onDisk.trim() && onDisk !== this.lastText) this.mergeText(graph, onDisk);
         if (this.blocked) return;
         if (!(await store.exists(this.folder))) await store.mkdir(this.folder);
         const text = JSON.stringify(graph.snapshot());
@@ -249,13 +297,18 @@ export class MemoryService {
 
   private mergeText(graph: MemoryGraph, text: string): void {
     try {
-      const other = JSON.parse(text) as MemorySnapshot;
-      graph.load(mergeSnapshots(graph.snapshot(), other));
-      graph.dirty = true;
-      this.lastText = text;
+      this.mergeSnapshot(graph, JSON.parse(text) as MemorySnapshot, text);
     } catch (error) {
-      this.blocked = `${this.path} changed and could not be read (${(error as Error).message}), so memory is not saved until it is fixed or moved.`;
+      this.setBlocked(
+        `${this.path} changed and could not be read (${(error as Error).message}), so memory is not saved until it is fixed or moved.`,
+      );
     }
+  }
+
+  private mergeSnapshot(graph: MemoryGraph, other: MemorySnapshot, text: string): void {
+    graph.load(mergeSnapshots(graph.snapshot(), other));
+    graph.dirty = true;
+    this.lastText = text;
   }
 
   /**
@@ -265,9 +318,22 @@ export class MemoryService {
   async onFileChanged(path: string): Promise<void> {
     if (path !== this.path || !this.graph) return;
     await this.saving;
-    const text = await this.options.store.read(this.path);
-    if (text === this.lastText) return;
-    this.mergeText(this.graph, text);
+    // Sync can write the file in pieces; read until it parses (or give up for now).
+    const read = await this.readFile();
+    if (!read.text.trim()) return;
+    if (read.text === this.lastText) {
+      // Back to what we last wrote: nothing to merge, and saving can go on.
+      if (read.snapshot) this.setBlocked(null);
+      return;
+    }
+    if (!read.snapshot) {
+      this.setBlocked(
+        `${this.path} changed and could not be read (${read.error?.message ?? 'empty'}), so memory is not saved until it is fixed or moved.`,
+      );
+      return;
+    }
+    this.mergeSnapshot(this.graph, read.snapshot, read.text);
+    this.setBlocked(null);
     diagnostics.record('memory', 'merged-synced-copy', { path });
     this.scheduleSave();
   }
@@ -287,10 +353,45 @@ export class MemoryService {
     this.opening = null;
   }
 
+  /**
+   * Moves the memory to another folder. Everything is saved in the old folder first; then the
+   * file is copied to the new one, or merged into the file already there. The old file is left
+   * where it was.
+   * @param apply - Changes the folder setting (and saves settings).
+   */
+  async changeFolder(apply: () => Promise<void>): Promise<void> {
+    const oldPath = this.path;
+    await this.reset();
+    await apply();
+    if (this.path === oldPath) return;
+    const store = this.options.store;
+    if (!(await store.exists(oldPath))) return;
+    const text = await store.read(oldPath);
+    if (!(await store.exists(this.path))) {
+      if (!(await store.exists(this.folder))) await store.mkdir(this.folder);
+      await store.write(this.path, text);
+      diagnostics.record('memory', 'moved', { from: oldPath, to: this.path });
+      return;
+    }
+    if (!this.enabled || !text.trim()) return;
+    let other: MemorySnapshot;
+    try {
+      other = JSON.parse(text) as MemorySnapshot;
+    } catch (error) {
+      diagnostics.record('memory', 'move-skipped', { from: oldPath, error: String(error) });
+      return;
+    }
+    const graph = await this.open();
+    graph.load(mergeSnapshots(graph.snapshot(), other));
+    graph.dirty = true;
+    this.scheduleSave();
+    diagnostics.record('memory', 'moved-and-merged', { from: oldPath, to: this.path });
+  }
+
   /** Forgets the open graph so the next use reads the file again (after settings change). */
   async reset(): Promise<void> {
     await this.close();
-    this.blocked = null;
+    this.setBlocked(null);
     this.lastText = '';
   }
 }

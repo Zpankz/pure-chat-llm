@@ -82,7 +82,10 @@ export class OpenAILiveProvider extends BaseVoiceProvider {
         type: 'responses',
         responses: {
           model: s.backendModel,
-          instructions: s.backendInstructions,
+          // The tools live with this backend, so it needs the layered relay rules too.
+          instructions: [s.backendInstructions, config.backendGuidance]
+            .filter(Boolean)
+            .join('\n\n'),
           ...(tools.length
             ? { tools, tool_choice: s.toolChoice, parallel_tool_calls: s.parallelToolCalls }
             : {}),

@@ -162,6 +162,13 @@ export default class PureChatLLM extends Plugin {
     this.memory = new MemoryService({
       settings: () => this.settings.memory,
       store: this.app.vault.adapter,
+      onProblem: problem =>
+        new Notice(
+          problem
+            ? `Shared memory is not being saved: ${problem}`
+            : 'Shared memory is being saved again.',
+          problem ? 10000 : 4000,
+        ),
     });
     // Open the memory early so the first call's agents start with their brief; sync can bring
     // another device's copy, which is merged in.

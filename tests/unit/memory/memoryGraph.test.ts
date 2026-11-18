@@ -3,7 +3,13 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { before, test } from 'node:test';
 import { GraphEngine, loadRelate, setRelateWasmForTests } from '../../../src/memory/relateEngine';
-import { MemoryGraph, mergeSnapshots, parseRef } from '../../../src/memory/MemoryGraph';
+import {
+  MemoryGraph,
+  mergeSnapshots,
+  parseRef,
+  unboundedReason,
+  withRowLimit,
+} from '../../../src/memory/MemoryGraph';
 import { DEFAULT_MEMORY, MemoryService } from '../../../src/memory/MemoryService';
 import type { MemorySettings, MemoryStore } from '../../../src/memory/MemoryService';
 
@@ -257,4 +263,57 @@ test('the service stays out of the way when memory is off', async () => {
   s.quietly(() => assert.fail('should not run'));
   await s.close();
   assert.equal(files.size, 0);
+});
+
+test('a half-synced file is read again, and a good read lifts the block', async () => {
+  const { files, store } = vault();
+  const problems: (string | null)[] = [];
+  const settings: MemorySettings = { ...DEFAULT_MEMORY, enabled: true };
+  const s = new MemoryService({
+    settings: () => settings,
+    store,
+    sleep: async () => undefined,
+    onProblem: p => problems.push(p),
+  });
+  await s.use(g => g.remember({ text: 'Likes tea', kind: 'preference', agent: 'voice' }));
+  await s.flush();
+  const path = 'Voice Agent/Memory/memory.json';
+  const good = files.get(path) as string;
+  // Sync writes the file in pieces: a torn copy blocks saving and says so.
+  files.set(path, good.slice(0, 20));
+  await s.onFileChanged(path);
+  assert.match(s.problem ?? '', /could not be read/);
+  assert.equal(problems.length, 1);
+  // The finished copy arrives: saving resumes.
+  files.set(path, good);
+  await s.onFileChanged(path);
+  assert.equal(s.problem, null);
+  assert.deepEqual(problems.at(-1), null);
+  await s.use(g => g.remember({ text: 'Walks at noon', kind: 'fact', agent: 'voice' }));
+  await s.flush();
+  assert.match(files.get(path) ?? '', /Walks at noon/);
+});
+
+test('changing the memory folder copies the file and leaves the old one', async () => {
+  const { files, store } = vault();
+  const settings: MemorySettings = { ...DEFAULT_MEMORY, enabled: true };
+  const s = new MemoryService({ settings: () => settings, store });
+  await s.use(g => g.remember({ text: 'Likes tea', kind: 'preference', agent: 'voice' }));
+  await s.changeFolder(async () => {
+    settings.folder = 'Elsewhere';
+  });
+  assert.match(files.get('Voice Agent/Memory/memory.json') ?? '', /Likes tea/);
+  assert.match(files.get('Elsewhere/memory.json') ?? '', /Likes tea/);
+  assert.equal(
+    [...files.keys()].filter(k => /^E|^El|^N\//.test(k) && k !== 'Elsewhere/memory.json').length,
+    0,
+  );
+});
+
+test('agent queries get a row limit and a bounded range()', () => {
+  assert.equal(withRowLimit('MATCH (n) RETURN n', 25), 'MATCH (n) RETURN n LIMIT 26');
+  assert.equal(withRowLimit('MATCH (n) RETURN n LIMIT 5', 25), 'MATCH (n) RETURN n LIMIT 5');
+  assert.equal(withRowLimit('CALL db.labels()', 25), 'CALL db.labels()');
+  assert.match(unboundedReason('UNWIND range(1, 3e6) AS i RETURN count(i)'), /limited/);
+  assert.equal(unboundedReason('UNWIND range(1, 100) AS i RETURN i'), '');
 });

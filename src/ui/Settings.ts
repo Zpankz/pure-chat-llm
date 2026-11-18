@@ -115,18 +115,27 @@ export class PureChatLLMSettingTab extends PluginSettingTab {
           void setting
             .setName('Memory folder')
             .setDesc(
-              'Holds memory.json, which sync carries to your other devices; copies from two devices are merged. The file is never cleared or replaced if it cannot be read.',
+              'Holds memory.json, which sync carries to your other devices; copies from two devices are merged. The file is never cleared or replaced if it cannot be read. A new folder takes effect when you leave the field; the memory is copied there and the old file is left in place.',
             )
-            .addText(text =>
-              text
-                .setPlaceholder(DEFAULT_MEMORY.folder)
-                .setValue(m.folder)
-                .onChange(async value => {
-                  m.folder = value.trim() || DEFAULT_MEMORY.folder;
-                  await this.plugin.saveSettings();
-                  await service.reset();
-                }),
-            ),
+            .addText(text => {
+              text.setPlaceholder(DEFAULT_MEMORY.folder).setValue(m.folder);
+              // Applied when the field is left or Enter is pressed, never on each keystroke:
+              // every change of folder saves and moves the memory file.
+              text.inputEl.addEventListener('change', () => {
+                const folder = text.getValue().trim() || DEFAULT_MEMORY.folder;
+                if (folder === m.folder) return;
+                void service
+                  .changeFolder(async () => {
+                    m.folder = folder;
+                    await this.plugin.saveSettings();
+                  })
+                  .then(() => this.display())
+                  .catch(
+                    error =>
+                      new Notice(`Shared memory could not move: ${(error as Error).message}`),
+                  );
+              });
+            }),
       )
       .addSetting(
         setting =>
