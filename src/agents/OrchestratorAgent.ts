@@ -1,6 +1,10 @@
 import { PureChatLLMChat } from '../core/Chat';
 import type PureChatLLM from '../main';
-import { ORCHESTRATOR_AGENT_TOOL_NAMES, ORCHESTRATOR_TOOL_NAMES } from '../tools/Orchestrator';
+import {
+  MEMORY_TOOL_NAMES,
+  ORCHESTRATOR_AGENT_TOOL_NAMES,
+  ORCHESTRATOR_TOOL_NAMES,
+} from '../tools/Orchestrator';
 import type { ChatRequestOptions, ToolCall } from '../types';
 import { isAbortError } from '../core/requestControl';
 import { layerFetch, layerProblem, logTiming, resolveLayer } from './layers';
@@ -301,6 +305,7 @@ export class OrchestratorAgent implements Orchestrator {
       ...ORCHESTRATOR_TOOL_NAMES.filter(n => n !== 'set_progress_updates' && n !== 'new_topic'),
       ...ORCHESTRATOR_AGENT_TOOL_NAMES,
       ...ORCHESTRATOR_READ_TOOLS,
+      ...MEMORY_TOOL_NAMES,
     ]);
     const registry = chat.toolregistry;
     // Remote MCP tools too (Hani: the orchestrator and workers use skills and MCP; voice does not).
@@ -516,7 +521,10 @@ export class OrchestratorAgent implements Orchestrator {
     const evaluator = s.layers.evaluator.enabled
       ? 'The evaluator is on: use request_evaluation on plans and results that matter.'
       : 'The evaluator is off.';
-    return `${ORCHESTRATOR_AGENT_GUIDANCE}\n${evaluator}\nWorkers run on ${resolveLayer(this.plugin, 'worker').label}.`;
+    const memory = this.plugin.memory?.brief();
+    return `${ORCHESTRATOR_AGENT_GUIDANCE}\n${evaluator}\nWorkers run on ${resolveLayer(this.plugin, 'worker').label}.${
+      memory ? `\n\n${memory}` : ''
+    }`;
   }
 
   /** Drops the oldest turns, cutting at a relayed input so tool calls stay paired. */

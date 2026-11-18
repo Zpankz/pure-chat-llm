@@ -5,6 +5,7 @@ import PureChatLLM, { StreamNotice } from '../main';
 import { ToolRegistry } from '../tools';
 import { diagnostics, requestDetail } from '../diagnostics/DiagnosticsLog';
 import { ActiveContextTool } from '../tools/ActiveContext';
+import { MEMORY_TOOLS } from '../tools/Memory';
 import { BacklinksTool } from '../tools/Backlinks';
 import { GraphCliTool, TraverseGraphTool, VaultOntologyTool } from '../tools/TraverseGraph';
 import { CreateNoteTool } from '../tools/CreateNote';
@@ -212,7 +213,7 @@ export class PureChatLLMChat {
   registerAvailableTools() {
     if (this.toolsRegistered) return;
     this.toolsRegistered = true;
-    for (const tool of [...AGENT_TOOLS, ...LAYER_TOOLS, NewTopicTool]) {
+    for (const tool of [...AGENT_TOOLS, ...LAYER_TOOLS, NewTopicTool, ...MEMORY_TOOLS]) {
       this.toolregistry.registerTool(tool);
     }
     // Deprecated: kept so chats that name it still work, but not offered by default.
@@ -474,6 +475,19 @@ export class PureChatLLMChat {
     const tools: ToolDefinition[] | undefined = this.options.tools
       ?.map(t => this.toolregistry.getTool(t)?.getDefinition())
       .filter(t => t !== undefined);
+
+    // Agent chats share the memory the voice agent, orchestrator and workers keep.
+    const memory = tools?.some(t => t.function.name.startsWith('memory_'))
+      ? this.plugin.memory?.brief()
+      : '';
+    if (memory) {
+      const first = messages[0];
+      if (first?.role === 'system' && typeof first.content === 'string') {
+        messages[0] = { ...first, content: `${first.content}\n\n${memory}` };
+      } else {
+        messages.unshift({ role: 'system', content: memory });
+      }
+    }
 
     // return the whole object sent to the API
     return {

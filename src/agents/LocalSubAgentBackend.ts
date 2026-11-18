@@ -103,6 +103,9 @@ export class LocalSubAgentBackend implements SubAgentBackend {
         this.plugin.console?.error('Could not read the vault ontology', error);
       }
     }
+    // The shared memory: what earlier sessions learned, and how to add to it.
+    const memory = this.plugin.memory?.brief();
+    if (memory) parts.push(memory);
     return parts.join('\n\n');
   }
 

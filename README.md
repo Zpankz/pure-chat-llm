@@ -216,9 +216,27 @@ Workers explore the vault's link graph, including typed relations from the [Type
 
 ---
 
+## Shared memory
+
+Turn on **Settings → Shared memory** to give every agent one memory that lasts across sessions. It is a graph database ([relate](https://relatedb.ai), openCypher, compiled to WebAssembly and built into the plugin, so it works the same on desktop and mobile with nothing to install). The voice agent, the orchestrator (Classic and Durable engines), background workers and agent note chats all read and write it.
+
+- **What it holds:** facts the agents save (preferences, instructions, decisions, todos, summaries, observations), what they are about (people, projects, notes), which calls, app sessions and tasks ran and how they ended, and shared state (a current focus, a plan step, a handoff).
+- **How agents use it:** each agent starts with a short brief (standing preferences and instructions, pinned and recent facts, unfinished tasks, the last sessions, shared state), and has five tools: `memory_recall`, `memory_remember`, `memory_forget`, `memory_state` and `memory_query`.
+- **Nothing is deleted:** a correction or `memory_forget` marks the old fact as no longer current; it stays in the history.
+- **Read-only queries:** `memory_query` runs an agent's own Cypher with bound parameters and a row cap, and refuses anything that writes (checked in the statement's text and in relate's query plan, with a rollback if anything slips through). Agents change memory only through the other tools.
+- **Where it lives:** `Voice Agent/Memory/memory.json` in your vault (the folder is a setting), so sync carries it to your other devices. Copies from two devices are merged, and a file that can't be read is never replaced.
+
+### Using the graph with the relate CLI
+
+memory.json lists nodes by label and relationships by their endpoints' `key`. To explore it with the relate CLI on a desktop, load it into a database of your own, for example with a short script that runs `UNWIND $rows AS p CREATE (n:Label) SET n = p` per label and `MATCH ... CREATE` per relationship type. The plugin never reads or writes a `.rl` database itself.
+
 ## Useful Links
 
 - [OpenAI API documentation](https://platform.openai.com/docs)
 - [API authentication](https://platform.openai.com/docs/api-reference/authentication)
 - [Chat API reference](https://platform.openai.com/docs/api-reference/chat)
 - [Responses & parameters](https://platform.openai.com/docs/api-reference/responses/create)
+
+## Third-party software
+
+The release build includes [relate](https://github.com/relatedb/relate) (`@relate/relate-wasm` 1.1.0), licensed under the Apache License 2.0. See [NOTICE](NOTICE).

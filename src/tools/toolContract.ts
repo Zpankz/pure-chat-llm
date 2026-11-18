@@ -72,6 +72,12 @@ export const TOOL_LAYERS: Record<string, ToolLayer[]> = {
   run_obsidian_command: FOREGROUND,
   // Only the voice marks topics in a call.
   new_topic: ['voice'],
+  // The shared memory: every agent reads and writes it (writes only through these tools).
+  memory_recall: ALL,
+  memory_remember: ALL,
+  memory_forget: ALL,
+  memory_state: ALL,
+  memory_query: ALL,
 };
 
 /**
@@ -440,6 +446,8 @@ export function withToolTimeout(
  * listed (writes, UI, code mode, MCP tools, task control) is treated as having effects.
  */
 export const READ_ONLY_TOOLS = new Set([
+  'memory_recall',
+  'memory_query',
   'read_file',
   'read_note_section',
   'search_vault',

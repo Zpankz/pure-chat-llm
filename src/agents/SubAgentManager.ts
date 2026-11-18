@@ -327,6 +327,7 @@ export class SubAgentManager {
     task.status = 'running';
     task.startedAt = task.startedAt ?? Date.now();
     this.emit(task, 'started', task.prompt.slice(0, 200));
+    this.remember(task);
     const minutes = this.settings.checkInMinutes;
     if (minutes > 0) {
       rt.checkIn = window.setInterval(() => this.checkIn(task), minutes * 60_000);
@@ -365,6 +366,26 @@ export class SubAgentManager {
     }
   }
 
+  /**
+   * Records the task in the shared memory, so later sessions know what ran and how it ended.
+   * @param task - Task.
+   */
+  private remember(task: SubAgentTask): void {
+    const memory = this.plugin.memory;
+    memory?.quietly(g =>
+      g.recordTask(
+        {
+          key: memory.taskKey(task.id),
+          title: task.title,
+          status: task.status,
+          result: task.status === 'done' ? task.result : task.error,
+          session: memory.session,
+        },
+        'worker',
+      ),
+    );
+  }
+
   private finish(
     task: SubAgentTask,
     status: 'done' | 'failed' | 'cancelled',
@@ -387,6 +408,7 @@ export class SubAgentManager {
     const kind: SubAgentEventKind =
       status === 'done' ? 'finished' : status === 'failed' ? 'failed' : 'cancelled';
     this.emit(task, kind, status === 'done' ? (result ?? '') : (error ?? status));
+    this.remember(task);
     void this.saveNote(task);
     this.pump();
   }

@@ -197,6 +197,13 @@ export class CallRecorder {
     this.stopTimers();
     this.live = true;
     this.transcriptSource = transcript;
+    // The call is a session in the shared memory: what is learned in it links back to it.
+    const memory = this.plugin.memory;
+    if (memory?.enabled) {
+      const key = `call-${Date.now().toString(36)}`;
+      memory.callSession = key;
+      memory.quietly(g => g.startSession(key, 'call', `Voice call ${localStamp(Date.now())}`));
+    }
     this.anchorSeq = 0;
     if (!this.enabled) {
       this.current = null;
@@ -258,6 +265,13 @@ export class CallRecorder {
     this.stopTimers();
     const record = this.current;
     this.live = false;
+    const memory = this.plugin.memory;
+    const session = memory?.callSession;
+    if (memory && session) {
+      const summary = callSummary(record);
+      memory.quietly(g => g.endSession(session, summary));
+      memory.callSession = null;
+    }
     if (!record) return;
     record.endedAt = Date.now();
     diagnostics.setCall(null);
@@ -879,4 +893,19 @@ export class CallRecorder {
   dispose(): void {
     this.stopTimers();
   }
+}
+
+/**
+ * A one-line summary of a call for the shared memory: its topics, background tasks and notes.
+ * @param record - The call, or null when calls are not saved.
+ */
+function callSummary(record: CallRecord | null): string {
+  if (!record) return 'Voice call (not saved as notes).';
+  const topics = record.topics.filter(t => t.kind !== 'opening').map(t => t.title);
+  const parts = [
+    topics.length ? `Topics: ${topics.slice(0, 8).join(', ')}` : '',
+    record.taskIds.length ? `${record.taskIds.length} background task(s)` : '',
+    `Notes: [[${record.callPath.replace(/\.md$/, '')}]]`,
+  ];
+  return parts.filter(Boolean).join('. ');
 }

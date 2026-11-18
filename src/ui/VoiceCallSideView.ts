@@ -32,6 +32,7 @@ import {
   VOICE_LAYER_GUIDANCE,
   VOICE_LAYER_TOOL_NAMES,
   ORCHESTRATOR_TOOL_NAMES,
+  MEMORY_TOOL_NAMES,
 } from '../tools/Orchestrator';
 import { voiceUnsupportedReason } from '../realtime/support';
 import type { NoticeMode, SubAgentEvent } from '../agents/types';
@@ -618,7 +619,11 @@ export class VoiceCallSideView extends ItemView {
         this.toolExecutor = new ChatToolExecutor(this.chat);
         tools = this.chat.toolregistry
           .getEnabledDefinitions()
-          .filter(t => ORCHESTRATOR_TOOL_NAMES.includes(t.function.name));
+          .filter(
+            t =>
+              ORCHESTRATOR_TOOL_NAMES.includes(t.function.name) ||
+              MEMORY_TOOL_NAMES.includes(t.function.name),
+          );
         nativeMcp = [];
       } else if (this.plugin.settings.agentMode) {
         this.chat = new PureChatLLMChat(this.plugin);
@@ -645,6 +650,11 @@ export class VoiceCallSideView extends ItemView {
       else if (orchestrator) instructions += `\n\n${ORCHESTRATOR_GUIDANCE}`;
       else if (tools.length || nativeMcp.length) instructions += `\n\n${VOICE_TOOL_GUIDANCE}`;
       if (tools.some(t => t.function.name === 'new_topic')) instructions += `\n\n${TOPIC_GUIDANCE}`;
+      // What the agents learned in earlier sessions, and how to use the shared memory.
+      if (this.chat) {
+        const memory = this.plugin.memory?.brief();
+        if (memory) instructions += `\n\n${memory}`;
+      }
 
       const config: VoiceCallConfig = {
         apiKey: providerEndpoint.apiKey,

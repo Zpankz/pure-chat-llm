@@ -2,6 +2,7 @@ import { PureChatLLMSettings } from 'src/types';
 import { DEFAULT_VOICE_SETTINGS } from '../realtime/voiceCatalog';
 import { version } from '../../package.json';
 import { DEFAULT_DIAGNOSTICS } from '../diagnostics/DiagnosticsLog';
+import { DEFAULT_MEMORY } from '../memory/MemoryService';
 
 // import { readme, splash } from '../assets/s.json';
 
@@ -293,4 +294,5 @@ export const DEFAULT_SETTINGS: PureChatLLMSettings = {
     commandsFolder: 'Agent graph commands',
   },
   diagnostics: { ...DEFAULT_DIAGNOSTICS },
+  memory: { ...DEFAULT_MEMORY },
 };

@@ -1,0 +1,10 @@
+Voice Agent (fork of Pure Chat LLM)
+
+This plugin's release build (main.js) includes third-party software:
+
+relate: @relate/relate-wasm 1.1.0
+  An embedded openCypher graph database, compiled to WebAssembly.
+  https://github.com/relatedb/relate (https://relatedb.ai)
+  Licensed under the Apache License, Version 2.0. A copy of the licence is in
+  licenses/relate-LICENSE-Apache-2.0.txt and at https://www.apache.org/licenses/LICENSE-2.0
+  The WebAssembly module is embedded unmodified (gzipped, checked against its sha256 on load).

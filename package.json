@@ -1,6 +1,6 @@
 {
   "name": "voice-agent",
-  "version": "2.0.0-beta.3",
+  "version": "2.0.0-beta.4",
   "description": "Turn notes into conversations with chatGPT",
   "main": "main.js",
   "scripts": {
@@ -48,6 +48,7 @@
     "@earendil-works/pi-ai": "1.5.2",
     "@earendil-works/pi-durable": "1.5.2",
     "@earendil-works/pi-schema": "1.5.2",
+    "@relate/relate-wasm": "1.1.0",
     "diff": "^8.0.3",
     "glob-to-regexp": "^0.4.1"
   },

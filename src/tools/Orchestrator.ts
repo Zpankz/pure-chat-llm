@@ -1,5 +1,8 @@
 import { defineToolParameters, InferArgs, Tool } from '../tools';
 import type { SubAgentTask } from '../agents/types';
+import { MEMORY_TOOL_NAMES } from './Memory';
+
+export { MEMORY_TOOL_NAMES };
 
 /** Names of tools only an orchestrator gets. */
 export const ORCHESTRATOR_TOOL_NAMES = [
@@ -20,6 +23,7 @@ export const VOICE_LAYER_TOOL_NAMES = [
   'check_tasks',
   'cancel_task',
   'set_progress_updates',
+  ...MEMORY_TOOL_NAMES,
 ];
 
 /** Tools only the layered orchestrator agent gets. */

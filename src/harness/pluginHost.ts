@@ -7,6 +7,7 @@ import { layerFetch, layerProblem, logTiming, resolveLayer } from '../agents/lay
 import { ORCHESTRATOR_READ_TOOLS, spokenError } from '../agents/OrchestratorAgent';
 import { LocalSubAgentBackend } from '../agents/LocalSubAgentBackend';
 import {
+  MEMORY_TOOL_NAMES,
   ORCHESTRATOR_AGENT_TOOL_NAMES,
   ORCHESTRATOR_TOOL_NAMES,
   SUBAGENT_TOOL_NAMES,
@@ -59,6 +60,7 @@ export function pluginToolSource(plugin: PureChatLLM, role: 'orchestrator' | 'wo
   const orchestratorTools = new Set<string>([
     ...ORCHESTRATOR_AGENT_TOOL_NAMES,
     ...ORCHESTRATOR_READ_TOOLS,
+    ...MEMORY_TOOL_NAMES,
   ]);
   const offered = (name: string) =>
     !classicTaskTools.has(name) &&
@@ -128,42 +130,74 @@ export class DurableEngine {
         ),
       );
     }
-    this.opening ??= openDurable(
-      {
-        vaultKey: vaultKey(this.plugin),
-        send: pluginLayerSend(this.plugin),
-        tools: pluginToolSource(this.plugin, 'orchestrator'),
-        workerTools: pluginToolSource(this.plugin, 'worker'),
-        orchestratorInstructions: () => DURABLE_ORCHESTRATOR_GUIDANCE,
-        workerInstructions: () => new LocalSubAgentBackend(this.plugin).systemPrompt(),
-        maxResultChars: this.plugin.settings.voice.maxToolOutputChars || 6000,
-        checkInMinutes: () => this.plugin.settings.orchestrator.checkInMinutes,
-        mobile: Platform.isMobile,
-      },
-      {
-        onReport: report => {
-          this.plugin.console?.error?.('Durable engine report', report.kind, report.error);
-          // 1.5 has no parked tasks: a task cut off restartLimit times in a row ends itself.
-          if (
-            (report.kind === 'task_interrupted' || report.kind === 'task_faulted') &&
-            report.reason === 'restart_limit'
-          ) {
-            new Notice(
-              'Voice Agent: a task kept getting interrupted by restarts and was stopped.',
-              10_000,
-            );
-          } else if (report.kind === 'storage_failed') {
-            new Notice(
-              'Voice Agent: the storage of the durable engine failed, so reload the app to open it again.',
-              10_000,
-            );
-          }
-        },
-      },
-    ).catch(error => {
-      this.opening = null;
-      throw error;
-    });
+    // The memory opens first, so the orchestrator's instructions carry its brief.
+    this.opening ??= (
+      this.plugin.memory?.enabled
+        ? this.plugin.memory.open().then(
+            () => undefined,
+            () => undefined,
+          )
+        : Promise.resolve()
+    )
+      .then(() =>
+        openDurable(
+          {
+            vaultKey: vaultKey(this.plugin),
+            send: pluginLayerSend(this.plugin),
+            tools: pluginToolSource(this.plugin, 'orchestrator'),
+            workerTools: pluginToolSource(this.plugin, 'worker'),
+            orchestratorInstructions: () => {
+              const memory = this.plugin.memory?.brief();
+              return memory
+                ? `${DURABLE_ORCHESTRATOR_GUIDANCE}\n\n${memory}`
+                : DURABLE_ORCHESTRATOR_GUIDANCE;
+            },
+            workerInstructions: () => new LocalSubAgentBackend(this.plugin).systemPrompt(),
+            maxResultChars: this.plugin.settings.voice.maxToolOutputChars || 6000,
+            onTask: event => {
+              const memory = this.plugin.memory;
+              memory?.quietly(g =>
+                g.recordTask(
+                  {
+                    key: `durable-${event.conversation}-${event.id}`,
+                    title: event.title,
+                    status: event.status,
+                    result: event.text,
+                    session: memory.session,
+                  },
+                  'worker',
+                ),
+              );
+            },
+            checkInMinutes: () => this.plugin.settings.orchestrator.checkInMinutes,
+            mobile: Platform.isMobile,
+          },
+          {
+            onReport: report => {
+              this.plugin.console?.error?.('Durable engine report', report.kind, report.error);
+              // 1.5 has no parked tasks: a task cut off restartLimit times in a row ends itself.
+              if (
+                (report.kind === 'task_interrupted' || report.kind === 'task_faulted') &&
+                report.reason === 'restart_limit'
+              ) {
+                new Notice(
+                  'Voice Agent: a task kept getting interrupted by restarts and was stopped.',
+                  10_000,
+                );
+              } else if (report.kind === 'storage_failed') {
+                new Notice(
+                  'Voice Agent: the storage of the durable engine failed, so reload the app to open it again.',
+                  10_000,
+                );
+              }
+            },
+          },
+        ),
+      )
+      .catch(error => {
+        this.opening = null;
+        throw error;
+      });
     return this.opening;
   }
 

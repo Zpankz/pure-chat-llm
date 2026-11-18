@@ -21,6 +21,7 @@ import {
 
 import { DEFAULT_SETTINGS, EmptyApiKey } from './assets/constants';
 import { DEFAULT_DIAGNOSTICS, diagnostics } from './diagnostics/DiagnosticsLog';
+import { DEFAULT_MEMORY, MemoryService } from './memory/MemoryService';
 import { mergeVoiceSettings } from './realtime/voiceCatalog';
 import { DEFAULT_MCP_SERVER, McpManager } from './mcp/McpManager';
 import { SubAgentManager } from './agents/SubAgentManager';
@@ -123,6 +124,8 @@ export default class PureChatLLM extends Plugin {
   skills: SkillsCatalog;
   /** The Pi Durable engine, opened on first use when settings choose it (desktop only). */
   durable: DurableEngine;
+  /** The agents' shared memory graph (relate), when turned on in settings. */
+  memory: MemoryService;
   /** Small key/value store that persists code mode `store()` values for this session. */
   codeModeStore: Map<string, string> = new Map();
 
@@ -155,6 +158,20 @@ export default class PureChatLLM extends Plugin {
       }),
     });
     await diagnostics.start();
+    this.memory = new MemoryService({
+      settings: () => this.settings.memory,
+      store: this.app.vault.adapter,
+    });
+    // Open the memory early so the first call's agents start with their brief; sync can bring
+    // another device's copy, which is merged in.
+    this.app.workspace.onLayoutReady(() => {
+      if (this.memory.enabled) {
+        void this.memory.open().catch(error => this.console?.error?.('Memory', error));
+      }
+    });
+    this.registerEvent(
+      this.app.vault.on('modify', file => void this.memory.onFileChanged(file.path)),
+    );
     this.console = new BrowserConsole(this.settings.debug, 'PureChatLLM');
     this.console.log('settings loaded', this.settings);
     //runTest(this.settings.endpoints[0].apiKey); // Run the test function to check if the plugin is working
@@ -902,6 +919,7 @@ export default class PureChatLLM extends Plugin {
       },
       graph: { ...DEFAULT_SETTINGS.graph, ...loadedData.graph },
       diagnostics: { ...DEFAULT_DIAGNOSTICS, ...loadedData.diagnostics },
+      memory: { ...DEFAULT_MEMORY, ...loadedData.memory },
     };
 
     const toSentenceCase = (str: string) =>
@@ -991,6 +1009,7 @@ export default class PureChatLLM extends Plugin {
    */
   onunload() {
     void diagnostics.stop();
+    void this.memory?.close();
     this.mcp?.dispose();
     this.classicOrchestrator?.dispose();
     this.calls?.dispose();

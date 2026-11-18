@@ -1,5 +1,6 @@
 import type { SubAgentEventKind, SubAgentEventRoute } from './agents/types';
 import type { DiagnosticsSettings } from './diagnostics/DiagnosticsLog';
+import type { MemorySettings } from './memory/MemoryService';
 export interface PureChatLLMSettings {
   AutogenerateTitle: number;
   SystemPrompt: string;
@@ -50,6 +51,8 @@ export interface PureChatLLMSettings {
   graph: GraphSettings;
   /** The diagnostics log of console output, conversations and tool calls (off by default). */
   diagnostics: DiagnosticsSettings;
+  /** The agents' shared memory graph (relate), saved in the vault (off by default). */
+  memory: MemorySettings;
 }
 
 export type VoiceProviderId = 'openai-realtime' | 'openai-live' | 'gemini-live' | 'xai-voice';

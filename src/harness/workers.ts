@@ -88,6 +88,17 @@ export interface WorkerHost {
   maxResultChars?: number;
   /** Minutes between check-ins on a running worker; 0 or less turns them off. Read per round. */
   checkInMinutes?: () => number;
+  /**
+   * Told when a task starts and when it ends; may be told again for the same task after a
+   * restart, so it must not mind repeats.
+   */
+  onTask?: (event: {
+    conversation: string;
+    id: string;
+    title: string;
+    status: WorkerStatus;
+    text?: string;
+  }) => void;
 }
 
 interface WorkerInput {
@@ -230,6 +241,13 @@ const str = (description: string) => ({ type: 'string', description });
  */
 export function createWorkers(host: WorkerHost, abortTask: (taskId: TaskId) => Promise<unknown>) {
   const maxChars = host.maxResultChars ?? 6000;
+  const tell = (event: Parameters<NonNullable<WorkerHost['onTask']>>[0]) => {
+    try {
+      host.onTask?.(event);
+    } catch {
+      // A listener's failure never fails the task.
+    }
+  };
 
   // eslint-disable-next-line prefer-const -- referenced by the task before it is assigned
   let workerAgentExtension: Extension;
@@ -419,6 +437,7 @@ export function createWorkers(host: WorkerHost, abortTask: (taskId: TaskId) => P
               }
             : { status: 'terminal', outcome: { status: 'failed', error: { message: outcome } } };
         }, context);
+        tell({ conversation: String(runtime.conversationId), id, title, status, text: outcome });
       },
     },
     // The child conversation is aborted first (it is owned by this task); then mark it cancelled.
@@ -433,6 +452,12 @@ export function createWorkers(host: WorkerHost, abortTask: (taskId: TaskId) => P
         }
         return { status: 'terminal', outcome: { status: 'aborted', reason: 'cancelled' } };
       }, context);
+      tell({
+        conversation: String(runtime.conversationId),
+        id: task.input.id,
+        title: task.input.title,
+        status: 'cancelled',
+      });
     },
   });
 
@@ -496,6 +521,7 @@ export function createWorkers(host: WorkerHost, abortTask: (taskId: TaskId) => P
             };
             return { id, title };
           }, context);
+          tell({ conversation: String(api.conversationId), ...record, status: 'running' });
           return text(`Started ${record.id} "${record.title}". Updates will arrive on their own.`);
         },
       }),

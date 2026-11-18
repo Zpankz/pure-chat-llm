@@ -17,6 +17,7 @@ import type {
   Storage,
 } from './pi';
 import { createWorkers } from './workers';
+import type { WorkerHost } from './workers';
 
 /** IndexedDB database of one vault's durable conversations. */
 export const durableDbName = (vaultKey: string) => `voice-agent:${vaultKey}`;
@@ -63,6 +64,8 @@ export interface DurableHost {
   checkInMinutes?: () => number;
   /** Mobile device (fewer progress commits). */
   mobile?: boolean;
+  /** Told when a worker task starts or ends (the shared memory records it). */
+  onTask?: WorkerHost['onTask'];
 }
 
 export interface OpenDurableOptions {
@@ -155,6 +158,7 @@ export async function openDurable(
         }),
         maxResultChars: host.maxResultChars,
         checkInMinutes: host.checkInMinutes,
+        onTask: host.onTask,
       },
       taskId =>
         live.harness

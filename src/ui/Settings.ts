@@ -11,6 +11,8 @@ import PureChatLLM, {
 import { PURE_CHAT_LLM_ICON_NAME, PureChatLLMSettings, TOOL_CLASSIFICATIONS } from '../types';
 import { BrowserConsole } from '../utils/BrowserConsole';
 import { DEFAULT_DIAGNOSTICS, diagnostics } from '../diagnostics/DiagnosticsLog';
+import { DEFAULT_MEMORY } from '../memory/MemoryService';
+import { relateAvailable } from '../memory/relateEngine';
 import { AskForAPI, EditModalProviders } from './Modals';
 import {
   renderMcpSettings,
@@ -68,6 +70,93 @@ export class PureChatLLMSettingTab extends PluginSettingTab {
     const { settings } = this.plugin;
     // eslint-disable-next-line @typescript-eslint/no-base-to-string
     return settings[key] !== DEFAULT_SETTINGS[key] ? String(settings[key] ?? '') : '';
+  }
+
+  /**
+   * The shared memory: one relate graph that every agent reads and writes, saved in the vault.
+   * @param containerEl - Settings container.
+   */
+  private memorySection(containerEl: HTMLElement): void {
+    const m = this.plugin.settings.memory;
+    const service = this.plugin.memory;
+    const status = !relateAvailable()
+      ? 'This build does not include the graph engine.'
+      : !m.enabled
+        ? 'Off.'
+        : (service?.problem ?? `Saved in ${service?.path ?? m.folder}.`);
+    new SettingGroup(containerEl)
+      .setHeading('Shared memory')
+      .addSetting(
+        setting =>
+          void setting
+            .setName('Use shared memory')
+            .setDesc(
+              `One graph database (relate, openCypher) that the voice agent, the orchestrator, workers and agent chats all read and write: preferences, instructions, decisions and facts, which calls and tasks ran, and shared state. Every agent starts with a short brief from it, so new sessions remember earlier ones. Agents change it only through the memory tools; their own queries are read-only. ${status}`,
+            )
+            .addToggle(toggle =>
+              toggle.setValue(m.enabled).onChange(async value => {
+                m.enabled = value;
+                await this.plugin.saveSettings();
+                if (value) {
+                  try {
+                    await service.open();
+                  } catch (error) {
+                    new Notice(`Shared memory could not open: ${(error as Error).message}`);
+                  }
+                } else {
+                  await service.reset();
+                }
+                this.display();
+              }),
+            ),
+      )
+      .addSetting(
+        setting =>
+          void setting
+            .setName('Memory folder')
+            .setDesc(
+              'Holds memory.json, which sync carries to your other devices; copies from two devices are merged. The file is never cleared or replaced if it cannot be read.',
+            )
+            .addText(text =>
+              text
+                .setPlaceholder(DEFAULT_MEMORY.folder)
+                .setValue(m.folder)
+                .onChange(async value => {
+                  m.folder = value.trim() || DEFAULT_MEMORY.folder;
+                  await this.plugin.saveSettings();
+                  await service.reset();
+                }),
+            ),
+      )
+      .addSetting(
+        setting =>
+          void setting
+            .setName('Brief length (characters)')
+            .setDesc(
+              'Longest memory brief put in each agent’s instructions: standing preferences, pinned and recent facts, unfinished tasks, the last sessions and shared state. 0 leaves it out (the tools still work).',
+            )
+            .addText(text =>
+              text.setValue(String(m.briefChars)).onChange(async value => {
+                const n = Math.floor(Number(value));
+                m.briefChars = Number.isFinite(n) && n >= 0 ? n : m.briefChars;
+                await this.plugin.saveSettings();
+              }),
+            ),
+      )
+      .addSetting(
+        setting =>
+          void setting
+            .setName('Record calls and tasks')
+            .setDesc(
+              'Adds each voice call, app session and background task to the graph by itself, with its outcome, so agents can see what ran before.',
+            )
+            .addToggle(toggle =>
+              toggle.setValue(m.autoRecord).onChange(async value => {
+                m.autoRecord = value;
+                await this.plugin.saveSettings();
+              }),
+            ),
+      );
   }
 
   /**
@@ -698,6 +787,7 @@ export class PureChatLLMSettingTab extends PluginSettingTab {
             ),
       );
 
+    this.memorySection(containerEl);
     this.diagnosticsSection(containerEl);
 
     new SettingGroup(containerEl)
