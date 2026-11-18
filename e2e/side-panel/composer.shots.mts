@@ -911,6 +911,11 @@ describe(`Typed message box (${LABEL})`, () => {
     this.timeout(300_000);
     await resetBox();
     await openPanel();
+    // The default edit policy for background tasks is "peer" (reviewers decide, and the fake
+    // reviewer approves, so the edit is applied at once). Proposals come from the "ask me" policy.
+    const policyBefore = await browser.executeObsidian(({ plugins }) => JSON.stringify((plugins.voiceAgent as any).settings.orchestrator.writes ?? null));
+    await setSettings({ 'orchestrator.writes.edit': 'review' });
+    log(`10: setting: background task edits set to "review" (ask me); before: ${policyBefore}`);
     await browser.executeObsidian(async ({ app }) => {
       for (const [name, text] of [['Proposal target A.md', 'Alpha one\nAlpha two\n'], ['Proposal target B.md', 'Beta one\nBeta two\n'], ['Proposal target C.md', 'Gamma one\nGamma two\n']]) {
         const f = app.vault.getFileByPath(name);
@@ -1007,6 +1012,7 @@ describe(`Typed message box (${LABEL})`, () => {
     await browser.pause(800);
     const cardsReopened = await cards();
     log(`10: after reopening the panel: cards ${JSON.stringify(cardsReopened.map(c => c.title))}`);
+    await setSettings({ 'orchestrator.writes.edit': null });
     verdict(
       '10',
       cardA && cardB && noteA.includes('Alpha two, approved from a task') && propA.some(p => p.status === 'applied') && !noteB.includes('rejected') && propB.some(p => p.status === 'rejected') && !noteC.includes('panel closed') && propC.some(p => p.status === 'pending') && !modal,

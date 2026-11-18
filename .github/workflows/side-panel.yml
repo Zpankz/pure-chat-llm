@@ -25,7 +25,10 @@ jobs:
           # Earlier runs shot before (b4229f1, beta.4) and after (33684ab, beta.5).
           # Earlier: after-beta6 (4261b94) with side-panel.shots.mts; agent-fixes-9bebbee with agent-fixes.shots.mts.
           # Earlier: beta8-composer (890596e) with composer.shots.mts.
-          # Earlier: beta8-d45228b-composer (d45228b) with composer.shots.mts (run 44283952744).
+          # Earlier: beta8-d45228b-composer run 44283952744 (check 10 then used the default "peer" policy).
+          - label: beta8-d45228b-composer
+            ref: d45228bf46dd2fc04d384977204ccf2231e04fbb
+            spec: e2e/side-panel/composer.shots.mts
           - label: beta8-d45228b-memory
             ref: d45228bf46dd2fc04d384977204ccf2231e04fbb
             spec: e2e/side-panel/memory.shots.mts

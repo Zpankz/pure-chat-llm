@@ -276,7 +276,7 @@ describe('Shared memory overhaul (librarian, recall, entities)', function () {
   });
 
   it('M6: Settings > Voice Agent: turn on shared memory, the three new lines', async function () {
-    this.timeout(120_000);
+    this.timeout(300_000);
     await browser.executeObsidian(({ app }) => {
       const setting = (app as any).setting;
       setting.open();
@@ -294,13 +294,53 @@ describe('Shared memory overhaul (librarian, recall, entities)', function () {
       return { id: tab?.id ?? null, modalClass: modal?.className ?? null, items: root?.querySelectorAll('.setting-item').length ?? 0, names: [...(root?.querySelectorAll('.setting-item-name') ?? [])].map(n => (n.textContent ?? '').trim()).filter(Boolean).slice(0, 200) };
     });
     log(`M6: settings tab ${tabInfo.id}, modal "${tabInfo.modalClass}", ${tabInfo.items} rows; row names ${JSON.stringify(tabInfo.names)}`);
-    // Marks the control inside a settings row and clicks it with a real WebDriver click; a click in
-    // the page is the fallback, and which one ran is logged.
+    // Where the settings tab lives: Obsidian may draw it in its own window, which WebDriver only
+    // reaches after switching to that window. Logged, so the report can say which path ran.
+    const mainHandle = await browser.getWindowHandle();
+    const handles = await browser.getWindowHandles();
+    const where = await browser.execute(() => {
+      const root: HTMLElement | undefined = (window as any).app?.setting?.activeTab?.containerEl;
+      const doc = root?.ownerDocument;
+      return {
+        sameDocument: doc === document,
+        connected: !!root?.isConnected,
+        inMainBody: !!root && document.body.contains(root),
+        otherWindow: !!doc && doc.defaultView !== window,
+        otherTitle: doc && doc !== document ? doc.title : null,
+      };
+    });
+    let settingsHandle: string | null = where.sameDocument ? mainHandle : null;
+    if (!settingsHandle && handles.length > 1) {
+      for (const h of handles) {
+        if (h === mainHandle) continue;
+        await browser.switchToWindow(h);
+        const here = await browser.execute(() => !!document.querySelector('[data-e2e-shot="settings"]'));
+        if (here) {
+          settingsHandle = h;
+          break;
+        }
+      }
+      await browser.switchToWindow(mainHandle);
+    }
+    log(`M6: settings tab location ${JSON.stringify({ ...where, windows: handles.length, reachedByWebDriver: !!settingsHandle, inItsOwnWindow: !!settingsHandle && settingsHandle !== mainHandle })}`);
+    // Runs a WebDriver step in the settings tab's window, then returns to the main window.
+    const inSettings = async <T,>(fn: () => Promise<T>): Promise<T> => {
+      if (!settingsHandle || settingsHandle === mainHandle) return fn();
+      await browser.switchToWindow(settingsHandle);
+      try {
+        return await fn();
+      } finally {
+        await browser.switchToWindow(mainHandle);
+      }
+    };
+    let ok2 = '';
+    // Marks the control inside a settings row and clicks it with a real WebDriver click; a click
+    // on the element itself is the fallback, and which one ran is logged.
     const realClick = async (name: string, inner: string): Promise<string> => {
       const ok = await browser.execute((name: string, inner: string) => {
-        document.querySelectorAll('[data-e2e-click]').forEach(e => e.removeAttribute('data-e2e-click'));
-        const root: ParentNode = (window as any).app?.setting?.activeTab?.containerEl ?? document;
-        const row = [...root.querySelectorAll('.setting-item')].find(r => r.querySelector('.setting-item-name')?.textContent?.trim() === name);
+        const root: HTMLElement | undefined = (window as any).app?.setting?.activeTab?.containerEl;
+        (root?.ownerDocument ?? document).querySelectorAll('[data-e2e-click]').forEach(e => e.removeAttribute('data-e2e-click'));
+        const row = [...(root ?? document).querySelectorAll('.setting-item')].find(r => r.querySelector('.setting-item-name')?.textContent?.trim() === name);
         const el = row?.querySelector(inner) as HTMLElement | null;
         if (!el) return `no ${inner} in the row; the row holds ${row?.innerHTML.slice(0, 400) ?? 'nothing'}`;
         el.setAttribute('data-e2e-click', 'go');
@@ -308,13 +348,38 @@ describe('Shared memory overhaul (librarian, recall, entities)', function () {
         return '';
       }, name, inner);
       if (ok) return `NOT CLICKED: ${ok}`;
-      try {
-        await (await browser.$('[data-e2e-click="go"]')).click();
-        return 'a real click';
-      } catch (e) {
-        await browser.execute(() => (document.querySelector('[data-e2e-click="go"]') as HTMLElement | null)?.click());
-        return `FALLBACK click in the page, because the real click failed: ${String(e).slice(0, 200)}`;
+      if (settingsHandle) {
+        try {
+          await inSettings(async () => (await browser.$('[data-e2e-click="go"]')).click());
+          return 'a real click';
+        } catch (e) {
+          ok2 = String(e).slice(0, 200);
+        }
       }
+      await browser.execute(() => {
+        const root: HTMLElement | undefined = (window as any).app?.setting?.activeTab?.containerEl;
+        const el = root?.querySelector('[data-e2e-click="go"]') as HTMLElement | null;
+        el?.click();
+        if (el instanceof HTMLInputElement) el.focus();
+      });
+      return `FALLBACK: el.click() on the element in the page, because WebDriver could not reach it (${settingsHandle ? ok2 : 'the tab is not in a window WebDriver can switch to'})`;
+    };
+    // Types into the marked field: real key presses where WebDriver reaches the tab, otherwise the
+    // value and an input event set in the page.
+    const typeInto = async (value: string): Promise<string> => {
+      if (settingsHandle) {
+        await inSettings(async () => browser.keys(value.split('')));
+        return 'real key presses';
+      }
+      await browser.execute((value: string) => {
+        const root: HTMLElement | undefined = (window as any).app?.setting?.activeTab?.containerEl;
+        const el = root?.querySelector('[data-e2e-click="go"]') as HTMLInputElement | null;
+        if (!el) return;
+        el.value = value;
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+        el.dispatchEvent(new Event('change', { bubbles: true }));
+      }, value);
+      return 'FALLBACK: value and an input event set in the page';
     };
     const mark = async (name: string) =>
       browser.execute((name: string) => {
@@ -353,16 +418,16 @@ describe('Shared memory overhaul (librarian, recall, entities)', function () {
         const p = plugins.voiceAgent as any;
         return !!p.settings.memory.enabled && !!p.memory?.graph;
       }),
-    20_000);
+    15_000);
     await browser.pause(800);
     // The tab redraws after the toggle; type into the two new fields with real key presses.
     for (const [name, value] of [['Embeddings for recall', 'Fake LLM'], ['Embedding model', 'fake-embed']] as const) {
       if (await mark(name)) {
         const how = await realClick(name, 'input');
         log(`M6: focused the "${name}" field (${how})`);
-        await browser.keys(value.split(''));
+        const typed = await typeInto(value);
         await browser.pause(300);
-        log(`M6: typed ${JSON.stringify(value)} into "${name}" (real key presses)`);
+        log(`M6: typed ${JSON.stringify(value)} into "${name}" (${typed})`);
       } else log(`M6: row "${name}" NOT FOUND`);
     }
     await browser.pause(500);
@@ -375,11 +440,11 @@ describe('Shared memory overhaul (librarian, recall, entities)', function () {
     log(`M6: saved memory settings ${JSON.stringify(saved)}`);
     await mark('Learn from calls and tasks');
     await browser.pause(300);
-    await shootBoth('m6-settings-memory', '[data-e2e-shot="settings"]');
+    await inSettings(() => shootBoth('m6-settings-memory', '[data-e2e-shot="settings"]'));
     await mark('Use shared memory');
     await browser.pause(300);
-    await shootBoth('m6-settings-memory-top', '[data-e2e-shot="settings"]');
-    await browser.keys([ESCAPE]);
+    await inSettings(() => shootBoth('m6-settings-memory-top', '[data-e2e-shot="settings"]'));
+    await browser.executeObsidian(({ app }) => (app as any).setting.close());
     await browser.pause(400);
     verdict(
       'M6',
@@ -526,7 +591,7 @@ describe('Shared memory overhaul (librarian, recall, entities)', function () {
     this.timeout(180_000);
     await openPanel();
     const mark = traceMark();
-    await setDefaultScript({ id: 'm5-answer', final: 'FAKE ANSWER: noted, the typed message box is on the list.' });
+    await setDefaultScript({ id: 'm5-answer', final: 'FAKE ANSWER: the task found 12 notes on acclimatisation.' });
     const sendAndWait = async (text: string, n: number) => {
       log(`M5: typing ${JSON.stringify(text)} in the panel's box and pressing Enter (real key presses)`);
       await typeAndSend(text);
@@ -534,7 +599,9 @@ describe('Shared memory overhaul (librarian, recall, entities)', function () {
       await waitFor('the orchestrator to go idle', async () => browser.executeObsidian(({ plugins }) => (plugins.voiceAgent as any).orchestrator.state !== 'thinking'), 30_000);
       await browser.pause(500);
     };
-    await sendAndWait('What did I ask for about the chat input?', 1);
+    // Standing preferences (like the typed message box) sit in the system prompt's brief and are
+    // left out of the per-turn block by design, so the turn asks about M3's plain fact instead.
+    await sendAndWait('How many altitude notes did that task find?', 1);
     await sendAndWait('Thanks. Anything else on the panel?', 2);
     await setDefaultScript(null);
     const orch = llm(mark).filter(e => e.default_script && ((e.tools_offered as string[] | undefined) ?? []).includes('delegate_task'));
@@ -554,7 +621,8 @@ describe('Shared memory overhaul (librarian, recall, entities)', function () {
       log(`M5: system prompts differ at character ${firstDiff}: 1: ${JSON.stringify(sys[0].slice(Math.max(0, firstDiff - 80), firstDiff + 200))} 2: ${JSON.stringify(sys[1].slice(Math.max(0, firstDiff - 80), firstDiff + 200))}`);
     }
     const memIn1 = firstUser.includes('[Memory] Recalled for this message');
-    const fact1 = /typed message box/.test(firstUser.slice(firstUser.indexOf('[Memory]')));
+    const fact1 = /Altitude folder holds 12 notes/.test(firstUser.slice(firstUser.indexOf('[Memory]')));
+    const standingInSystem = /Standing preferences[\s\S]*typed message box/.test(sys[0] ?? '');
     const memInSystem = sys[0]?.includes('[Memory] Recalled for this message') ?? false;
     const identical = sys.length >= 2 && sys[0] === sys[1];
     await browser.execute((root: string) => {
@@ -564,8 +632,8 @@ describe('Shared memory overhaul (librarian, recall, entities)', function () {
     await shootBoth('m5-typed-turns');
     verdict(
       'M5',
-      orch.length >= 2 && memIn1 && fact1 && !memInSystem && identical,
-      `${orch.length} orchestrator request(s). Request 1's user message ${memIn1 ? 'has' : 'has NO'} a "[Memory] Recalled for this message" block${memIn1 ? `, ${fact1 ? 'with' : 'WITHOUT'} the typed message box fact` : ''}; the system prompt ${memInSystem ? 'ALSO carries it' : 'does not'}. Request 2's user message ${secondUser.includes('[Memory]') ? 'has' : 'has no'} a [Memory] block. The system prompt is ${identical ? `byte-identical across the two turns (${sys[0].length} characters)` : `DIFFERENT between the two turns${firstDiff >= 0 ? ` (first difference at character ${firstDiff})` : ''}`}.`,
+      orch.length >= 2 && memIn1 && fact1 && !memInSystem && standingInSystem && identical,
+      `${orch.length} orchestrator request(s). Request 1's user message ${memIn1 ? 'has' : 'has NO'} a "[Memory] Recalled for this message" block${memIn1 ? `, ${fact1 ? 'with' : 'WITHOUT'} M3's fact "The Altitude folder holds 12 notes on acclimatisation"` : ''}; the system prompt ${memInSystem ? 'ALSO carries it' : 'does not'}, and its brief ${standingInSystem ? 'lists' : 'does NOT list'} the standing preference "typed message box". Request 2's user message ${secondUser.includes('[Memory]') ? 'has' : 'has no'} a [Memory] block. The system prompt is ${identical ? `byte-identical across the two turns (${sys[0].length} characters)` : `DIFFERENT between the two turns${firstDiff >= 0 ? ` (first difference at character ${firstDiff})` : ''}`}.`,
       { requests: orch.length, systemLengths: sys.map(s => s.length), identical, firstDiff, firstUser, secondUser, system1: sys[0] ?? '' },
     );
   });
