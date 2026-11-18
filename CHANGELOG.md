@@ -17,7 +17,8 @@ Everything in beta.6, plus fixes for the orchestrator and background agents not 
 - **Safety:** the settings tool can't change safety settings, agents can't write in the app's config folder or the memory file, and each orchestrator tool call has its own deadline.
 - **Smaller fixes:** the model chooser no longer loops when the first provider has no key and no longer changes your default provider; the error box is readable; tool cards read "Searching…" while running and "Couldn't…" when they fail; Reset settings keeps your keys and added providers; a call that drops stops listening.
 - The API key box is masked and asks about the provider you picked. The conversation overview redraws at most every quarter second while you type, not while hidden, and both panels unload old rendered Markdown instead of piling it up.
-- Settings say which worker limits the durable engine doesn't use yet, that the task routes apply only in the Orchestrator role, and that Agent mode is about note chats.
+- Settings say which worker limits the durable engine doesn't use yet, that the task routes apply only in the Orchestrator role, and that Agent mode is about note chats. The log folder applies when you leave the field, and Refresh list of models asks only providers with a key and shows one notice.
+- Screen readers hear each card's state, task titles work from the keyboard, and the overview's settings button has a label.
 
 ## [2.0.0-beta.6] - 2026-11-18
 

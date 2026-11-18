@@ -181,7 +181,12 @@ export class PureChatLLMSideView extends ItemView {
               .setTooltip('Choose model and provider'),
           );
       })
-      .addExtraButton(btn => btn.setIcon('settings').onClick(() => this.plugin.openSettings()))
+      .addExtraButton(btn =>
+        btn
+          .setIcon('settings')
+          .setTooltip('Settings')
+          .onClick(() => this.plugin.openSettings()),
+      )
       .addExtraButton(btn =>
         btn
           .setIcon('phone')

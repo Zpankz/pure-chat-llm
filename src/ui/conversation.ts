@@ -106,6 +106,15 @@ export function drawTurnHeader(
 /** A spinner, a tick or a cross for a status. */
 function drawState(parent: HTMLElement, status: string): void {
   const el = parent.createSpan({ cls: `va-state is-${status}` });
+  // The icon alone says nothing to a screen reader (U10).
+  const word: Record<string, string> = {
+    running: 'running',
+    queued: 'queued',
+    waiting: 'waiting',
+    failed: 'failed',
+  };
+  el.setAttr('aria-label', word[status] ?? 'done');
+  el.setAttr('role', 'img');
   if (status === 'running' || status === 'queued') el.createSpan({ cls: 'va-spinner' });
   else setIcon(el, status === 'failed' ? 'x' : status === 'waiting' ? 'help-circle' : 'check');
 }
@@ -290,7 +299,16 @@ export function drawTaskCard(
   if (actions.open) {
     title.addClass('is-clickable');
     title.setAttr('aria-label', 'Open the task’s thread');
-    title.onclick = actions.open;
+    title.setAttr('role', 'button');
+    title.tabIndex = 0;
+    const open = actions.open;
+    title.onclick = open;
+    title.onkeydown = e => {
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        open();
+      }
+    };
   }
   head.createSpan({ cls: 'va-pill', text: task.status });
   const start = task.startedAt ?? task.createdAt;

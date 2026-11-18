@@ -1,5 +1,5 @@
 import { App, Notice, PluginSettingTab, SettingGroup } from 'obsidian';
-import { DEFAULT_SETTINGS, PureChatLLMversion } from 'src/assets/constants';
+import { DEFAULT_SETTINGS, EmptyApiKey, PureChatLLMversion } from 'src/assets/constants';
 import { PureChatLLMChat } from '../core/Chat';
 import { ImportChatGPT } from '../core/ImportChatGPT';
 import PureChatLLM, {
@@ -208,15 +208,14 @@ export class PureChatLLMSettingTab extends PluginSettingTab {
           void setting
             .setName('Log folder')
             .setDesc('One sub-folder per day, one file per session.')
-            .addText(text =>
-              text
-                .setPlaceholder(DEFAULT_DIAGNOSTICS.folder)
-                .setValue(d.folder)
-                .onChange(async value => {
-                  d.folder = value.trim() || DEFAULT_DIAGNOSTICS.folder;
-                  await save();
-                }),
-            ),
+            .addText(text => {
+              text.setPlaceholder(DEFAULT_DIAGNOSTICS.folder).setValue(d.folder);
+              // Applied when the field is left, so typing doesn't create a folder per letter (C8).
+              text.inputEl.addEventListener('change', () => {
+                d.folder = text.getValue().trim() || DEFAULT_DIAGNOSTICS.folder;
+                void save();
+              });
+            }),
       )
       .addSetting(
         setting =>
@@ -877,18 +876,27 @@ export class PureChatLLMSettingTab extends PluginSettingTab {
  * @param plugin
  */
 function loadAllModels(plugin: PureChatLLM): void {
-  const currentEndpoint = plugin.settings.endpoint;
-  plugin.settings.endpoints.forEach((endpoint, index) => {
-    try {
-      plugin.settings.endpoint = index;
+  // Only providers with a key, and one notice with what came back (C9).
+  const keyed = plugin.settings.endpoints.filter(e => e.apiKey && e.apiKey !== EmptyApiKey);
+  if (!keyed.length) {
+    new Notice('No provider has an API key yet.');
+    return;
+  }
+  void Promise.all(
+    keyed.map(endpoint => {
       plugin.settings.ModelsOnEndpoint[endpoint.name] = [];
-      void new PureChatLLMChat(plugin).getAllModels().then(models => {
-        void plugin.saveSettings();
-        new Notice('Model list refreshed');
-      });
-    } catch (e) {
-      plugin.console.error('Error loading models for endpoint', endpoint.name, e);
-    }
+      const chat = new PureChatLLMChat(plugin);
+      chat.endpoint = endpoint;
+      return chat.getAllModels().then(
+        models => `${endpoint.name}: ${models.length}`,
+        (e: unknown) => {
+          plugin.console.error('Error loading models for endpoint', endpoint.name, e);
+          return `${endpoint.name}: failed`;
+        },
+      );
+    }),
+  ).then(counts => {
+    void plugin.saveSettings();
+    new Notice(`Model lists refreshed. ${counts.join(', ')}.`);
   });
-  plugin.settings.endpoint = currentEndpoint;
 }
