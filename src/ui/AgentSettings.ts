@@ -119,6 +119,10 @@ export function renderOrchestratorSettings(
   // is rendered by renderVoiceSettings; orchestrator, workers, evaluator, interruptions and
   // check-ins follow here.
   if (o.voiceRole === 'direct') return;
+  // Limits the durable engine doesn't read yet say so, rather than look like they work (C5).
+  const durable = Platform.isDesktopApp && o.engine === 'durable';
+  const classicOnly = (desc: string) =>
+    durable ? `${desc} Classic engine only: the durable engine doesn't use this yet.` : desc;
 
   if (o.voiceRole === 'layered') {
     renderLayer(el, plugin, 'orchestrator', redraw);
@@ -138,6 +142,7 @@ export function renderOrchestratorSettings(
       async v => {
         o.engine = v;
         await save();
+        redraw();
       },
     );
     if (!Platform.isDesktopApp) engine.setDisabled(true);
@@ -173,7 +178,9 @@ export function renderOrchestratorSettings(
       new Setting(el)
         .setName('Worker summary length')
         .setDesc(
-          'Characters of each worker update the orchestrator gets. It opens the full thread only when it needs to.',
+          classicOnly(
+            'Characters of each worker update the orchestrator gets. It opens the full thread only when it needs to.',
+          ),
         ),
       o.taskSummaryChars,
       async n => {
@@ -185,7 +192,9 @@ export function renderOrchestratorSettings(
     numberInput(
       new Setting(el)
         .setName('Orchestrator memory (messages)')
-        .setDesc('Older turns of the orchestrator’s own conversation are dropped after this.'),
+        .setDesc(
+          classicOnly('Older turns of the orchestrator’s own conversation are dropped after this.'),
+        ),
       o.orchestratorMaxMessages,
       async n => {
         o.orchestratorMaxMessages = n;
@@ -216,7 +225,7 @@ export function renderOrchestratorSettings(
   }
   renderLayer(el, plugin, 'worker', redraw);
   numberInput(
-    new Setting(el).setName('Tasks at once').setDesc('The rest wait in a queue.'),
+    new Setting(el).setName('Tasks at once').setDesc(classicOnly('The rest wait in a queue.')),
     o.maxConcurrent,
     async n => {
       o.maxConcurrent = n;
@@ -225,7 +234,9 @@ export function renderOrchestratorSettings(
     { min: 1, max: 10, fallback: 3 },
   );
   numberInput(
-    new Setting(el).setName('Steps per task').setDesc('Model responses before a task stops.'),
+    new Setting(el)
+      .setName('Steps per task')
+      .setDesc(classicOnly('Model responses before a task stops.')),
     o.maxSteps,
     async n => {
       o.maxSteps = n;
@@ -290,7 +301,9 @@ export function renderOrchestratorSettings(
   new Setting(el)
     .setName('When the voice model hears about tasks')
     .setDesc(
-      'Automatic follows GPT-Live’s pattern: results, questions and stuck tasks are said at the next pause; check-ins and progress are told quietly. Override any event below.',
+      o.voiceRole === 'layered'
+        ? 'In the Layered role the voice hears only what the orchestrator tells it, so these apply only in the Orchestrator role.'
+        : 'Automatic follows GPT-Live’s pattern: results, questions and stuck tasks are said at the next pause; check-ins and progress are told quietly. Override any event below.',
     );
   for (const kind of SUB_AGENT_EVENT_KINDS) {
     choose(
@@ -327,7 +340,9 @@ export function renderOrchestratorSettings(
     new Setting(el)
       .setName('Stuck after')
       .setDesc(
-        'Identical tool calls, or failed tool calls, in a row before a task counts as stuck.',
+        classicOnly(
+          'Identical tool calls, or failed tool calls, in a row before a task counts as stuck.',
+        ),
       ),
     o.stuckThreshold,
     async n => {
@@ -339,7 +354,11 @@ export function renderOrchestratorSettings(
   numberInput(
     new Setting(el)
       .setName('Advice timeout (seconds)')
-      .setDesc('How long a task waits for an answer to its question before it carries on alone.'),
+      .setDesc(
+        classicOnly(
+          'How long a task waits for an answer to its question before it carries on alone.',
+        ),
+      ),
     o.adviceTimeoutSeconds,
     async n => {
       o.adviceTimeoutSeconds = n;

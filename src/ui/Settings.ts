@@ -412,7 +412,7 @@ export class PureChatLLMSettingTab extends PluginSettingTab {
           void setting
             .setName('Agent mode')
             .setDesc(
-              'Enable this to allow the LLM to use tools (e.g., creating notes, searching the vault).',
+              'Lets note chats use tools, such as creating notes or searching the vault. Voice calls, the orchestrator and background workers keep their tools; limit them with the tool groups and write rules below.',
             )
             .addToggle(toggle =>
               toggle
