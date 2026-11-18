@@ -1,4 +1,4 @@
-// Real-Obsidian check of the agent fixes in commits e82f368 and 686c60e (requested by the "Voice models and
+// Real-Obsidian check of the agent fixes in commits e82f368, 686c60e and 059321e (requested by the "Voice models and
 // tools upgrade" thread, 2026-11-18; brief in validation/agent-fixes-e82f368.md). Not part of the
 // validation suite: the side-panel workflow builds the plugin at one commit and runs this file.
 //
@@ -612,6 +612,107 @@ describe(`Agent fixes (${LABEL})`, () => {
       { engine, running, checked, cardsRunning, cancelled, after, cardsAfter, checkedAfter, checks },
     );
     await setSettings({ 'orchestrator.engine': 'classic' });
+  });
+
+  it('9: tool card labels follow the call state', async function () {
+    this.timeout(90_000);
+    await browser.executeObsidian(async ({ app }, view: string) => {
+      for (const l of app.workspace.getLeavesOfType(view)) l.detach();
+      const leaf = app.workspace.getRightLeaf(false)!;
+      await leaf.setViewState({ type: view, active: true });
+    }, VIEW);
+    await browser.pause(800);
+    await markLeaf();
+    await browser.pause(800);
+    await markLeaf();
+    const feed = (events: Array<Record<string, unknown>>) =>
+      browser.executeObsidian(({ app }, view: string, events: Array<Record<string, unknown>>) => {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const v = app.workspace.getLeavesOfType(view)[0].view as any;
+        for (const e of events) v.onVoiceEvent(e);
+      }, VIEW, events);
+    const labels = () =>
+      browser.execute((view: string) =>
+        [...(document.querySelector(`[data-e2e-shot="${view}"]`)?.querySelectorAll('.va-tool__label') ?? [])].map(l => (l.textContent ?? '').trim()),
+      VIEW);
+    await feed([
+      { type: 'status', text: 'Connected' },
+      { type: 'transcript', role: 'user', text: 'Look for my altitude notes and summarise them', final: true },
+      { type: 'tool', name: 'search_vault', phase: 'start', id: 's1', args: { query: 'altitude' } },
+      { type: 'tool', name: 'delegate_task', phase: 'start', id: 'd1', args: { title: 'Summarise altitude notes' } },
+    ]);
+    await browser.pause(400);
+    const running = await labels();
+    log(`9: while running: ${JSON.stringify(running)}`);
+    await shootBoth('tool-labels-running');
+    await feed([
+      { type: 'tool', name: 'search_vault', phase: 'end', id: 's1', result: 'Altitude and hypoxia.md\nOxygen cascade.md', ms: 120 },
+      { type: 'tool', name: 'delegate_task', phase: 'end', id: 'd1', result: 'Started t9 "Summarise altitude notes".', ms: 40 },
+    ]);
+    await browser.pause(400);
+    const done = await labels();
+    log(`9: when done: ${JSON.stringify(done)}`);
+    await shootBoth('tool-labels-done');
+    verdict(
+      '9',
+      running.includes('Searching the vault') && running.includes('Starting a background agent') && done.includes('Searched the vault') && done.includes('Started a background agent'),
+      `Fed tool events (scripted). While running the cards read ${JSON.stringify(running)}; when done ${JSON.stringify(done)}.`,
+      { running, done },
+    );
+  });
+
+  it('10: the error box is readable', async function () {
+    this.timeout(90_000);
+    // A real error: the call is started with no key for the voice provider, so it stops before
+    // any network request and the panel shows its error box.
+    const started = await browser.executeObsidian(async ({ app, plugins }, view: string, empty: string) => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const p = plugins.voiceAgent as any;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const v = app.workspace.getLeavesOfType(view)[0].view as any;
+      const keys = p.settings.endpoints.map((e: { name: string; apiKey: string }) => [e.name, e.apiKey]);
+      for (const e of p.settings.endpoints) if (e.name !== 'Fake LLM') e.apiKey = empty;
+      try {
+        await v.startCall();
+      } finally {
+        for (const [name, key] of keys) p.settings.endpoints.find((e: { name: string }) => e.name === name).apiKey = key;
+      }
+      return { provider: String(p.settings.voice.provider) };
+    }, VIEW, EMPTY_KEY);
+    await browser.pause(800);
+    const look = async () =>
+      browser.execute((view: string) => {
+        const el = document.querySelector(`[data-e2e-shot="${view}"] .status-error`) as HTMLElement | null;
+        if (!el) return null;
+        const cs = getComputedStyle(el);
+        return { text: (el.textContent ?? '').trim(), background: cs.backgroundColor, color: cs.color, border: cs.borderTopColor };
+      }, VIEW);
+    const out: Record<string, unknown> = {};
+    for (const theme of ['light', 'dark'] as const) {
+      await setTheme(theme);
+      await browser.execute(() => document.querySelectorAll('.notice').forEach(n => n.remove()));
+      out[theme] = await look();
+      await (await browser.$(`[data-e2e-shot="${VIEW}"]`)).saveScreenshot(path.join(OUT, `error-box-${theme}.png`));
+      const box = await browser.$(`[data-e2e-shot="${VIEW}"] .status-error`);
+      if (await box.isExisting()) await box.saveScreenshot(path.join(OUT, `error-box-close-${theme}.png`));
+      log(`10: ${theme}: ${JSON.stringify(out[theme])}`);
+    }
+    await setTheme('light');
+    // The tint must be light: a translucent background (alpha well under 1).
+    const alpha = (c: string) => {
+      const m = c.match(/rgba?\(([^)]+)\)/) ?? c.match(/color\(srgb ([^)]+)\)/);
+      if (!m) return 1;
+      const parts = m[1].split(/[ ,/]+/).filter(Boolean);
+      return parts.length >= 4 ? Number(parts[3]) : 1;
+    };
+    const light = out.light as { text: string; background: string } | null;
+    const dark = out.dark as { text: string; background: string } | null;
+    verdict(
+      '10',
+      !!light && !!dark && alpha(light.background) < 0.5 && alpha(dark.background) < 0.5,
+      `Voice provider ${started.provider} started with no key. Error box text: "${light?.text ?? 'none shown'}". Light: background ${light?.background}, text ${(out.light as { color?: string } | null)?.color}. Dark: background ${dark?.background}, text ${(out.dark as { color?: string } | null)?.color}.`,
+      out,
+    );
   });
 
   it('5: beside Pure Chat LLM', async function () {
