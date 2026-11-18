@@ -1013,7 +1013,7 @@ export default class PureChatLLM extends Plugin {
     // default for background edits and deletions to "ask me", once.
     const o = this.settings.orchestrator;
     let askDefaultMoved = false;
-    if (!o.writesAskDefault) {
+    if (!loadedData.orchestrator?.writesAskDefault) {
       for (const action of ['edit', 'delete'] as const) {
         if (o.writes[action] === 'peer') o.writes[action] = 'review';
       }

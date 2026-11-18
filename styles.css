@@ -2051,3 +2051,10 @@ pre.va-result {
   max-width: 100%;
   height: auto;
 }
+
+/* A bubble holding a PDF takes the panel's width, so the page has room. */
+.va-bubble:has(.pdf-embed),
+.va-bubble:has(.internal-embed[src$='.pdf']) {
+  width: 100%;
+  max-width: 100%;
+}
