@@ -1,4 +1,4 @@
-// Real-Obsidian check of the agent fixes in commit e82f368 (requested by the "Voice models and
+// Real-Obsidian check of the agent fixes in commits e82f368 and 686c60e (requested by the "Voice models and
 // tools upgrade" thread, 2026-11-18; brief in validation/agent-fixes-e82f368.md). Not part of the
 // validation suite: the side-panel workflow builds the plugin at one commit and runs this file.
 //
@@ -105,8 +105,15 @@ async function relay(text: string) {
 async function task(title: string) {
   return browser.executeObsidian(({ plugins }, title: string) => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const t = ((plugins.voiceAgent as any).agents.list() as any[]).filter(x => x.title === title).pop();
-    return t ? { id: t.id, status: String(t.status), result: String(t.result ?? ''), error: t.error ? String(t.error) : null } : null;
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const t = ((plugins.voiceAgent as any).agents.list() as any[]).filter(x => x.title === title).pop();
+      if (!t) return null;
+      const text = (v: unknown) => (v === undefined || v === null ? null : typeof v === 'string' ? v : v instanceof Error ? `Error: ${v.message}` : JSON.stringify(v));
+      return { id: String(t.id), status: String(t.status), result: text(t.result) ?? '', error: text(t.error), readError: null as string | null };
+    } catch (e) {
+      return { id: '', status: 'unreadable', result: '', error: null, readError: e instanceof Error ? `${e.message}\n${e.stack ?? ''}` : String(e) };
+    }
   }, title);
 }
 
@@ -284,8 +291,9 @@ describe(`Agent fixes (${LABEL})`, () => {
     log(`3: relay returned: ${await relay(`Check my citation format ${orchestrator}`)}`);
     await waitFor('the task to fail and the failure to be said', async () => {
       const t = await task('Check citation format');
+      if (t?.readError) log(`3: reading the task threw: ${t.readError.slice(0, 600)}`);
       return !!t && t.status === 'failed' && (await said()).some(s => /failed/.test(s.text));
-    });
+    }, 90_000);
     await browser.pause(1500);
     const t3 = await task('Check citation format');
     const s3 = await said();
@@ -327,6 +335,8 @@ describe(`Agent fixes (${LABEL})`, () => {
           worker: names(worker),
         };
       });
+    // Shared memory on and one allowed command, so memory_* and run_obsidian_command are offered at all.
+    await setSettings({ 'memory.enabled': true, commandAllowList: ['editor:save-file'] });
     const on = await lists();
     await setSettings({ 'enabledToolClassifications.System': false, 'enabledToolClassifications.AI': false });
     const off = await lists();
@@ -351,7 +361,7 @@ describe(`Agent fixes (${LABEL})`, () => {
     const tr = traffic(mark);
     const sentOrch = ((tr.find(e => e.script === 'af-groups-orchestrator')?.tools_offered as string[]) ?? []).slice().sort();
     const sentWorker = ((tr.find(e => e.script === 'af-groups-worker')?.tools_offered as string[]) ?? []).slice().sort();
-    await setSettings({ 'enabledToolClassifications.System': true, 'enabledToolClassifications.AI': true });
+    await setSettings({ 'enabledToolClassifications.System': true, 'enabledToolClassifications.AI': true, commandAllowList: [] });
     const lost = (a: string[], b: string[]) => a.filter(x => !b.includes(x));
     const mem = (l: string[]) => l.filter(n => n.startsWith('memory_'));
     log(`4: groups on: ${JSON.stringify(on)}`);
@@ -495,6 +505,115 @@ describe(`Agent fixes (${LABEL})`, () => {
     );
   });
 
+  it('8: durable engine: the voice sees and stops its workers', async function () {
+    this.timeout(180_000);
+    await useFakeServices();
+    await setSettings({ 'orchestrator.voiceRole': 'layered', 'orchestrator.engine': 'durable' });
+    const engine = await browser.executeObsidian(({ plugins }) => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const p = plugins.voiceAgent as any;
+      return { durable: !!p.durable?.enabled, sameList: p.taskList === p.durable?.tasks };
+    });
+    log(`8: durable engine enabled ${engine.durable}; the voice's task list is the durable one: ${engine.sameList}`);
+    // A fresh call panel watching the agents, as a layered call does.
+    await browser.executeObsidian(async ({ app }, view: string) => {
+      for (const l of app.workspace.getLeavesOfType(view)) l.detach();
+      const leaf = app.workspace.getRightLeaf(false)!;
+      await leaf.setViewState({ type: view, active: true });
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const v = leaf.view as any;
+      v.watchAgents(true);
+      v.onVoiceEvent({ type: 'status', text: 'Connected' });
+      v.onVoiceEvent({ type: 'transcript', role: 'user', text: 'Search my altitude notes for anything on acclimatisation', final: true });
+      v.onVoiceEvent({ type: 'transcript', role: 'assistant', text: 'I will pass that on.', final: true });
+    }, VIEW);
+    await browser.pause(800);
+    await markLeaf();
+    await browser.pause(800);
+    await markLeaf();
+    await listen();
+    const mark = traceMark();
+    // The worker's answer is held for 90 s, so the task is still running when it is stopped.
+    const worker = encodeScript({ id: 'af-durable-worker', rounds: [], final: 'FINAL-af-durable-worker', finalDelayMs: 90_000 });
+    const orchestrator = encodeScript({
+      id: 'af-durable-orchestrator',
+      rounds: [
+        [{ name: 'delegate_task', args: { title: 'Search acclimatisation notes', instructions: brief('Search my altitude notes for anything on acclimatisation.', worker) } }],
+        [{ name: 'tell_user', args: { message: 'I have started a search of your altitude notes.', urgency: 'pause' } }],
+      ],
+      final: 'FINAL-af-durable-orchestrator',
+    });
+    log(`8: relay returned: ${await relay(`Search my altitude notes for acclimatisation ${orchestrator}`)}`);
+    const durableTask = () =>
+      browser.executeObsidian(({ plugins }) => {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const t = ((plugins.voiceAgent as any).taskList.list() as any[]).find(x => x.title === 'Search acclimatisation notes');
+        return t ? { id: String(t.id), status: String(t.status), model: String(t.model ?? '') } : null;
+      });
+    await waitFor('the durable worker to be running', async () => (await durableTask())?.status === 'running', 60_000);
+    await waitFor('the worker request to reach the fake model', async () => traceSince(mark).some(e => e.script === 'af-durable-worker'), 30_000);
+    await browser.pause(1000);
+    const running = await durableTask();
+    const voiceTool = (name: string, args: Record<string, unknown>) =>
+      browser.executeObsidian(
+        async ({ plugins }, name: string, args: Record<string, unknown>) => {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const p = plugins.voiceAgent as any;
+          const Chat = p.classicOrchestrator.ensureChat().constructor;
+          const chat = new Chat(p);
+          chat.role = 'voice';
+          chat.registerAvailableTools();
+          try {
+            return String(await chat.toolregistry.executeTool(name, args));
+          } catch (e) {
+            return `threw: ${String(e)}`;
+          }
+        },
+        name,
+        args,
+      );
+    const cards = () =>
+      browser.execute((view: string) => {
+        const root = document.querySelector(`[data-e2e-shot="${view}"]`);
+        const head = root?.querySelector('.voice-call-tasks .va-section-head')?.textContent?.replace(/\s+/g, ' ').trim() ?? '';
+        const list = [...(root?.querySelectorAll('.voice-call-tasks .va-task') ?? [])].map(c => ({
+          cls: c.className,
+          title: c.querySelector('.va-task__title')?.textContent ?? '',
+        }));
+        return { head, list };
+      }, VIEW);
+    const checked = await voiceTool('check_tasks', {});
+    const cardsRunning = await cards();
+    log(`8: task ${JSON.stringify(running)}; check_tasks: ${checked}`);
+    log(`8: panel while running: ${JSON.stringify(cardsRunning)}`);
+    await shootBoth('durable-running');
+    const cancelled = await voiceTool('cancel_task', { id: running?.id ?? 't1' });
+    log(`8: cancel_task: ${cancelled}`);
+    await waitFor('the durable task to end cancelled', async () => (await durableTask())?.status === 'cancelled', 30_000);
+    await browser.pause(1000);
+    const after = await durableTask();
+    const cardsAfter = await cards();
+    const checkedAfter = await voiceTool('check_tasks', {});
+    log(`8: after: task ${JSON.stringify(after)}; panel ${JSON.stringify(cardsAfter)}; check_tasks: ${checkedAfter}`);
+    log(`8: traffic ${JSON.stringify(summarise(traffic(mark)))}`);
+    await shootBoth('durable-cancelled');
+    const card = (c: { list: Array<{ cls: string; title: string }> }) => c.list.find(x => x.title === 'Search acclimatisation notes');
+    const checks = {
+      engine: engine.durable && engine.sameList,
+      inCheckTasks: !!running && checked.includes(running.id) && checked.includes('Search acclimatisation notes'),
+      cardRunning: /Background agents/.test(cardsRunning.head) && /is-running/.test(card(cardsRunning)?.cls ?? ''),
+      stopping: !!running && cancelled.startsWith(`Stopping ${running.id}`),
+      endedCancelled: after?.status === 'cancelled' && /is-cancelled/.test(card(cardsAfter)?.cls ?? ''),
+    };
+    verdict(
+      '8',
+      Object.values(checks).every(Boolean),
+      `Durable engine, layered voice. The orchestrator delegated "Search acclimatisation notes" as ${running?.id} (${running?.status}). The voice's check_tasks said: "${checked}". The panel showed "${cardsRunning.head}" with the card ${card(cardsRunning)?.cls ?? 'MISSING'}. cancel_task said: "${cancelled}". The task then read ${after?.status} and its card ${card(cardsAfter)?.cls ?? 'MISSING'}.`,
+      { engine, running, checked, cardsRunning, cancelled, after, cardsAfter, checkedAfter, checks },
+    );
+    await setSettings({ 'orchestrator.engine': 'classic' });
+  });
+
   it('5: beside Pure Chat LLM', async function () {
     this.timeout(120_000);
     await installConsoleCapture();
@@ -553,6 +672,8 @@ describe(`Agent fixes (${LABEL})`, () => {
     log(`console errors in the whole run: ${errors.length}`);
     for (const e of errors.slice(0, 20)) log(`  ${e}`);
     fs.writeFileSync(path.join(OUT, 'results.json'), JSON.stringify(results, null, 2));
-    fs.writeFileSync(path.join(OUT, 'fake-traffic.json'), JSON.stringify(allTraffic, null, 2));
+    // Every model request of the run, not only the ones a check read back.
+    const every = traceSince(0).filter(e => e.service === 'llm');
+    fs.writeFileSync(path.join(OUT, 'fake-traffic.json'), JSON.stringify(every.length ? every : allTraffic, null, 2));
   });
 });

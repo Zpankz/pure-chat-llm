@@ -24,8 +24,8 @@ jobs:
         include:
           # Earlier runs shot before (b4229f1, beta.4) and after (33684ab, beta.5).
           # Earlier: after-beta6 (4261b94) with side-panel.shots.mts.
-          - label: agent-fixes-e82f368
-            ref: e82f3685f012094287ae47cedff5f8b336a8d195
+          - label: agent-fixes-686c60e
+            ref: 686c60e101aedcd9347a4e358f9ddd25b76af919
             spec: e2e/side-panel/agent-fixes.shots.mts
             with_pure_chat: '1'
     steps:
