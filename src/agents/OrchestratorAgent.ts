@@ -91,7 +91,7 @@ export interface Orchestrator {
   /** Hears each tool call the orchestrator makes (not `tell_user`, which is spoken). */
   onTool?(listener: (event: OrchestratorToolEvent) => void): () => void;
   setTranscriptSource(source: (() => string[]) | null): void;
-  relay(request: string, waiting?: boolean): string;
+  relay(request: string, waiting?: boolean, options?: RelayOptions): string;
   say(text: string, urgency: NoticeMode): string;
   cancelTurn(): void;
   reset(): void;
@@ -99,8 +99,31 @@ export interface Orchestrator {
   recentActivity(limit?: number): string[];
 }
 
+/** How a request reached the orchestrator, beyond its words. */
+export interface RelayOptions {
+  /** Typed in the panel rather than said in a call: the answer is read, not heard. */
+  typed?: boolean;
+  /** Images sent with it, as data URLs. */
+  images?: string[];
+}
+
+/**
+ * The line the orchestrator gets for a user's request.
+ * @param prefix - Marker for the request's source.
+ * @param request - What the user asked.
+ * @param waiting - They are waiting for the answer.
+ * @param typed - They typed it in the panel.
+ */
+export function relayLine(prefix: string, request: string, waiting: boolean, typed = false): string {
+  return typed
+    ? `${prefix} The user typed this in the panel and is waiting; your answer is shown there as Markdown (links, tables, diagrams and math are fine): ${request}`
+    : `${prefix} The user ${waiting ? 'is waiting for this' : 'asked this; they may keep talking'}: ${request}`;
+}
+
 interface Input {
   text: string;
+  /** Images sent with the request, as data URLs. */
+  images?: string[];
   fromUser: boolean;
   /** The user is waiting for this answer (fast path: low effort, no extra hop). */
   waiting?: boolean;
@@ -208,17 +231,18 @@ export class OrchestratorAgent implements Orchestrator {
    * @param request - Self-contained request.
    * @param waiting - The user is waiting for the answer.
    */
-  relay(request: string, waiting = false): string {
+  relay(request: string, waiting = false, options: RelayOptions = {}): string {
     const problem = layerProblem(this.plugin, resolveLayer(this.plugin, 'orchestrator'));
     if (problem) return `The orchestrator can't run: ${problem} Tell the user.`;
     const recent = this.voiceContext();
     this.push({
       text: [
-        `[Voice] The user ${waiting ? 'is waiting for this' : 'asked this; they may keep talking'}: ${request}`,
+        relayLine('[Voice]', request, waiting || !!options.typed, options.typed),
         ...(recent.length ? ['Conversation since your last relay:', ...recent] : []),
       ].join('\n'),
+      ...(options.images?.length ? { images: options.images } : {}),
       fromUser: true,
-      waiting,
+      waiting: waiting || !!options.typed,
       at: Date.now(),
     });
     return 'Passed to the orchestrator. Tell the user briefly that you are on it; the answer comes back on its own.';
@@ -394,7 +418,18 @@ export class OrchestratorAgent implements Orchestrator {
     ].join('\n');
 
     this.trim();
-    this.messages.push({ role: 'user', content });
+    // Images go with this turn only: earlier ones are dropped so each turn doesn't resend them.
+    const images = batch.flatMap(b => b.images ?? []);
+    this.dropImages();
+    this.messages.push({
+      role: 'user',
+      content: images.length
+        ? [
+            { type: 'text', text: content },
+            ...images.map(url => ({ type: 'image_url' as const, image_url: { url } })),
+          ]
+        : content,
+    });
     const calls = this.plugin.calls;
     calls?.logOrchestrator('input', content, fromUser);
     this.state = 'thinking';
@@ -621,6 +656,16 @@ export class OrchestratorAgent implements Orchestrator {
   }
 
   /** Drops the oldest turns, cutting at a relayed input so tool calls stay paired. */
+  /** Replaces the images in earlier messages with a note, keeping their text. */
+  private dropImages(): void {
+    for (const m of this.messages) {
+      if (!Array.isArray(m.content)) continue;
+      const text = m.content.flatMap(p => (p.type === 'text' ? [p.text] : [])).join('\n');
+      const dropped = m.content.length - (text ? 1 : 0);
+      m.content = dropped ? `${text}\n(${dropped} image(s) were attached here.)` : text;
+    }
+  }
+
   private trim(): void {
     const max = Math.max(20, this.plugin.settings.orchestrator.orchestratorMaxMessages || 80);
     if (this.messages.length <= max) return;

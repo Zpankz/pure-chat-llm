@@ -2,12 +2,15 @@
 // background agents and live wikilinks. Colours come from the theme's variables (styles.css,
 // `.va-*`), so light, dark and mobile all follow the user's theme.
 import { App, Component, Keymap, MarkdownRenderer, setIcon } from 'obsidian';
+import { mount as mountDiagram } from 'pele';
 import type { SubAgentTask } from '../agents/types';
 import {
   argPreview,
   clipPreview,
+  DIAGRAM_LANG,
   formatDuration,
   labelFor,
+  prepareMarkdown,
   toolMeta,
   type ToolCallView,
 } from './conversationModel';
@@ -67,7 +70,41 @@ export function renderMarkdown(
   sourcePath: string,
 ): void {
   el.addClass('markdown-rendered', 'va-md');
-  void MarkdownRenderer.render(app, text, el, sourcePath, component);
+  void MarkdownRenderer.render(app, prepareMarkdown(text), el, sourcePath, component).then(() =>
+    drawDiagrams(el, component),
+  );
+}
+
+/**
+ * Draws the diagram blocks in rendered Markdown with pele, in place of their code. A block pele
+ * can't read stays as code, with the reason under it.
+ * @param el - Rendered Markdown.
+ * @param component - Owner; the diagrams are removed with it.
+ */
+function drawDiagrams(el: HTMLElement, component: Component): void {
+  for (const code of Array.from(el.querySelectorAll(`pre > code.language-${DIAGRAM_LANG}`))) {
+    const pre = code.parentElement;
+    if (!pre) continue;
+    const host = document.createElement('div');
+    host.className = 'va-diagram pele';
+    pre.replaceWith(host);
+    const mounted = mountDiagram(host, code.textContent ?? '', {
+      // Parse the SVG rather than set it as HTML.
+      sanitize: svg =>
+        document.importNode(
+          new DOMParser().parseFromString(svg, 'image/svg+xml').documentElement,
+          true,
+        ),
+      onError: error => {
+        host.replaceWith(pre);
+        const note = document.createElement('div');
+        note.className = 'va-muted va-small';
+        note.textContent = `Couldn't draw this diagram: ${error instanceof Error ? error.message : String(error)}`;
+        pre.after(note);
+      },
+    });
+    component.register(() => mounted.destroy());
+  }
 }
 
 /**

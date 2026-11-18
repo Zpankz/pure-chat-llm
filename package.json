@@ -50,7 +50,8 @@
     "@earendil-works/pi-schema": "1.5.2",
     "@relate/relate-wasm": "1.1.0",
     "diff": "^8.0.3",
-    "glob-to-regexp": "^0.4.1"
+    "glob-to-regexp": "^0.4.1",
+    "pele": "1.13.0"
   },
   "overrides": {
     "ws": "8.21.0"

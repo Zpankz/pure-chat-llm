@@ -1,3 +1,4 @@
+import type { ReviewHost } from './tools/EditReview';
 import type { TaskList } from './harness/durableTasks';
 import {
   addIcon,
@@ -120,6 +121,8 @@ export default class PureChatLLM extends Plugin {
    * next call, so one call never splits between two orchestrators (review W6).
    */
   callOrchestrator: Orchestrator | null = null;
+  /** The conversation panel, while open: shows agent edits for approval inline (EditReview). */
+  reviewHost: ReviewHost | null = null;
   /** The background tasks of the engine in use, for the voice tools, the panel and call notes. */
   get taskList(): TaskList {
     // The durable orchestrator only runs behind a layered voice; otherwise tasks are Classic.

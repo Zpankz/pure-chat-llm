@@ -74,11 +74,140 @@ export interface WriteOutcome {
 }
 
 /** The user's answer in a review window. */
-interface Decision {
+export interface Decision {
   approved: boolean;
   cancelled?: boolean;
   /** Content as approved (the user may edit it). */
   content?: string;
+}
+
+/**
+ * A change waiting for the user's answer, shown as a card in the conversation when a panel is
+ * open to show it, and in a window otherwise.
+ */
+export interface InlineReview {
+  id: number;
+  action: WriteAction;
+  path: string;
+  original: string | null;
+  content: string;
+  instruction?: string;
+  properties?: Record<string, unknown>;
+  status: 'pending' | 'approved' | 'rejected' | 'cancelled';
+  /** Answers it; later answers are ignored. */
+  decide(decision: Decision): void;
+  /** Opens the full review window, where the proposed text can be edited before approving. */
+  openWindow(): void;
+  /** Called when the status changes. */
+  onChange?: () => void;
+}
+
+/** Shows a review inline; returns false when it can't (no panel open), so a window opens. */
+export type ReviewHost = (review: InlineReview) => boolean;
+
+let reviewSeq = 0;
+
+/**
+ * Asks the user about a change: inline in the conversation when the host shows it, or in the
+ * review window. Resolves once, with their answer, or cancelled when the run stops.
+ * @param app - App.
+ * @param host - The conversation panel's review host, if one is open.
+ * @param change - The change.
+ * @param change.action - Create, edit or delete.
+ * @param change.path - Note path.
+ * @param change.original - Current text, or null for a new note.
+ * @param change.content - Proposed text.
+ * @param change.instruction - What it does.
+ * @param change.properties - Frontmatter properties to merge.
+ * @param signal - The run's signal.
+ */
+export function askReview(
+  app: App,
+  host: ReviewHost | null | undefined,
+  change: {
+    action: WriteAction;
+    path: string;
+    original: string | null;
+    content: string;
+    instruction?: string;
+    properties?: Record<string, unknown>;
+  },
+  signal?: AbortSignal,
+): Promise<Decision> {
+  return new Promise(resolve => {
+    let settled = false;
+    let modal: ReviewModal | null = null;
+    let inline = false;
+    const review: InlineReview = {
+      ...change,
+      id: ++reviewSeq,
+      status: 'pending',
+      decide: decision => {
+        if (settled) return;
+        settled = true;
+        review.status = decision.cancelled
+          ? 'cancelled'
+          : decision.approved
+            ? 'approved'
+            : 'rejected';
+        if (decision.content !== undefined) review.content = decision.content;
+        modal?.close();
+        resolve(decision);
+        review.onChange?.();
+      },
+      openWindow: () => {
+        if (settled) return;
+        const answer = (decision: Decision) => {
+          modal = null;
+          // Closing a window opened from the card leaves the card waiting.
+          if (inline && decision.cancelled) return;
+          review.decide(decision);
+        };
+        modal =
+          change.action === 'delete'
+            ? new DeleteReviewModal(app, change.path, change.instruction ?? 'Delete this note', answer)
+            : new EditReviewModal(
+                app,
+                change.path,
+                change.original,
+                review.content,
+                { properties: change.properties, instruction: change.instruction },
+                answer,
+              );
+        modal.open();
+      },
+    };
+    inline = !!host?.(review);
+    if (!inline) review.openWindow();
+    void whenAborted(signal).then(() => review.decide({ approved: false, cancelled: true }));
+  });
+}
+
+/**
+ * The lines of a unified diff, each with its kind, for drawing.
+ * @param path - Note path.
+ * @param original - Current text.
+ * @param content - Proposed text.
+ */
+export function diffLines(
+  path: string,
+  original: string,
+  content: string,
+): { kind: 'added' | 'removed' | 'hunk' | 'equal'; text: string }[] {
+  return createPatch(path, original, content)
+    .split('\n')
+    .slice(4)
+    .filter(line => line !== '\\ No newline at end of file')
+    .map(text => ({
+      kind: text.startsWith('+')
+        ? 'added'
+        : text.startsWith('-')
+          ? 'removed'
+          : text.startsWith('@@')
+            ? 'hunk'
+            : 'equal',
+      text,
+    }));
 }
 
 const lines = (text: string | null | undefined): number => (text ? text.split('\n').length : 0);
@@ -258,15 +387,19 @@ async function decideAndWrite(chat: PureChatLLMChat, request: WriteRequest): Pro
   }
 
   if (route === 'user') {
-    const decision = await new Promise<Decision>(resolve => {
-      const modal =
-        action === 'delete'
-          ? new DeleteReviewModal(app, path, request.instruction, resolve)
-          : new EditReviewModal(app, path, original, content, request, resolve);
-      modal.open();
-      // If the run stops while the window is open, close it unanswered.
-      void whenAborted(signal).then(() => modal.cancel());
-    });
+    const decision = await askReview(
+      app,
+      plugin.reviewHost,
+      {
+        action,
+        path,
+        original,
+        content,
+        instruction: request.instruction,
+        properties: request.properties,
+      },
+      signal,
+    );
     if (signal?.aborted) return fail('user', cancelledError(path));
     if (decision.cancelled) {
       return fail(

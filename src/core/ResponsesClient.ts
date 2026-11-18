@@ -53,7 +53,16 @@ export function toResponsesBody(
         });
       }
     } else {
-      input.push({ role: 'user', content: text });
+      const images = contentImages(m.content);
+      input.push({
+        role: 'user',
+        content: images.length
+          ? [
+              ...(text ? [{ type: 'input_text', text }] : []),
+              ...images.map(url => ({ type: 'input_image', image_url: url })),
+            ]
+          : text,
+      });
     }
   }
   const body: Record<string, unknown> = {
@@ -81,6 +90,17 @@ function toResponsesTool(tool: ToolDefinition): Record<string, unknown> {
     // tool schemas don't meet strict rules (optional fields, open objects).
     strict: false,
   };
+}
+
+/** @param content - Message content: the image URLs (data URLs) it carries. */
+export function contentImages(content: unknown): string[] {
+  if (!Array.isArray(content)) return [];
+  return content.flatMap(part => {
+    const url = (part as { type?: unknown; image_url?: { url?: unknown } } | null)?.image_url?.url;
+    return (part as { type?: unknown } | null)?.type === 'image_url' && typeof url === 'string'
+      ? [url]
+      : [];
+  });
 }
 
 /** @param content - Message content in any of the chat shapes. */

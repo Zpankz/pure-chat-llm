@@ -427,6 +427,99 @@ export function continuesTurn(prev: TranscriptLine | undefined, line: Transcript
 export function clipPreview(text: string, max = 1200): string {
   const t = text.trim();
   if (t.length <= max) return t;
-  const cut = t.lastIndexOf('\n', max);
-  return `${t.slice(0, cut > max * 0.6 ? cut : max)}\n…`;
+  let cut = t.lastIndexOf('\n', max);
+  if (cut <= max * 0.6) cut = max;
+  // Never cut through a code block, a diagram, a maths block or a table: they would render
+  // broken. Take the whole block when it ends soon enough, or stop before it.
+  const block = openBlockAt(t, cut);
+  if (block) {
+    const end = block.end === -1 ? t.length : block.end;
+    if (end <= max * 3) {
+      if (end >= t.length) return t;
+      cut = end;
+    } else if (block.start > 0) {
+      cut = block.start;
+    }
+  }
+  return `${t.slice(0, cut).trimEnd()}\n…`;
+}
+
+/**
+ * The Markdown block (fenced code, $$ maths or a table) that `offset` falls inside, if any.
+ * @param text - Markdown.
+ * @param offset - Character offset.
+ */
+function openBlockAt(text: string, offset: number): { start: number; end: number } | null {
+  const lines = text.split('\n');
+  let pos = 0;
+  let open: { start: number; marker: string } | null = null;
+  let table: number | null = null;
+  for (const line of lines) {
+    const lineEnd = pos + line.length;
+    const trimmed = line.trim();
+    if (open) {
+      const closes =
+        open.marker === '$$' ? trimmed.endsWith('$$') : trimmed.startsWith(open.marker) && /^[`~]+$/.test(trimmed);
+      if (closes) {
+        if (open.start < offset && offset < lineEnd) return { start: open.start, end: lineEnd };
+        open = null;
+      }
+    } else {
+      const fence = /^(`{3,}|~{3,})/.exec(trimmed);
+      if (fence) open = { start: pos, marker: fence[1] };
+      else if (trimmed === '$$' || (trimmed.startsWith('$$') && !trimmed.slice(2).includes('$$')))
+        open = { start: pos, marker: '$$' };
+      const isRow = trimmed.startsWith('|');
+      if (isRow && table === null) table = pos;
+      if (!isRow && table !== null) {
+        if (table < offset && offset < pos) return { start: table, end: pos - 1 };
+        table = null;
+      }
+    }
+    pos = lineEnd + 1;
+  }
+  if (open && open.start < offset) return { start: open.start, end: -1 };
+  if (table !== null && table < offset) return { start: table, end: -1 };
+  return null;
+}
+
+/** The code block language the panels draw as a diagram with pele. */
+export const DIAGRAM_LANG = 'va-diagram';
+
+/**
+ * Readies an agent's Markdown for Obsidian's renderer. Mermaid and pele blocks become diagram
+ * blocks that pele draws, much faster than Mermaid.js. LaTeX written as \( \) or \[ \] becomes
+ * $ and $$, which Obsidian renders as maths. Code is left alone.
+ * @param text - Markdown.
+ */
+export function prepareMarkdown(text: string): string {
+  const out: string[] = [];
+  let fence: string | null = null;
+  let prose: string[] = [];
+  const flush = () => {
+    if (!prose.length) return;
+    const joined = prose.join('\n');
+    const display = joined.replace(/\\\[([\s\S]+?)\\\]/g, (_m, body: string) => '$$' + body + '$$');
+    out.push(display.replace(/\\\(([\s\S]+?)\\\)/g, (_m, body: string) => '$' + body.trim() + '$'));
+    prose = [];
+  };
+  for (const line of text.split('\n')) {
+    if (fence) {
+      out.push(line);
+      const trimmed = line.trim();
+      if (trimmed.startsWith(fence) && /^[`~]+$/.test(trimmed)) fence = null;
+      continue;
+    }
+    const open = /^(\s*)(`{3,}|~{3,})\s*([\w-]*)/.exec(line);
+    if (open) {
+      flush();
+      fence = open[2];
+      const lang = open[3].toLowerCase();
+      out.push(lang === 'mermaid' || lang === 'pele' ? open[1] + open[2] + DIAGRAM_LANG : line);
+      continue;
+    }
+    prose.push(line);
+  }
+  flush();
+  return out.join('\n');
 }

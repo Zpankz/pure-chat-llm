@@ -6,7 +6,13 @@
 // the voice's activity feed and the call notes, so a run that resumes after a reload is logged
 // and spoken just the same.
 import type { NoticeMode } from '../agents/types';
-import type { Orchestrator, OrchestratorToolEvent, SayListener } from '../agents/OrchestratorAgent';
+import type {
+  Orchestrator,
+  OrchestratorToolEvent,
+  RelayOptions,
+  SayListener,
+} from '../agents/OrchestratorAgent';
+import { relayLine } from '../agents/OrchestratorAgent';
 import type { DurableSession } from './durable';
 import { CTX } from './pi';
 import type { Conversation, ConversationId, EntryRecord } from './pi';
@@ -256,12 +262,13 @@ export class DurableOrchestrator implements Orchestrator {
     return fresh;
   }
 
-  relay(request: string, waiting = false): string {
+  relay(request: string, waiting = false, options: RelayOptions = {}): string {
     const problem = this.host.problem();
     if (problem) return `The orchestrator can't run: ${problem} Tell the user.`;
     const recent = this.voiceContext();
+    // Images reach the durable engine by their vault path, which the request names.
     const content = [
-      `${VOICE_PREFIX} The user ${waiting ? 'is waiting for this' : 'asked this; they may keep talking'}: ${request}`,
+      relayLine(VOICE_PREFIX, request, waiting || !!options.typed, options.typed),
       ...(recent.length ? ['Conversation since your last relay:', ...recent] : []),
     ].join('\n');
     this.relayAt ??= Date.now();
