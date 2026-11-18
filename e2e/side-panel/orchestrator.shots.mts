@@ -161,6 +161,8 @@ describe(`Orchestrator to worker in the call panel (${LABEL})`, () => {
       (leaf.view as any).watchAgents(true);
     }, VIEW);
     await browser.pause(800);
+    await markLeaf();
+    await browser.pause(800);
     log(`panel width ${await markLeaf()} px`);
 
     // 2. GPT-Live-style lines, never final.
@@ -173,6 +175,7 @@ describe(`Orchestrator to worker in the call panel (${LABEL})`, () => {
     await browser.pause(300);
     const afterFeed = await panelState();
     log(`after the two lines: ${afterFeed.carets} caret(s), on row(s) ${JSON.stringify(afterFeed.caretRows)} of ${afterFeed.rowCount}; strip: ${afterFeed.strip}`);
+    await shootBoth('caret-before-relay');
 
     // 3. The relay. The fake model's script rides on the request text.
     const ack = await browser.executeObsidian(({ plugins }, text: string) => {
@@ -216,6 +219,13 @@ describe(`Orchestrator to worker in the call panel (${LABEL})`, () => {
     log(`carets ${after.carets} on row(s) ${JSON.stringify(after.caretRows)} of ${after.rowCount}; last row: ${after.lastRow}`);
     log(`tasks: ${JSON.stringify(done)}`);
     await shootBoth('worker-done');
+    // The agent card sits below the conversation; bring it into view for one more pair.
+    await browser.execute((view: string) => {
+      const root = document.querySelector(`[data-e2e-shot="${view}"]`);
+      const head = [...(root?.querySelectorAll('*') ?? [])].find(e => e.childElementCount === 0 && /^Background agents$/.test((e.textContent ?? '').trim())) as HTMLElement | undefined;
+      head?.scrollIntoView({ block: 'start' });
+    }, VIEW);
+    await shootBoth('worker-done-agent-card');
 
     // Fake-service traffic for this run.
     const traffic = traceSince(mark).filter(e => e.service === 'llm');
