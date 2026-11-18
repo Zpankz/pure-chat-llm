@@ -874,8 +874,16 @@ export class VoiceCallSideView extends ItemView {
       prevEl = row;
     });
     // The caret marks the one line still being spoken, never every unfinished line.
+    // Only that row holds a caret at all, so nothing else can blink, whatever the theme's CSS.
     const live = liveLine(this.transcript);
-    for (const [line, entry] of this.drawn) entry.el.toggleClass('is-live', line === live);
+    for (const [line, entry] of this.drawn) {
+      const isLive = line === live;
+      entry.el.toggleClass('is-live', isLive);
+      const caret = entry.el.querySelector('.va-caret');
+      if (!isLive) caret?.remove();
+      else if (!caret)
+        entry.el.querySelector('.va-bubble.is-interim')?.createSpan({ cls: 'va-caret' });
+    }
     if (atBottom) el.scrollTop = el.scrollHeight;
   }
 
@@ -918,7 +926,6 @@ export class VoiceCallSideView extends ItemView {
       else {
         bubble.addClass('is-interim');
         bubble.createSpan({ text: line.text });
-        bubble.createSpan({ cls: 'va-caret' });
       }
     }
     return row;
