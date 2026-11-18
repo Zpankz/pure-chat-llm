@@ -11,6 +11,7 @@ import type { NoticeMode } from '../agents/types';
  */
 abstract class LayerTool<T> extends Tool<T> {
   readonly classification = 'System';
+  readonly agentCore = true;
   protected abstract role: string;
   isAvailable(): boolean {
     return this.chat.role === this.role && !!this.chat.plugin.orchestrator;

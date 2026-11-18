@@ -18,6 +18,12 @@ export abstract class Tool<TArgs = Record<string, unknown>> {
   abstract readonly description: string;
   abstract readonly parameters: ToolParameters;
   abstract readonly classification: ToolClassification;
+  /**
+   * Part of the agent pipeline (relays, tasks, memory, skills, code mode). The tool-group
+   * switches don't turn these off: without them the agents can't work at all, and the
+   * switches predate the agents.
+   */
+  readonly agentCore: boolean = false;
 
   /**
    *
@@ -165,6 +171,11 @@ export class ToolRegistry {
     return settings.enabledToolClassifications?.[classification] ?? true;
   }
 
+  /** @param tool - Whether its tool group is on, or it is part of the agent pipeline. */
+  private groupAllows(tool: Tool<Record<string, unknown>>): boolean {
+    return tool.agentCore || this.isClassificationEnabled(tool.classification);
+  }
+
   /**
    *
    * @param names
@@ -176,7 +187,7 @@ export class ToolRegistry {
         (tool): tool is Tool<Record<string, unknown>> =>
           tool !== undefined &&
           tool.isAvailable() &&
-          this.isClassificationEnabled(tool.classification) &&
+          this.groupAllows(tool) &&
           allowedIn(tool.name, layerForRole(this.chat.role)),
       );
   }
@@ -187,7 +198,7 @@ export class ToolRegistry {
   getNameList(): string[] {
     return Array.from(this.enabledTools).filter(name => {
       const tool = this.allTools.get(name);
-      return tool && tool.isAvailable() && this.isClassificationEnabled(tool.classification);
+      return tool && tool.isAvailable() && this.groupAllows(tool);
     });
   }
 
@@ -209,9 +220,7 @@ export class ToolRegistry {
       .map(name => this.allTools.get(name))
       .filter(
         (tool): tool is Tool<Record<string, unknown>> =>
-          tool !== undefined &&
-          tool.isAvailable() &&
-          this.isClassificationEnabled(tool.classification),
+          tool !== undefined && tool.isAvailable() && this.groupAllows(tool),
       );
   }
 

@@ -20,6 +20,7 @@ export type ActivateSkillArgs = InferArgs<typeof activateSkillParameters>;
 export class ActivateSkillTool extends Tool<ActivateSkillArgs> {
   readonly name = 'activate_skill';
   readonly classification = 'System';
+  readonly agentCore = true;
   readonly parameters = activateSkillParameters;
 
   /** Description carries the skills catalogue (name + description of each skill). */
@@ -85,6 +86,7 @@ export type ReadSkillFileArgs = InferArgs<typeof readSkillFileParameters>;
 export class ReadSkillFileTool extends Tool<ReadSkillFileArgs> {
   readonly name = 'read_skill_file';
   readonly classification = 'System';
+  readonly agentCore = true;
   readonly description =
     "Read a file bundled with an Agent Skill (references/, scripts/, assets/). Use after activate_skill when the skill's instructions point to a file.";
   readonly parameters = readSkillFileParameters;

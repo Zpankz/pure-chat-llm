@@ -47,6 +47,7 @@ import {
   PURE_CHAT_LLM_ICON_NAME,
   PURE_CHAT_LLM_ICON_SVG,
   PURE_CHAT_LLM_VIEW_TYPE,
+  LEGACY_VIEW_TYPES,
   PureChatLLMSettings,
   RoleType,
   VOICE_CALL_VIEW_TYPE,
@@ -198,6 +199,7 @@ export default class PureChatLLM extends Plugin {
     // OAuth sign-in for remote MCP servers returns to obsidian://pure-chat-llm-oauth.
     this.registerObsidianProtocolHandler(OAUTH_ACTION, params => handleOAuthCallback(params));
     this.app.workspace.onLayoutReady(() => void this.mcp.refreshAll(false));
+    this.app.workspace.onLayoutReady(() => this.moveLegacyPanels());
 
     // Agent Skills (agentskills.io): keep the catalogue in sync with the skills folder.
     this.skills = new SkillsCatalog(this);
@@ -1013,6 +1015,20 @@ export default class PureChatLLM extends Plugin {
   /**
    *
    */
+  /**
+   * Panels saved under the view names used before 2.0.0-beta.7 reopen under the new ones,
+   * unless the original Pure Chat LLM is enabled and owns those names.
+   */
+  private moveLegacyPanels(): void {
+    const plugins = (this.app as unknown as { plugins?: { enabledPlugins?: Set<string> } }).plugins;
+    if (plugins?.enabledPlugins?.has('pure-chat-llm')) return;
+    this.app.workspace.iterateAllLeaves(leaf => {
+      const state = leaf.getViewState();
+      const moved = LEGACY_VIEW_TYPES[state.type];
+      if (moved) void leaf.setViewState({ ...state, type: moved });
+    });
+  }
+
   onunload() {
     void diagnostics.stop();
     void this.memory?.close();

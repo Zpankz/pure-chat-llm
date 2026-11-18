@@ -21,6 +21,7 @@ export const MEMORY_READ_TOOLS = ['memory_recall', 'memory_query'];
 
 abstract class MemoryTool<T> extends Tool<T> {
   readonly classification = 'AI';
+  readonly agentCore = true;
 
   protected get memory() {
     return this.chat.plugin.memory;

@@ -358,9 +358,17 @@ export interface ChatParser {
   isChat: RegExp;
 }
 
-export const PURE_CHAT_LLM_VIEW_TYPE = 'pure-chat-llm-left-pane';
-export const VOICE_CALL_VIEW_TYPE = 'voice-call-side-view';
-export const BLUE_RESOLUTION_VIEW_TYPE = 'blue-resolution-tree-view';
+// Our own names, so Voice Agent and the original Pure Chat LLM can be enabled together
+// (Obsidian refuses a second view with the same name).
+export const PURE_CHAT_LLM_VIEW_TYPE = 'voice-agent-conversation';
+export const VOICE_CALL_VIEW_TYPE = 'voice-agent-call';
+export const BLUE_RESOLUTION_VIEW_TYPE = 'voice-agent-resolution-tree';
+/** Names before 2.0.0-beta.7, for panels saved in an older workspace layout. */
+export const LEGACY_VIEW_TYPES: Record<string, string> = {
+  'pure-chat-llm-left-pane': PURE_CHAT_LLM_VIEW_TYPE,
+  'voice-call-side-view': VOICE_CALL_VIEW_TYPE,
+  'blue-resolution-tree-view': BLUE_RESOLUTION_VIEW_TYPE,
+};
 
 // Tool Types
 export interface ToolParameter {

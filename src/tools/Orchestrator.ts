@@ -1,6 +1,7 @@
 import { defineToolParameters, InferArgs, Tool } from '../tools';
 import type { SubAgentTask } from '../agents/types';
 import { MEMORY_TOOL_NAMES } from './Memory';
+import { layerProblem, resolveLayer } from '../agents/layers';
 
 export { MEMORY_TOOL_NAMES };
 
@@ -83,6 +84,7 @@ export function describeTask(task: SubAgentTask): string {
 
 abstract class OrchestratorTool<T> extends Tool<T> {
   readonly classification = 'System';
+  readonly agentCore = true;
   /** Chat roles that get this tool. */
   protected roles: string[] = ['orchestrator', 'orchestrator-agent'];
   isAvailable(): boolean {
@@ -119,7 +121,15 @@ export class DelegateTaskTool extends OrchestratorTool<InferArgs<typeof delegate
     'Hand work to a background agent that can use every vault tool, skill, MCP server and code mode. Returns at once with a task id; the agent works in the background and reports back.';
   readonly parameters = delegateParams;
   async execute(args: InferArgs<typeof delegateParams>): Promise<string> {
+    // Check the worker model before starting, so a missing key is said at once rather than
+    // showing up later as a failed task nobody hears about.
+    const worker = resolveLayer(this.chat.plugin, 'worker');
+    const problem = layerProblem(this.chat.plugin, worker);
+    if (problem)
+      return `Could not start "${args.title}": background agents can't run yet. ${problem} Tell the user this plainly.`;
     const task = this.agents.spawn(args.title, args.instructions, 'voice');
+    if (worker.fallback)
+      return `Started ${task.id} "${task.title}" (${task.status}) on ${worker.label}, because the worker model can't run: ${worker.fallback} Updates will arrive on their own.`;
     return `Started ${task.id} "${task.title}" (${task.status}). Updates will arrive on their own.`;
   }
 }
@@ -241,6 +251,7 @@ export class SetProgressUpdatesTool extends OrchestratorTool<InferArgs<typeof up
 
 abstract class SubAgentTool<T> extends Tool<T> {
   readonly classification = 'System';
+  readonly agentCore = true;
   isAvailable(): boolean {
     return this.chat.role === 'subagent' && !!this.chat.subAgentTaskId && !!this.chat.plugin.agents;
   }

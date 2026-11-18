@@ -104,6 +104,8 @@ interface Input {
   waiting?: boolean;
   /** When the relay arrived, for the time-to-answer log. */
   at?: number;
+  /** A task that failed: said to the user if the orchestrator doesn't say it itself. */
+  failure?: string;
 }
 
 /** Longest one orchestrator turn may take in all before it is stopped (system review A1). */
@@ -300,7 +302,13 @@ export class OrchestratorAgent implements Orchestrator {
       if (this.notes.length > 30) this.notes.shift();
       return;
     }
-    this.push({ text: line, fromUser: false });
+    this.push({
+      text: line,
+      fromUser: false,
+      ...(event.kind === 'failed'
+        ? { failure: `The background task "${event.title}" failed: ${spokenError(event.text)}` }
+        : {}),
+    });
   }
 
   private push(input: Input): void {
@@ -317,7 +325,18 @@ export class OrchestratorAgent implements Orchestrator {
         const user = this.inputs.filter(i => i.fromUser);
         const batch = user.length ? user : this.inputs.splice(0);
         if (user.length) this.inputs = this.inputs.filter(i => !i.fromUser);
-        await this.turn(batch);
+        try {
+          await this.turn(batch);
+        } catch (error) {
+          // A turn that fails while it is being set up (building the tool list, resolving the
+          // model) would otherwise vanish: the relay was acknowledged and nothing follows.
+          this.lastError = error instanceof Error ? error.message : String(error);
+          this.plugin.console?.error('Orchestrator turn could not start', error);
+          this.plugin.calls?.logOrchestrator('error', this.lastError);
+          if (batch.some(b => b.fromUser))
+            this.say(`I couldn't work on that: ${spokenError(this.lastError)}`, 'pause');
+          else this.sayFailures(batch);
+        }
       }
     } finally {
       this.running = false;
@@ -478,6 +497,7 @@ export class OrchestratorAgent implements Orchestrator {
             : `I couldn't work on that: ${spokenError(this.lastError)}`,
           'pause',
         );
+      else this.sayFailures(batch);
       return;
     } finally {
       window.clearTimeout(turnTimer);
@@ -490,8 +510,16 @@ export class OrchestratorAgent implements Orchestrator {
     }
     // A relayed request must never go unanswered.
     if (userTurn && !this.spokeThisTurn && finalText) this.say(finalText, 'pause');
+    // Nor may a failed task: the user would hear "on it" and then nothing.
+    if (!this.spokeThisTurn) this.sayFailures(batch);
     this.shareActivity();
     calls?.scheduleOrchestratorSave();
+  }
+
+  /** @param batch - Inputs; any failed task among them is told to the user. */
+  private sayFailures(batch: Input[]): void {
+    const failures = batch.map(b => b.failure).filter((f): f is string => !!f);
+    if (failures.length) this.say(failures.join(' '), 'pause');
   }
 
   /** After a failed turn, answers any tool call left without a result. */

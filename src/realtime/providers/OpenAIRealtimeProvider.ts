@@ -211,6 +211,16 @@ export class OpenAIRealtimeProvider extends BaseVoiceProvider {
         break;
       case 'response.created':
         this.responseActive = true;
+        // An interrupted response may never send its transcript's "done": close what it said,
+        // so the new answer doesn't continue the old one's text.
+        if (this.assistantText.trim())
+          this.emit({
+            type: 'transcript',
+            role: 'assistant',
+            text: this.assistantText,
+            final: true,
+          });
+        this.assistantText = '';
         break;
       case 'input_audio_buffer.speech_started':
         this.userSpeaking = true;

@@ -415,7 +415,9 @@ export class PureChatLLMSettingTab extends PluginSettingTab {
         setting =>
           void setting
             .setName('Enabled tool classifications')
-            .setDesc('Control which categories of tools are available to the agent.')
+            .setDesc(
+              'Control which categories of tools are available to the agent. The agent pipeline itself (relays, background tasks, memory, skills and code mode) stays on whatever you pick here.',
+            )
             .then(() => {
               TOOL_CLASSIFICATIONS.forEach(classification => {
                 setting.addButton(btn => {

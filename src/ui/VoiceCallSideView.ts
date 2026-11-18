@@ -41,6 +41,7 @@ import { shouldInterrupt } from '../agents/relevance';
 import {
   applyVoiceEvent,
   continuesTurn,
+  liveLine,
   pushLine,
   settleSpeech,
   type TranscriptLine,
@@ -854,6 +855,9 @@ export class VoiceCallSideView extends ItemView {
       this.drawn.set(line, { el: row, rev, continued });
       prevEl = row;
     });
+    // The caret marks the one line still being spoken, never every unfinished line.
+    const live = liveLine(this.transcript);
+    for (const [line, entry] of this.drawn) entry.el.toggleClass('is-live', line === live);
     if (atBottom) el.scrollTop = el.scrollHeight;
   }
 

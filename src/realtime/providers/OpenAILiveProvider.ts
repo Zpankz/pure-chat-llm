@@ -215,7 +215,13 @@ export class OpenAILiveProvider extends BaseVoiceProvider {
   private appendTranscript(role: 'user' | 'assistant', delta: string): string {
     const last = this.transcript[this.transcript.length - 1];
     if (last && last.role === role) last.text += delta;
-    else this.transcript.push({ role, text: delta });
+    else {
+      // GPT-Live sends no end-of-turn marker, so the other speaker starting is the end of a
+      // line: mark it final, so the panel, the call notes and the orchestrator all get it.
+      if (last?.text.trim())
+        this.emit({ type: 'transcript', role: last.role, text: last.text, final: true });
+      this.transcript.push({ role, text: delta });
+    }
     if (this.transcript.length > 40) this.transcript.shift();
     return this.transcript[this.transcript.length - 1].text;
   }

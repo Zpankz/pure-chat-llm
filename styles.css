@@ -896,7 +896,7 @@ sup {
 }
 
 .va-caret {
-  display: inline-block;
+  display: none;
   width: 6px;
   height: 1em;
   margin-left: 2px;
@@ -904,6 +904,10 @@ sup {
   border-radius: 1px;
   background: currentColor;
   animation: va-blink 1s steps(2, start) infinite;
+}
+
+.is-live .va-caret {
+  display: inline-block;
 }
 
 @keyframes va-blink {

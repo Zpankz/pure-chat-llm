@@ -65,6 +65,8 @@ export interface ResolvedLayer {
   google?: boolean;
   /** Short description for settings and logs. */
   label: string;
+  /** Set when the configured model couldn't run and another stood in: why. */
+  fallback?: string;
 }
 
 /**
@@ -74,6 +76,32 @@ export interface ResolvedLayer {
  * @param modelOverride - Model to use instead of the layer's.
  */
 export function resolveLayer(
+  plugin: PureChatLLM,
+  layer: LayerId | LayerModel,
+  modelOverride?: string,
+): ResolvedLayer {
+  const resolved = resolveConfigured(plugin, layer, modelOverride);
+  if (layer !== 'worker' || !layerProblem(plugin, resolved)) return resolved;
+  // Workers default to a provider many people have no key for. Rather than fail every task,
+  // run them on the orchestrator's model when that one is ready.
+  const orchestrator = resolveConfigured(plugin, 'orchestrator');
+  if (layerProblem(plugin, orchestrator)) return resolved;
+  return {
+    ...orchestrator,
+    layer: 'worker',
+    effort: resolved.effort,
+    fallback: layerProblem(plugin, resolved),
+    label: `${orchestrator.label} (worker model not ready)`,
+  };
+}
+
+/**
+ * The layer exactly as configured, with no fallback.
+ * @param plugin - Plugin.
+ * @param layer - Layer id or a layer model.
+ * @param modelOverride - Model to use instead of the layer's.
+ */
+function resolveConfigured(
   plugin: PureChatLLM,
   layer: LayerId | LayerModel,
   modelOverride?: string,

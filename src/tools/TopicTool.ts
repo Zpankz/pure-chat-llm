@@ -45,6 +45,7 @@ const topicParams = defineToolParameters({
 export class NewTopicTool extends Tool<InferArgs<typeof topicParams>> {
   readonly name = 'new_topic';
   readonly classification = 'System';
+  readonly agentCore = true;
   readonly description =
     'Start a new topic note for this call when the conversation moves to a new concept, step, idea, aspect or alternative, or go back to an earlier topic. The call is saved as linked notes, one per topic, so the user can follow its branches later. Silent: do not mention it to the user, and keep talking as you were.';
   readonly parameters = topicParams;

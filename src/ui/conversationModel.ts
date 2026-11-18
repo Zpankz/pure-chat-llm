@@ -194,14 +194,65 @@ export function settleSpeech(lines: TranscriptLine[]): void {
 }
 
 /**
- * Appends a line, settling what came before it.
+ * Appends a line. A new line from a speaker closes that speaker's earlier unfinished line, which
+ * a later one has superseded; the other speaker's line stays open, so an agent interrupted
+ * mid-sentence can still finish its own line.
  * @param lines - Transcript.
  * @param line - New line.
  */
 export function pushLine(lines: TranscriptLine[], line: TranscriptLine): TranscriptLine {
-  settleSpeech(lines);
+  if (line.kind === 'speech') {
+    const open = openSpeech(lines, line.role);
+    if (open) close(open);
+  }
   lines.push(line);
   return line;
+}
+
+/** @param line - Marks it final. */
+function close(line: TranscriptLine): void {
+  line.final = true;
+  line.rev = (line.rev ?? 0) + 1;
+}
+
+/**
+ * A speaker's latest spoken line, when it is still unfinished.
+ * @param lines - Transcript.
+ * @param role - Speaker.
+ */
+export function openSpeech(lines: TranscriptLine[], role: string): TranscriptLine | undefined {
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i];
+    if (line.kind !== 'speech' || line.role !== role) continue;
+    return line.final ? undefined : line;
+  }
+  return undefined;
+}
+
+/**
+ * Whether new text carries on a line rather than starting a new one: providers send the whole
+ * line so far with each update, so a continuation starts the way the line did.
+ * @param line - Unfinished line.
+ * @param text - New text.
+ */
+function carriesOn(line: TranscriptLine, text: string): boolean {
+  const before = line.text.trim();
+  if (!before) return true;
+  const head = before.slice(0, Math.min(before.length, 16));
+  return text.trim().startsWith(head);
+}
+
+/**
+ * The line that shows the typing caret: the newest unfinished spoken line, and only that one.
+ * @param lines - Transcript.
+ */
+export function liveLine(lines: TranscriptLine[]): TranscriptLine | undefined {
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i];
+    if (line.kind !== 'speech') continue;
+    if (!line.final) return line;
+  }
+  return undefined;
 }
 
 /**
@@ -217,13 +268,14 @@ export function applyVoiceEvent(
   now: number,
 ): TranscriptLine | null {
   if (event.type === 'transcript') {
-    const last = lines[lines.length - 1];
-    if (last && last.kind !== 'tool' && last.role === event.role && !last.final) {
-      last.text = event.text;
-      last.final = event.final;
-      last.at = now;
-      last.rev = (last.rev ?? 0) + 1;
-      return last;
+    // The speaker's own unfinished line, even when someone else spoke or a tool ran since: an
+    // interrupted agent finishes its sentence in place rather than repeating it below.
+    const open = openSpeech(lines, event.role);
+    if (open && carriesOn(open, event.text)) {
+      open.text = event.text;
+      open.final = event.final;
+      open.rev = (open.rev ?? 0) + 1;
+      return open;
     }
     if (!event.text.trim()) return null;
     const line: TranscriptLine = {

@@ -173,6 +173,7 @@ export function formatRun(
 export class CodeModeTool extends Tool<CodeModeArgs> {
   readonly name = 'codemode';
   readonly classification = 'System';
+  readonly agentCore = true;
   static _name = 'codemode';
   readonly parameters = codeModeParameters;
 

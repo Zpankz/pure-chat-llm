@@ -77,6 +77,9 @@ function toResponsesTool(tool: ToolDefinition): Record<string, unknown> {
     name: tool.function.name,
     description: tool.function.description,
     parameters: tool.function.parameters,
+    // The Responses API checks schemas strictly unless told not to, and our
+    // tool schemas don't meet strict rules (optional fields, open objects).
+    strict: false,
   };
 }
 

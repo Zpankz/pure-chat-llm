@@ -6,6 +6,8 @@ import {
   clipPreview,
   continuesTurn,
   formatDuration,
+  liveLine,
+  pushLine,
   settleSpeech,
   toolMeta,
   type TranscriptLine,
@@ -140,22 +142,71 @@ test('previews clip at a line break when one is near', () => {
   assert.equal(clipPreview('x'.repeat(200), 100), `${'x'.repeat(100)}\n…`);
 });
 
-test('only the newest line can still be live: anything after a line settles it', () => {
+test('an interrupted agent finishes its own line in place, with no repeat below', () => {
   const lines: TranscriptLine[] = [];
-  // GPT-Live never sends final transcripts.
-  applyVoiceEvent(lines, { type: 'transcript', role: 'user', text: 'Hi', final: false }, 1);
-  applyVoiceEvent(lines, { type: 'transcript', role: 'assistant', text: 'Hello', final: false }, 2);
-  assert.equal(lines[0].final, true);
-  assert.equal(lines[1].final, false);
-  applyVoiceEvent(lines, { type: 'tool', name: 'relay_to_orchestrator', phase: 'start' }, 3);
-  assert.equal(lines[1].final, true);
-  applyVoiceEvent(lines, { type: 'transcript', role: 'user', text: 'Thanks', final: false }, 4);
-  assert.deepEqual(
-    lines.map(l => l.final),
-    [true, true, true, false],
-  );
-  settleSpeech(lines);
+  const say = (role: 'user' | 'assistant', text: string, final: boolean, at: number) =>
+    applyVoiceEvent(lines, { type: 'transcript', role, text, final }, at);
+  say('user', 'Find my altitude notes', true, 1);
+  say('assistant', 'Sure, I will look', false, 2);
+  // OpenAI Realtime: the user's words arrive mid-answer, and a tool starts.
+  say('user', 'only the recent ones', true, 3);
+  applyVoiceEvent(lines, { type: 'tool', name: 'relay_to_orchestrator', phase: 'start' }, 4);
+  say('assistant', 'Sure, I will look through them now.', true, 5);
+  const agent = lines.filter(l => l.role === 'assistant');
+  assert.equal(agent.length, 1);
+  assert.equal(agent[0].text, 'Sure, I will look through them now.');
+  assert.equal(agent[0].final, true);
   assert.ok(lines.every(l => l.final));
+});
+
+test('the caret is only on the newest unfinished line', () => {
+  const lines: TranscriptLine[] = [];
+  applyVoiceEvent(
+    lines,
+    { type: 'transcript', role: 'assistant', text: 'Hello the', final: false },
+    1,
+  );
+  applyVoiceEvent(lines, { type: 'transcript', role: 'user', text: 'Wait', final: false }, 2);
+  // Both are unfinished, but only the newest shows the caret.
+  assert.equal(lines[0].final, false);
+  assert.equal(liveLine(lines), lines[1]);
+  applyVoiceEvent(lines, { type: 'transcript', role: 'user', text: 'Wait', final: true }, 3);
+  assert.equal(liveLine(lines), lines[0]);
+  settleSpeech(lines);
+  assert.equal(liveLine(lines), undefined);
+});
+
+test("a speaker's new line closes their earlier unfinished one", () => {
+  const lines: TranscriptLine[] = [];
+  applyVoiceEvent(
+    lines,
+    { type: 'transcript', role: 'assistant', text: 'First answer', final: false },
+    1,
+  );
+  applyVoiceEvent(lines, { type: 'transcript', role: 'user', text: 'Next', final: true }, 2);
+  // A different line from the same speaker supersedes the old one.
+  applyVoiceEvent(
+    lines,
+    { type: 'transcript', role: 'assistant', text: 'Second answer', final: false },
+    3,
+  );
+  assert.equal(lines.length, 3);
+  assert.equal(lines[0].text, 'First answer');
+  assert.equal(lines[0].final, true);
+  assert.equal(liveLine(lines), lines[2]);
+});
+
+test('tool cards and updates leave the speaker free to finish', () => {
+  const lines: TranscriptLine[] = [];
+  applyVoiceEvent(
+    lines,
+    { type: 'transcript', role: 'assistant', text: 'Let me check', final: false },
+    1,
+  );
+  applyVoiceEvent(lines, { type: 'tool', name: 'search_vault', phase: 'start', id: 'a' }, 2);
+  pushLine(lines, { role: 'tool', text: 'Update', final: true, at: 3, kind: 'update', rev: 0 });
+  assert.equal(lines[0].final, false);
+  assert.equal(liveLine(lines), lines[0]);
 });
 
 test('the orchestrator has its own turns, apart from the voice', () => {
