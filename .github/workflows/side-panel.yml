@@ -28,8 +28,9 @@ jobs:
           # Earlier: beta8-d45228b-composer run 44283952744 (check 10 then used the default "peer" policy).
           # Earlier: beta8-d45228b-composer and -memory, run 44285925055.
           # Earlier: beta8-7759570-composer and -memory, run 44287848040 (confirm rerun alone after).
-          - label: beta8-7759570-confirm
-            ref: 7759570c66e788fae51e664165806c5d0fb582e7
+          # Earlier: beta8-7759570-confirm, run 44288584351.
+          - label: beta8-c6d1682-confirm
+            ref: c6d16824329ce1e63c837865f6ab1f493ae9778e
             spec: e2e/side-panel/confirm.shots.mts
     steps:
       - uses: actions/checkout@v4
