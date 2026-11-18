@@ -568,7 +568,12 @@ export class MemoryGraph {
   setState(scope: string, name: string, value: string, agent: AgentName): void {
     const key = `${scope}/${name.trim().toLowerCase()}`;
     if (!value.trim()) {
-      this.write('MATCH (s:State {key: $key}) DETACH DELETE s', { key });
+      // A cleared value is kept empty with its time, so a merge with an older copy from another
+      // device doesn't bring it back (M7). Reads skip empty values.
+      this.write(
+        `MATCH (s:State {key: $key}) SET s.value = '', s.updatedAt = $at, s.clearedAt = $at, s.by = $agent`,
+        { key, at: this.now(), agent },
+      );
       return;
     }
     this.ensureAgent(agent);
@@ -602,7 +607,7 @@ export class MemoryGraph {
   ): { scope: string; name: string; value: string; by: string; updatedAt: number }[] {
     return this.engine
       .must(
-        `MATCH (s:State) WHERE s.scope IN $scopes
+        `MATCH (s:State) WHERE s.scope IN $scopes AND coalesce(s.value, '') <> ''
          RETURN s.scope AS scope, s.name AS name, s.value AS value, s.by AS by, s.updatedAt AS updatedAt
          ORDER BY s.updatedAt DESC LIMIT 100`,
         { scopes },
@@ -811,10 +816,31 @@ export class MemoryGraph {
 }
 
 /**
+ * Leaves one current fact per slot, the newest; the others are closed as superseded by the merge.
+ * @param facts - Fact nodes; the ones closed come back as copies.
+ */
+function closeDuplicateSlots(facts: Record<string, unknown>[]): Record<string, unknown>[] {
+  const newest = new Map<string, Record<string, unknown>>();
+  for (const f of facts) {
+    if (typeof f.slot !== 'string' || !f.slot || f.closedAt != null) continue;
+    const have = newest.get(f.slot);
+    if (!have || num(f.recordedAt, 0) > num(have.recordedAt, 0)) newest.set(f.slot, f);
+  }
+  return facts.map(f => {
+    if (typeof f.slot !== 'string' || !f.slot || f.closedAt != null) return f;
+    const keep = newest.get(f.slot);
+    return keep && keep !== f
+      ? { ...f, closedAt: num(keep.recordedAt, 0), closedReason: 'superseded (merge)' }
+      : f;
+  });
+}
+
+/**
  * Joins two copies of the memory (this device's and one synced from another): every node from
  * both, the newer of the two where both have it (by its own time fields), every relationship
- * from both. Nothing is deleted in the memory model, so a union loses nothing; a state value
- * cleared on one device and kept on the other comes back.
+ * from both. Nothing is deleted in the memory model, so a union loses nothing. A cleared state
+ * value is kept empty with its time, so the newer of a clear and a set wins; and when each device
+ * wrote a new fact in the same slot, only the newest stays current (M7).
  * @param a - One copy.
  * @param b - The other.
  */
@@ -835,6 +861,7 @@ export function mergeSnapshots(a: MemorySnapshot, b: MemorySnapshot): MemorySnap
     }
     if (byKey.size) nodes[label] = [...byKey.values()];
   }
+  if (nodes.Fact) nodes.Fact = closeDuplicateSlots(nodes.Fact);
   const rels = new Map<string, MemorySnapshot['relationships'][number]>();
   for (const r of [...a.relationships, ...b.relationships]) {
     rels.set(

@@ -152,6 +152,30 @@ test('a snapshot round-trips, and two copies merge without losing anything', () 
   for (const g of [a, b, c]) g.dispose();
 });
 
+test('a merge keeps a clear, and one current fact per slot', () => {
+  let now = 1_700_000_000_000;
+  const a = new MemoryGraph({ now: () => (now += 1000) });
+  a.setState('global', 'focus', 'Garden', 'voice');
+  const b = new MemoryGraph({ now: () => (now += 1000) });
+  b.load(a.snapshot());
+  a.setState('global', 'focus', '', 'voice');
+  a.remember({ text: 'Prefers detailed answers', slot: 'answer style', agent: 'voice' });
+  b.remember({ text: 'Prefers bullet answers', slot: 'answer style', agent: 'voice' });
+  b.setState('global', 'other', 'x', 'voice');
+  const c = new MemoryGraph();
+  c.load(mergeSnapshots(a.snapshot(), b.snapshot()));
+  assert.deepEqual(
+    c.getState(['global']).map(s => s.name),
+    ['other'],
+  );
+  assert.deepEqual(
+    c.recall({}).map(f => f.text),
+    ['Prefers bullet answers'],
+  );
+  assert.doesNotMatch(c.brief(), /focus =|detailed/);
+  for (const g of [a, b, c]) g.dispose();
+});
+
 test('references parse into notes and entities', () => {
   assert.deepEqual(parseRef('[[Projects/Voice Agent|VA]]'), {
     label: 'Note',
