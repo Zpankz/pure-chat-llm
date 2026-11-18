@@ -23,11 +23,10 @@ jobs:
       matrix:
         include:
           # Earlier runs shot before (b4229f1, beta.4) and after (33684ab, beta.5).
-          # Earlier: after-beta6 (4261b94) with side-panel.shots.mts.
-          - label: agent-fixes-9bebbee
-            ref: 9bebbee021dfc2d329697d9d3db278f37493f819
-            spec: e2e/side-panel/agent-fixes.shots.mts
-            with_pure_chat: '1'
+          # Earlier: after-beta6 (4261b94) with side-panel.shots.mts; agent-fixes-9bebbee with agent-fixes.shots.mts.
+          - label: beta8-composer
+            ref: 890596e763c5fb7a8387aac3a8cbcf986af62132
+            spec: e2e/side-panel/composer.shots.mts
     steps:
       - uses: actions/checkout@v4
 

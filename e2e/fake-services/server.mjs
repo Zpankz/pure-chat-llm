@@ -46,8 +46,17 @@ function textOf(content) {
   return '';
 }
 
-/** Picks the reply for one chat completions request. Exported for the self-test. */
-export function planReply(body) {
+/**
+ * Picks the reply for one chat completions request. Exported for the self-test.
+ * @param body - The request body.
+ * @param fallback - A script set through `/__default-script`, used when the request carries none
+ *   (so a typed panel message can stay free of script text). Scripted requests ignore it.
+ */
+export function planReply(body, fallback = null) {
+  return planFor(body, fallback);
+}
+
+function planFor(body, fallback) {
   const messages = Array.isArray(body.messages) ? body.messages : [];
   const system = messages.filter(m => m.role === 'system' || m.role === 'developer').map(m => textOf(m.content)).join('\n');
   if (REVIEWER.test(system)) {
@@ -79,6 +88,17 @@ export function planReply(body) {
       at = i;
     }
   }
+  let fromDefault = false;
+  if (!script && fallback) {
+    script = fallback;
+    fromDefault = true;
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i].role === 'user') {
+        at = i;
+        break;
+      }
+    }
+  }
   if (!script) {
     return {
       kind: 'unscripted',
@@ -89,6 +109,7 @@ export function planReply(body) {
     // A model error: every request of this script gets an HTTP error reply.
     return {
       kind: 'error',
+      fromDefault,
       script: script.id,
       status: script.fail.status ?? 400,
       message: { error: { message: script.fail.message ?? `FAKE MODEL: scenario ${script.id} fails on purpose.`, type: 'invalid_request_error' } },
@@ -104,6 +125,7 @@ export function planReply(body) {
     }));
     return {
       kind: 'tool_calls',
+      fromDefault,
       script: script.id,
       round: done,
       delayMs: script.delays?.[done] ?? 0,
@@ -113,6 +135,7 @@ export function planReply(body) {
   }
   return {
     kind: 'final',
+    fromDefault,
     script: script.id,
     delayMs: script.finalDelayMs ?? 0,
     drop: !!script.drop,
@@ -168,6 +191,8 @@ export function startFakeServices({ port = 8787, traceDir }) {
   const traceFile = path.join(traceDir, 'fake-services.jsonl');
   const trace = entry => fs.appendFileSync(traceFile, `${JSON.stringify({ at: new Date().toISOString(), ...entry })}\n`);
   const legacySessions = new Set();
+  // A script for requests that carry none; set and cleared by the test through /__default-script.
+  let defaultScript = null;
 
   const server = http.createServer((req, res) => {
     const cors = {
@@ -199,6 +224,12 @@ export function startFakeServices({ port = 8787, traceDir }) {
         json(200, fs.existsSync(traceFile) ? fs.readFileSync(traceFile, 'utf8').trim().split('\n').filter(Boolean).map(l => JSON.parse(l)) : []);
         return;
       }
+      if (url.pathname === '/__default-script') {
+        defaultScript = body && body.script ? body.script : null;
+        trace({ service: 'control', default_script: defaultScript ? defaultScript.id ?? 'unnamed' : null });
+        json(200, { ok: true, script: defaultScript ? defaultScript.id ?? 'unnamed' : null });
+        return;
+      }
       if (url.pathname.endsWith('/models')) {
         trace({ service: 'llm-models', origin: req.headers.origin ?? null });
         json(200, { object: 'list', data: [{ id: 'fake-model', object: 'model' }] });
@@ -207,7 +238,7 @@ export function startFakeServices({ port = 8787, traceDir }) {
       if (url.pathname.endsWith('/responses')) {
         // OpenAI Responses API (streamed), mapped onto the same scripts as chat completions.
         const messages = responsesToMessages(body);
-        const plan = planReply({ messages });
+        const plan = planReply({ messages }, defaultScript);
         trace({
           service: 'llm',
           api: 'responses',
@@ -216,6 +247,7 @@ export function startFakeServices({ port = 8787, traceDir }) {
           kind: plan.kind,
           script: plan.script,
           round: plan.round,
+          default_script: plan.fromDefault || undefined,
           model: body.model,
           stream: !!body.stream,
           tools_offered: (body.tools ?? []).map(t => t.name ?? t.function?.name),
@@ -244,7 +276,7 @@ export function startFakeServices({ port = 8787, traceDir }) {
         return;
       }
       if (url.pathname.endsWith('/chat/completions')) {
-        const plan = planReply(body);
+        const plan = planReply(body, defaultScript);
         let closed = false;
         res.on('close', () => (closed = !res.writableFinished));
         trace({
@@ -255,6 +287,7 @@ export function startFakeServices({ port = 8787, traceDir }) {
           model: body.model,
           stream: !!body.stream,
           tools_offered: (body.tools ?? []).map(t => t.function?.name ?? t.name),
+          default_script: plan.fromDefault || undefined,
           messages: body.messages,
           reply: plan.message,
           delay_ms: plan.delayMs || undefined,
