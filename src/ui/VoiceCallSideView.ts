@@ -152,6 +152,13 @@ export class VoiceCallSideView extends ItemView {
     wireLinks(this.app, this, this.contentEl, VOICE_CALL_VIEW_TYPE, () => this.sourcePath());
     const tick = () => tickElapsed(this.contentEl);
     this.registerInterval(window.setInterval(tick, 1000));
+    // Task cards follow their tasks whether or not a call is live, on either engine.
+    const redraw = () => this.renderTasks();
+    const stops = [
+      this.plugin.agents?.onChange(redraw),
+      this.plugin.durable?.tasks.onChange(redraw),
+    ];
+    this.register(() => stops.forEach(stop => stop?.()));
     this.renderView();
   }
 
@@ -491,11 +498,7 @@ export class VoiceCallSideView extends ItemView {
       agents.onInterrupt((event, mode) => {
         if (!layered || event.tick) void this.relayAgentEvent(event, mode);
       }),
-      agents.onChange(() => this.renderTasks()),
     );
-    // On the durable engine the tasks live there; follow that list too.
-    const tasks = this.plugin.taskList;
-    if (tasks !== agents) this.stopAgentWatch.push(tasks.onChange(() => this.renderTasks()));
     agents.setProgressInterval(this.plugin.settings.orchestrator.progressUpdateSeconds);
     if (layered) {
       const orchestrator = this.plugin.orchestrator;
@@ -962,8 +965,12 @@ export class VoiceCallSideView extends ItemView {
     this.callState = state;
     if (state.status !== 'connected' && state.status !== 'connecting')
       settleSpeech(this.transcript);
-    // A call that drops on its own is saved too.
-    if (state.status === 'disconnected' || state.status === 'error') void this.saveCallNotes();
+    // A call that drops on its own is saved too, and stops listening: an answer said into a
+    // dead call would be lost, while with no listener it waits for the next call (review W5).
+    if (state.status === 'disconnected' || state.status === 'error') {
+      this.unwatchAgents();
+      void this.saveCallNotes();
+    }
     this.renderView();
   }
 

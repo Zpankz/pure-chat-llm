@@ -840,19 +840,26 @@ export class PureChatLLMSettingTab extends PluginSettingTab {
             .addButton(btn =>
               btn
                 .setButtonText('Reset settings')
-                .setTooltip("Won't delete the API keys.")
+                .setTooltip('Keeps your API keys and the providers you added.')
                 .setWarning()
                 .onClick(e => {
-                  const oldSettings = { ...this.plugin.settings };
-                  this.plugin.settings = { ...DEFAULT_SETTINGS };
-                  this.plugin.settings.endpoints.forEach((ep, endpoint) => {
-                    if (DEFAULT_SETTINGS.endpoints[endpoint])
-                      this.plugin.settings.endpoints[endpoint].apiKey =
-                        oldSettings.endpoints[endpoint].apiKey;
-                  });
+                  const old = this.plugin.settings.endpoints;
+                  // A fresh copy, so later changes never touch the defaults themselves.
+                  const fresh = structuredClone(DEFAULT_SETTINGS);
+                  // Keys follow their provider by name, not by place in the list (an upgrade
+                  // can reorder it), and providers you added are kept with their keys.
+                  for (const ep of fresh.endpoints) {
+                    const mine = old.find(o => o.name === ep.name);
+                    if (mine) ep.apiKey = mine.apiKey;
+                  }
+                  const added = old.filter(o => !fresh.endpoints.some(ep => ep.name === o.name));
+                  fresh.endpoints.push(...added.map(o => structuredClone(o)));
+                  this.plugin.settings = fresh;
                   void this.plugin.saveSettings();
                   this.display();
-                  new Notice('Settings reset to defaults.  API keys are unchanged.');
+                  new Notice(
+                    'Settings reset to defaults. API keys and providers you added are unchanged.',
+                  );
                 }),
             )
             .addButton(btn =>

@@ -33,7 +33,9 @@ export function durableSettings(mobile = false): HarnessSettings {
     retry: { maxRetries: 1 },
     stream: { timeoutMs: 180_000 },
     restartLimit: 3,
-    afterFailedRun: 'withdraw',
+    // A worker's report or question queued behind a failed run still gets its turn; withdrawn,
+    // it would be lost for good, since its request id blocks a resend (review W2).
+    afterFailedRun: 'continue',
     toolExecution: 'sequential',
     progress: mobile
       ? { partialIntervalMs: 300, outputIntervalMs: 300 }

@@ -178,6 +178,9 @@ export class SubAgentManager {
     task.result = undefined;
     task.error = undefined;
     rt.cancelled = false;
+    // A cancelled task's controller has already fired; the follow-up needs a fresh one, or it
+    // would stop at once (review W10).
+    if (rt.abort.signal.aborted) rt.abort = new AbortController();
     this.queue.push(id);
     this.changed();
     this.pump();

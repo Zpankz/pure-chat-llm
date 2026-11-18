@@ -68,6 +68,11 @@ export function pluginToolSource(plugin: PureChatLLM, role: 'orchestrator' | 'wo
     (role === 'worker' ||
       orchestratorTools.has(name) ||
       registry.classificationForTool(name) === 'MCP');
+  // Turn the rest off in the registry itself, not only in the list offered: code mode calls
+  // tools through the registry, and could otherwise start Classic workers nobody sees (T-01).
+  for (const tool of registry.getAllDefinitions()) {
+    if (!offered(tool.function.name)) registry.disable(tool.function.name);
+  }
   return {
     definitions: () => registry.getEnabledDefinitions().filter(d => offered(d.function.name)),
     readOnly: isReadOnlyTool,

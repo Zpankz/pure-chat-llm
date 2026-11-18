@@ -7,6 +7,8 @@ import {
 } from '../tools/Orchestrator';
 import type { ChatRequestOptions, ToolCall } from '../types';
 import { isAbortError } from '../core/requestControl';
+import { callWithSignal, toolTimeoutMs, withToolTimeout } from '../tools/toolContract';
+import type { AbortHost } from '../tools/toolContract';
 import { layerFetch, layerProblem, logTiming, resolveLayer } from './layers';
 import type { NoticeMode, SubAgentEvent } from './types';
 
@@ -549,7 +551,17 @@ export class OrchestratorAgent implements Orchestrator {
     } catch {
       return `Error: the arguments for ${name} were not valid JSON.`;
     }
-    const output = await chat.toolregistry.executeTool(name, args);
+    // Each call has its own deadline, as in workers, so one hung MCP server can't hold every
+    // later relay (review T-07); the turn's own abort still stops it.
+    const output = await withToolTimeout(
+      name,
+      toolTimeoutMs(name),
+      signal =>
+        callWithSignal(chat as unknown as AbortHost, signal, () =>
+          chat.toolregistry.executeTool(name, args),
+        ),
+      chat.abortSignal ?? undefined,
+    );
     const max = 12000;
     return output.length > max ? `${output.slice(0, max)}\n…[truncated]` : output;
   }
