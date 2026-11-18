@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.0-beta.7] - 2026-11-18
+
+Everything in beta.6, plus fixes for the orchestrator and background agents not starting, and for the caret:
+
+- **Agents start again.** OpenAI (Responses) requests no longer fail on strict tool checking. Workers run on the orchestrator's model when the worker model has no key, and a worker that can't start is said at once. A failed background task, or an orchestrator turn that fails while it is set up, is always told to you. The agent tools (relays, tasks, memory, skills, code mode) stay on whichever tool groups you switch off.
+- **Durable engine:** the voice's check_tasks and cancel_task, the call panel and the call notes now see its workers, and you can stop them from the voice or the panel. Code mode can no longer start hidden Classic workers, and a report queued behind a failed run is kept.
+- **Caret:** only the newest unfinished line blinks. An interrupted speaker finishes their own line in place instead of repeating it below, and a speaker's new line closes their old one (GPT-Live and OpenAI Realtime).
+- Voice Agent and Pure Chat LLM can be enabled together (own view names; panels saved under the old names reopen).
+- **Memory:** a file that sync is still writing is read again before giving up, and a notice says when saving stops or resumes. Changing the memory folder copies the memory there and leaves the old file. Agents' own queries get a row limit. Tasks cut off by an earlier quit are closed.
+- **Safety:** the settings tool can't change safety settings, agents can't write in the app's config folder or the memory file, and each orchestrator tool call has its own deadline.
+- **Smaller fixes:** the model chooser no longer loops when the first provider has no key and no longer changes your default provider; the error box is readable; tool cards read "Searching…" while running and "Couldn't…" when they fail; Reset settings keeps your keys and added providers; a call that drops stops listening.
+
 ## [2.0.0-beta.6] - 2026-11-18
 
 Everything in beta.5, plus:
