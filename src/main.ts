@@ -1,3 +1,4 @@
+import type { TaskList } from './harness/durableTasks';
 import {
   addIcon,
   App,
@@ -112,6 +113,12 @@ export default class PureChatLLM extends Plugin {
    */
   get orchestrator(): Orchestrator {
     return this.durable?.enabled ? this.durable.orchestrator : this.classicOrchestrator;
+  }
+  /** The background tasks of the engine in use, for the voice tools, the panel and call notes. */
+  get taskList(): TaskList {
+    // The durable orchestrator only runs behind a layered voice; otherwise tasks are Classic.
+    const durable = this.durable?.enabled && this.settings.orchestrator.voiceRole === 'layered';
+    return durable ? this.durable.tasks : this.agents;
   }
   /** True when this load took its settings from the old `pure-chat-llm` plugin folder. */
   private migratedLegacySettings = false;

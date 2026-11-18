@@ -1,5 +1,6 @@
 // The plugin side of the durable engine: layer requests through `layerFetch`, tools through a
 // chat's tool registry with the caller's role, and the session opened once per vault on demand.
+import { DurableTaskList } from './durableTasks';
 import { Notice, Platform } from 'obsidian';
 import { PureChatLLMChat } from '../core/Chat';
 import type PureChatLLM from '../main';
@@ -94,8 +95,14 @@ export class DurableEngine {
   private opening: Promise<DurableSession> | null = null;
   /** The orchestrator the voice call talks to on this engine. */
   readonly orchestrator: DurableOrchestrator;
+  /** Its background tasks, for the voice tools, the call panel and the call notes. */
+  readonly tasks: DurableTaskList;
 
   constructor(private plugin: PureChatLLM) {
+    this.tasks = new DurableTaskList(
+      taskId => this.session().then(s => s.abortTask(taskId)),
+      () => resolveLayer(plugin, 'worker').label,
+    );
     this.orchestrator = new DurableOrchestrator({
       session: () => this.session(),
       active: () => plugin.settings.orchestrator.voiceRole === 'layered',
@@ -155,6 +162,7 @@ export class DurableEngine {
             workerInstructions: () => new LocalSubAgentBackend(this.plugin).systemPrompt(),
             maxResultChars: this.plugin.settings.voice.maxToolOutputChars || 6000,
             onTask: event => {
+              this.tasks.record(event);
               const memory = this.plugin.memory;
               memory?.quietly(g =>
                 g.recordTask(

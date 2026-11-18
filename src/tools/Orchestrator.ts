@@ -96,6 +96,14 @@ abstract class OrchestratorTool<T> extends Tool<T> {
   protected find(id: string): SubAgentTask | undefined {
     return this.agents.find(id);
   }
+  /** The tasks the voice sees: the engine in use, which may be the durable one. */
+  protected get voiceTasks() {
+    return this.chat.role === 'voice' ? this.chat.plugin.taskList : this.agents;
+  }
+  /** The voice is talking to the durable engine's tasks. */
+  protected get durableTasks(): boolean {
+    return this.voiceTasks !== this.agents;
+  }
 }
 
 const delegateParams = defineToolParameters({
@@ -150,8 +158,9 @@ export class CheckTasksTool extends OrchestratorTool<InferArgs<typeof checkParam
   readonly parameters = checkParams;
   protected roles = ['orchestrator', 'orchestrator-agent', 'voice'];
   async execute(args: InferArgs<typeof checkParams>): Promise<string> {
-    const updates = this.agents.takeQueuedUpdates();
-    const tasks = args.id ? [this.find(args.id)].filter(Boolean) : this.agents.list().slice(0, 12);
+    const source = this.voiceTasks;
+    const updates = this.durableTasks ? [] : this.agents.takeQueuedUpdates();
+    const tasks = args.id ? [source.find(args.id)].filter(Boolean) : source.list().slice(0, 12);
     if (!tasks.length) return args.id ? `No task matches "${args.id}".` : 'No tasks yet.';
     const lines = (tasks as SubAgentTask[]).map(describeTask);
     if (updates.length)
@@ -219,9 +228,10 @@ export class CancelTaskTool extends OrchestratorTool<InferArgs<typeof idParams>>
   readonly parameters = idParams;
   protected roles = ['orchestrator', 'orchestrator-agent', 'voice'];
   async execute(args: InferArgs<typeof idParams>): Promise<string> {
-    const task = this.find(args.id);
+    const source = this.voiceTasks;
+    const task = source.find(args.id);
     if (!task) return `No task matches "${args.id}".`;
-    return this.agents.cancel(task.id);
+    return source.cancel(task.id);
   }
 }
 
@@ -244,6 +254,8 @@ export class SetProgressUpdatesTool extends OrchestratorTool<InferArgs<typeof up
   readonly parameters = updatesParams;
   protected roles = ['orchestrator', 'orchestrator-agent', 'voice'];
   async execute(args: InferArgs<typeof updatesParams>): Promise<string> {
+    if (this.durableTasks)
+      return 'Timed progress updates are not available on the durable engine yet; the orchestrator tells the user when a task finishes or needs them. Say so.';
     const seconds = this.agents.setProgressInterval(args.interval_seconds);
     return seconds ? `Progress updates every ${seconds} seconds.` : 'Progress updates are off.';
   }

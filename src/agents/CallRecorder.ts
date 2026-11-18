@@ -566,9 +566,19 @@ export class CallRecorder {
   }
 
   private tasks(record: CallRecord): SubAgentTask[] {
-    return record.taskIds
+    const classic = record.taskIds
       .map(id => this.plugin.agents?.find(id))
       .filter((t): t is SubAgentTask => !!t);
+    // Durable workers have no notes of their own yet; the call note lists them by name.
+    const source = this.plugin.taskList;
+    if (!source || source === this.plugin.agents) return classic;
+    const durable = source
+      .list()
+      .filter(
+        t => t.createdAt >= record.startedAt && (!record.endedAt || t.createdAt <= record.endedAt),
+      )
+      .reverse();
+    return [...classic, ...durable];
   }
 
   private taskLink(task: SubAgentTask, alias?: string): string {

@@ -493,6 +493,9 @@ export class VoiceCallSideView extends ItemView {
       }),
       agents.onChange(() => this.renderTasks()),
     );
+    // On the durable engine the tasks live there; follow that list too.
+    const tasks = this.plugin.taskList;
+    if (tasks !== agents) this.stopAgentWatch.push(tasks.onChange(() => this.renderTasks()));
     agents.setProgressInterval(this.plugin.settings.orchestrator.progressUpdateSeconds);
     if (layered) {
       const orchestrator = this.plugin.orchestrator;
@@ -642,7 +645,8 @@ export class VoiceCallSideView extends ItemView {
     const el = this.tasksEl;
     if (!el) return;
     el.empty();
-    const tasks = this.plugin.agents?.list().slice(0, 8) ?? [];
+    const source = this.plugin.taskList;
+    const tasks = source?.list().slice(0, 8) ?? [];
     if (!tasks.length) return;
     el.addClass('va-tasks');
     const live = tasks.filter(t => ['running', 'queued', 'waiting'].includes(t.status)).length;
@@ -656,7 +660,7 @@ export class VoiceCallSideView extends ItemView {
         open: notePath
           ? () => void this.app.workspace.openLinkText(notePath, '', 'tab')
           : undefined,
-        stop: () => this.plugin.agents.cancel(task.id),
+        stop: () => source.cancel(task.id),
       });
       card.setAttr('title', describeTask(task));
       const steps = card.querySelector<HTMLDetailsElement>('details.va-steps');

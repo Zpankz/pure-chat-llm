@@ -98,6 +98,8 @@ export interface WorkerHost {
     title: string;
     status: WorkerStatus;
     text?: string;
+    /** The worker task's id, so the plugin can stop it; set on the round's start. */
+    taskId?: number;
   }) => void;
 }
 
@@ -369,6 +371,13 @@ export function createWorkers(host: WorkerHost, abortTask: (taskId: TaskId) => P
           }
           return { status: 'running', checkpoint: { phase: 'brief', child } };
         }, context);
+        tell({
+          conversation: String(runtime.conversationId),
+          id,
+          title,
+          status: 'running',
+          taskId: Number(runtime.taskId),
+        });
       },
       // Give it the brief (once: the request ID) and wait for its answer.
       brief: async (task, runtime, context) => {

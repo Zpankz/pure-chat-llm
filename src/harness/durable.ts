@@ -85,6 +85,8 @@ export interface DurableSession {
   orchestratorAgent(): AgentChange;
   /** The root conversation, set up as the orchestrator. */
   root(): Promise<Conversation>;
+  /** Stops a worker's task (what `cancel_task` does), by its task id. */
+  abortTask(taskId: number): Promise<unknown>;
   /** Closes the Harness, then releases the Web Lock. */
   close(): Promise<void>;
 }
@@ -198,6 +200,7 @@ export async function openDurable(
       harness,
       orchestratorAgent,
       root: () => harness.root(CTX, { agent: orchestratorAgent() }),
+      abortTask: taskId => harness.abortTask(taskId as Parameters<Harness['abortTask']>[0], CTX),
       async close() {
         if (closed) return;
         closed = true;
