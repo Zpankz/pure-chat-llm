@@ -58,7 +58,13 @@ async function markLeaf(viewType: string): Promise<{ side: string; width: number
   );
 }
 
+/** Removes toasts (the settings carry-over notice) so they don't cover the panel. */
+async function clearNotices() {
+  await browser.execute(() => document.querySelectorAll('.notice-container .notice, .notice').forEach(n => n.remove()));
+}
+
 async function shotLeaf(viewType: string, name: string) {
+  await clearNotices();
   await browser.pause(500);
   const el = await browser.$(`[data-e2e-shot="${viewType}"]`);
   const file = path.join(OUT, `${name}.png`);
@@ -67,6 +73,7 @@ async function shotLeaf(viewType: string, name: string) {
 }
 
 async function shotWindow(name: string) {
+  await clearNotices();
   const file = path.join(OUT, `${name}.png`);
   await browser.saveScreenshot(file);
   log(`saved ${name}.png (whole window)`);
@@ -121,7 +128,13 @@ describe(`Side panels (${LABEL})`, () => {
       const plugin = (a.plugins.plugins['voice-agent'] ?? null) as any;
       return { version: plugin?.manifest?.version ?? null, obsidian: a.appVersion ?? null };
     }, CHAT_NOTE);
-    log(`plugin ${info.version}, Obsidian ${info.obsidian}`);
+    let obsidian = String(info.obsidian);
+    try {
+      obsidian = browser.getObsidianVersion();
+    } catch {
+      // keep what the page said
+    }
+    log(`plugin ${info.version}, Obsidian ${obsidian}`);
   });
 
   for (const theme of ['light', 'dark'] as const) {
@@ -163,9 +176,29 @@ describe(`Side panels (${LABEL})`, () => {
         return `fed 11 scripted voice events, ${update}, stubbed 3 agents`;
       });
       log(`voice call panel (${theme}): ${opened}`);
+      await markLeaf('voice-call-side-view');
+      await browser.pause(600);
       const sized = await markLeaf('voice-call-side-view');
       log(`voice call panel sits in the ${sized?.side} sidebar, ${sized?.width} px wide`);
       await shotLeaf('voice-call-side-view', `voice-call-${theme}`);
+      const conv = await browser.execute(() => {
+        const root = document.querySelector('[data-e2e-shot="voice-call-side-view"]');
+        const t = root?.querySelector('.voice-call-transcript') as HTMLElement | null;
+        if (!t) return null;
+        return { height: Math.round(t.getBoundingClientRect().height), content: t.scrollHeight };
+      });
+      if (conv) log(`voice call panel (${theme}): the conversation area is ${conv.height} px tall for ${conv.content} px of content`);
+      // After build: the conversation can be squeezed by the content below it. Take one more
+      // picture with flex-shrink: 0 set on it (for this picture only) to show the cards themselves.
+      const squeezed = !!conv && conv.content > conv.height + 40;
+      if (squeezed) {
+        await browser.execute(() => {
+          const t = document.querySelector('[data-e2e-shot="voice-call-side-view"] .voice-call-transcript') as HTMLElement | null;
+          if (t) t.style.flexShrink = '0';
+        });
+        await shotLeaf('voice-call-side-view', `voice-call-${theme}-unsqueezed`);
+        log(`voice call panel (${theme}): voice-call-${theme}-unsqueezed.png has flex-shrink: 0 set on the conversation by the test, not by the plugin`);
+      }
 
       // After build only: open the "Searched the vault" card, then hover a wikilink with Ctrl.
       const card = await browser.execute(() => {
@@ -183,12 +216,16 @@ describe(`Side panels (${LABEL})`, () => {
         return;
       }
       await shotLeaf('voice-call-side-view', `voice-call-${theme}-search-card-open`);
+      if (squeezed) log(`voice call panel (${theme}): the card and preview pictures keep the test's flex-shrink: 0 on the conversation`);
 
       const link = await browser.$('[data-e2e-shot="voice-call-side-view"] a.internal-link');
       if (!(await link.isExisting())) {
         log(`voice call panel (${theme}): no wikilink to hover`);
         return;
       }
+      await browser.execute(() => document.querySelectorAll('.popover.hover-popover').forEach(p => p.remove()));
+      await browser.$('.workspace-ribbon').moveTo().catch(() => undefined);
+      await browser.pause(300);
       const linkText = await link.getText();
       await link.scrollIntoView({ block: 'center' });
       await browser.action('key').down('').perform(true);
@@ -242,6 +279,8 @@ describe(`Side panels (${LABEL})`, () => {
         return app.workspace.getLeavesOfType('pure-chat-llm-left-pane').length ? 'opened' : 'did not open';
       });
       log(`conversation overview (${theme}): ${opened}, showing Chat demo.md`);
+      await markLeaf('pure-chat-llm-left-pane');
+      await browser.pause(600);
       const sized = await markLeaf('pure-chat-llm-left-pane');
       log(`conversation overview sits in the ${sized?.side} sidebar, ${sized?.width} px wide`);
       await shotLeaf('pure-chat-llm-left-pane', `conversation-overview-${theme}`);
