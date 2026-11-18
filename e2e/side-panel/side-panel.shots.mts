@@ -15,6 +15,8 @@ import { browser } from '@wdio/globals';
 const LABEL = process.env.SHOT_LABEL ?? 'build';
 const OUT = path.join(process.env.E2E_OUT ?? 'e2e/.out', 'side-panel', LABEL);
 const WIDTH = 380;
+// When set, the test never changes the plugin's CSS, so every picture shows the build as shipped.
+const NO_TEST_FIX = process.env.SHOT_NO_TEST_FIX === '1';
 const notes: string[] = [];
 
 function log(line: string) {
@@ -191,7 +193,8 @@ describe(`Side panels (${LABEL})`, () => {
       // After build: the conversation can be squeezed by the content below it. Take one more
       // picture with flex-shrink: 0 set on it (for this picture only) to show the cards themselves.
       const squeezed = !!conv && conv.content > conv.height + 40;
-      if (squeezed) {
+      if (squeezed && NO_TEST_FIX) log(`voice call panel (${theme}): the conversation is squeezed, and this run sets no CSS fix of its own`);
+      if (squeezed && !NO_TEST_FIX) {
         await browser.execute(() => {
           const t = document.querySelector('[data-e2e-shot="voice-call-side-view"] .voice-call-transcript') as HTMLElement | null;
           if (t) t.style.flexShrink = '0';
@@ -216,7 +219,7 @@ describe(`Side panels (${LABEL})`, () => {
         return;
       }
       await shotLeaf('voice-call-side-view', `voice-call-${theme}-search-card-open`);
-      if (squeezed) log(`voice call panel (${theme}): the card and preview pictures keep the test's flex-shrink: 0 on the conversation`);
+      if (squeezed && !NO_TEST_FIX) log(`voice call panel (${theme}): the card and preview pictures keep the test's flex-shrink: 0 on the conversation`);
 
       const link = await browser.$('[data-e2e-shot="voice-call-side-view"] a.internal-link');
       if (!(await link.isExisting())) {

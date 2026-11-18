@@ -22,10 +22,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - label: before
-            ref: b4229f16311447e2f54c80d95690c80d9014bcc8
-          - label: after
-            ref: 33684ab5902c658c1e21ddb5e169f8aad6598438
+          # Earlier runs shot before (b4229f1, beta.4) and after (33684ab, beta.5).
+          - label: after-beta6
+            ref: 4261b94afa95303cab5676a8ba30dbe0996fcd9f
+            no_test_fix: '1'
     steps:
       - uses: actions/checkout@v4
 
@@ -66,6 +66,7 @@ jobs:
         env:
           E2E_SPEC_FILE: e2e/side-panel/side-panel.shots.mts
           SHOT_LABEL: ${{ matrix.label }}
+          SHOT_NO_TEST_FIX: ${{ matrix.no_test_fix || '0' }}
         run: xvfb-run -a --server-args="-screen 0 1920x1080x24" npx wdio run ./e2e/wdio.conf.mts
 
       - name: Print the screenshots
