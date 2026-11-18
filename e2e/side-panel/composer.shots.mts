@@ -642,6 +642,10 @@ describe(`Typed message box (${LABEL})`, () => {
           tags: tags(e),
         })),
         rawLeft: (b as HTMLElement).innerText.match(/\$\$|\\\(|\\\[|```|!\[\[|\|---/g) ?? [],
+        pdfLink: (() => {
+          const l = b.querySelector('.va-pdf-link') as HTMLElement | null;
+          return l ? { text: (l.textContent ?? '').trim(), shown: getComputedStyle(l).display !== 'none' && l.getBoundingClientRect().width > 0 } : null;
+        })(),
         height: Math.round(row.getBoundingClientRect().height),
       };
     }, ROOT);
@@ -673,7 +677,8 @@ describe(`Typed message box (${LABEL})`, () => {
     }
     const img = r.embeds.find(e => e.src === 'image.png');
     const pdf = r.embeds.find(e => e.src === 'some.pdf');
-    const pdfOk = !!pdf && /pdf/.test(pdf.cls + pdf.tags.join(' ')) && pdf.h > 40;
+    // From beta.8 a narrow panel shows a "some.pdf" link instead of the viewer (hidden by CSS).
+    const pdfOk = !!pdf && /pdf/.test(pdf.cls + pdf.tags.join(' ')) && (pdf.h > 40 || (!!r.pdfLink?.shown && /some\.pdf/.test(r.pdfLink.text)));
     const ok =
       r.tables === 1 &&
       r.diagrams.length === 2 &&
@@ -689,7 +694,7 @@ describe(`Typed message box (${LABEL})`, () => {
     verdict(
       '5',
       ok,
-      `Table: ${r.tables} (${r.tableRows} rows). Diagrams: ${r.diagrams.length} drawn by pele (${r.diagrams.map(d => (d.svg ? `SVG ${d.w}x${d.h}` : 'NO SVG')).join(', ')}), ${r.codeLeft.length} code block(s) left${r.diagramErrors.length ? `, errors ${JSON.stringify(r.diagramErrors)}` : ''}. Maths: ${r.math} MathJax elements, ${r.mathDisplay} of them display. Links: ${r.links.join(', ')}. Embeds: ${r.embeds.map(e => `${e.src} (${e.cls}; ${e.img ? `img ${e.img} px wide` : `tags ${e.tags.slice(0, 6).join(',')}`}; ${e.h} px high)`).join('; ')}. Raw Markdown left in the text: ${r.rawLeft.length ? JSON.stringify(r.rawLeft) : 'none'}.`,
+      `Table: ${r.tables} (${r.tableRows} rows). Diagrams: ${r.diagrams.length} drawn by pele (${r.diagrams.map(d => (d.svg ? `SVG ${d.w}x${d.h}` : 'NO SVG')).join(', ')}), ${r.codeLeft.length} code block(s) left${r.diagramErrors.length ? `, errors ${JSON.stringify(r.diagramErrors)}` : ''}. Maths: ${r.math} MathJax elements, ${r.mathDisplay} of them display. Links: ${r.links.join(', ')}. Embeds: ${r.embeds.map(e => `${e.src} (${e.cls}; ${e.img ? `img ${e.img} px wide` : `tags ${e.tags.slice(0, 6).join(',')}`}; ${e.h} px high)`).join('; ')}. Raw Markdown left in the text: ${r.rawLeft.length ? JSON.stringify(r.rawLeft) : 'none'}.${r.pdfLink ? ` PDF link: "${r.pdfLink.text}" ${r.pdfLink.shown ? 'shown' : 'hidden'}.` : ''}`,
       r,
     );
   });

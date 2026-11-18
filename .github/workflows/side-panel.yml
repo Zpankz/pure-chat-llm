@@ -26,11 +26,15 @@ jobs:
           # Earlier: after-beta6 (4261b94) with side-panel.shots.mts; agent-fixes-9bebbee with agent-fixes.shots.mts.
           # Earlier: beta8-composer (890596e) with composer.shots.mts.
           # Earlier: beta8-d45228b-composer run 44283952744 (check 10 then used the default "peer" policy).
-          - label: beta8-d45228b-composer
-            ref: d45228bf46dd2fc04d384977204ccf2231e04fbb
+          # Earlier: beta8-d45228b-composer and -memory, run 44285925055.
+          - label: beta8-7759570-confirm
+            ref: 7759570c66e788fae51e664165806c5d0fb582e7
+            spec: e2e/side-panel/confirm.shots.mts
+          - label: beta8-7759570-composer
+            ref: 7759570c66e788fae51e664165806c5d0fb582e7
             spec: e2e/side-panel/composer.shots.mts
-          - label: beta8-d45228b-memory
-            ref: d45228bf46dd2fc04d384977204ccf2231e04fbb
+          - label: beta8-7759570-memory
+            ref: 7759570c66e788fae51e664165806c5d0fb582e7
             spec: e2e/side-panel/memory.shots.mts
     steps:
       - uses: actions/checkout@v4
