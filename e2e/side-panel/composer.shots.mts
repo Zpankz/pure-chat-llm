@@ -22,7 +22,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { browser } from '@wdio/globals';
-import { consoleLines, FAKE_URL, installConsoleCapture, setSettings, traceMark, traceSince, useFakeServices, type TraceEntry } from '../support/harness.mts';
+import { consoleLines, FAKE_URL, installConsoleCapture, runWorker, setSettings, traceMark, traceSince, useFakeServices, type TraceEntry } from '../support/harness.mts';
 
 const LABEL = process.env.SHOT_LABEL ?? 'build';
 const OUT = path.join(process.env.E2E_OUT ?? 'e2e/.out', 'side-panel', LABEL);
@@ -714,6 +714,14 @@ describe(`Typed message box (${LABEL})`, () => {
     const stopped = await box();
     const stateAfter = await browser.executeObsidian(({ plugins }) => String((plugins.voiceAgent as any).orchestrator.state));
     log(`6: after stop: orchestrator ${stateAfter}, send stop=${stopped.sendStop} disabled=${stopped.sendDisabled}; last rows ${JSON.stringify(stopped.rows.slice(-3))}`);
+    // The earlier build showed a stop as a 90 s timeout: a red "failed" card and "taking longer".
+    const stopProbe = await browser.executeObsidian(({ plugins }) => {
+      const o = (plugins.voiceAgent as any).orchestrator;
+      return { lastError: String(o.lastError ?? ''), state: String(o.state) };
+    });
+    const timeoutWords = stopped.rows.filter(r => /took longer than|taking longer than expected|failed/i.test(r.text));
+    const redCards = await browser.execute((root: string) => [...document.querySelectorAll(`${root} .is-failed, ${root} .is-error, ${root} .va-card.is-failed`)].map(e => (e.textContent ?? '').replace(/\s+/g, ' ').trim().slice(0, 200)), ROOT);
+    log(`6: after stop: orchestrator lastError ${JSON.stringify(stopProbe.lastError)}; rows naming a timeout or failure ${JSON.stringify(timeoutWords)}; failed or error elements ${JSON.stringify(redCards)}`);
     await toBottom();
     await shootBoth('6-stopped');
     // Wait past the fake model's delay: the late answer must not appear.
@@ -747,9 +755,9 @@ describe(`Typed message box (${LABEL})`, () => {
     await shootBoth('6-after-clear');
     verdict(
       '6',
-      busy && during.sendStop === true && stopped.rows.some(r => /va-row--status/.test(r.cls) && /Stopped the orchestrator/.test(r.text)) && stateAfter !== 'thinking' && !late && newOk && afterClear.rows.length === 0,
-      `While the fake model held its answer (25 s), the orchestrator was ${stateDuring} and the send button showed stop ("${during.sendLabel}"). Pressing it added "${stopped.rows.filter(r => /Stopped/.test(r.text)).map(r => r.text).join('')}" and left the orchestrator ${stateAfter}; the late answer ${late ? 'STILL APPEARED' : 'never appeared'}. /new added "${afterNew.rows[afterNew.rows.length - 1]?.text ?? ''}"; /clear left ${afterClear.rows.length} rows.`,
-      { during, stateDuring, stopped: stopped.rows.slice(-3), stateAfter, late, afterPick, afterNew: afterNew.rows.slice(-2), afterClear: afterClear.rows },
+      busy && during.sendStop === true && stopped.rows.some(r => /va-row--status/.test(r.cls) && /Stopped the orchestrator/.test(r.text)) && stateAfter !== 'thinking' && !late && newOk && afterClear.rows.length === 0 && timeoutWords.length === 0 && redCards.length === 0 && !stopProbe.lastError,
+      `After the stop: ${timeoutWords.length ? `rows naming a timeout or failure: ${JSON.stringify(timeoutWords.map(r => r.text))}` : 'no row names a timeout or failure'}; ${redCards.length ? `failed/error elements: ${JSON.stringify(redCards)}` : 'no failed or error card'}; the orchestrator's last error is ${stopProbe.lastError ? JSON.stringify(stopProbe.lastError) : 'empty'}. While the fake model held its answer (25 s), the orchestrator was ${stateDuring} and the send button showed stop ("${during.sendLabel}"). Pressing it added "${stopped.rows.filter(r => /Stopped/.test(r.text)).map(r => r.text).join('')}" and left the orchestrator ${stateAfter}; the late answer ${late ? 'STILL APPEARED' : 'never appeared'}. /new added "${afterNew.rows[afterNew.rows.length - 1]?.text ?? ''}"; /clear left ${afterClear.rows.length} rows.`,
+      { during, stateDuring, stopped: stopped.rows.slice(-3), stateAfter, late, timeoutWords, redCards, stopProbe, afterPick, afterNew: afterNew.rows.slice(-2), afterClear: afterClear.rows },
     );
   });
 
@@ -899,6 +907,114 @@ describe(`Typed message box (${LABEL})`, () => {
     verdict('9', errors.length === 0, `${errors.length} console error line(s) between opening the panel and the end of check 7 (${panel.length} naming the plugin or panel). Mobile (check 8) is reported there.`, { errors, warnings: warnings.slice(0, 30) });
   });
 
+  it('10: a background task proposal shows as a card in the open panel', async function () {
+    this.timeout(300_000);
+    await resetBox();
+    await openPanel();
+    await browser.executeObsidian(async ({ app }) => {
+      for (const [name, text] of [['Proposal target A.md', 'Alpha one\nAlpha two\n'], ['Proposal target B.md', 'Beta one\nBeta two\n'], ['Proposal target C.md', 'Gamma one\nGamma two\n']]) {
+        const f = app.vault.getFileByPath(name);
+        if (f) await app.vault.modify(f, text);
+        else await app.vault.create(name, text);
+      }
+    });
+    const note = (p: string) => browser.executeObsidian(async ({ app }, p: string) => app.vault.read(app.vault.getFileByPath(p)!), p);
+    const proposals = (target: string) =>
+      browser.executeObsidian(async ({ app }, target: string) => {
+        const out: Array<{ path: string; status: string }> = [];
+        for (const f of app.vault.getMarkdownFiles()) {
+          const t = await app.vault.cachedRead(f);
+          if (/voice-agent-proposal/.test(t) && t.includes(target)) out.push({ path: f.path, status: /^status: (\w+)$/m.exec(t)?.[1] ?? '' });
+        }
+        return out;
+      }, target);
+    const cards = () =>
+      browser.execute((root: string) =>
+        [...document.querySelectorAll(`${root} .va-review`)].map(c => ({
+          cls: c.className,
+          title: (c.querySelector('.va-review__title')?.textContent ?? '').trim(),
+          state: (c.querySelector('.va-review__state')?.textContent ?? '').trim(),
+          buttons: [...c.querySelectorAll('.va-review__actions button')].map(b => b.textContent),
+        })),
+      ROOT);
+    const click = async (title: RegExp, text: string) => {
+      const ok = await browser.execute(
+        (root: string, title: string, text: string) => {
+          const card = [...document.querySelectorAll(`${root} .va-review`)].reverse().find(c => new RegExp(title).test(c.querySelector('.va-review__title')?.textContent ?? ''));
+          const b = [...(card?.querySelectorAll('.va-review__actions button') ?? [])].find(x => x.textContent === text);
+          b?.setAttribute('data-e2e-review', 'go');
+          card?.scrollIntoView({ block: 'center' });
+          return !!b;
+        },
+        ROOT,
+        title.source,
+        text,
+      );
+      if (!ok) return false;
+      await (await browser.$('[data-e2e-review="go"]')).click();
+      await browser.execute(() => document.querySelector('[data-e2e-review="go"]')?.removeAttribute('data-e2e-review'));
+      return true;
+    };
+    const runEdit = async (target: string, search: string, replace: string) => {
+      log(`10: scripted input: a worker whose fake model calls replace_in_note on ${target} (${JSON.stringify(search)} → ${JSON.stringify(replace)}), then answers "Done."`);
+      const { task } = await runWorker(`Edit ${target}`, `Change ${search} in ${target}.`, {
+        rounds: [[{ name: 'replace_in_note', args: { path: target, search, replace, expected_matches: 1, reason: `Test edit of ${target}` } }]],
+        final: 'Done.',
+      });
+      log(`10: worker for ${target} ended ${String(task.status)}`);
+      return task;
+    };
+    // A: approve in the panel.
+    await runEdit('Proposal target A.md', 'Alpha two', 'Alpha two, approved from a task');
+    const cardA = await waitFor('a card for the first proposal', async () => (await cards()).some(c => /Proposal target A/.test(c.title)), 15_000);
+    const cardsA = await cards();
+    log(`10: cards after the first task ${JSON.stringify(cardsA)}; proposals ${JSON.stringify(await proposals('Proposal target A.md'))}`);
+    await browser.execute((root: string) => {
+      const c = [...document.querySelectorAll(`${root} .va-review`)].find(x => /Proposal target A/.test(x.textContent ?? ''));
+      c?.closest('.va-row')?.setAttribute('data-e2e-shot', 'proposal');
+      c?.scrollIntoView({ block: 'center' });
+    }, ROOT);
+    await shootBoth('10-proposal-card', '[data-e2e-shot="proposal"]');
+    await shootBoth('10-proposal-panel');
+    await click(/Proposal target A/, 'Approve');
+    await waitFor('the first proposal applied', async () => (await proposals('Proposal target A.md')).some(p => p.status !== 'pending'), 10_000);
+    const noteA = await note('Proposal target A.md');
+    const propA = await proposals('Proposal target A.md');
+    log(`10: Approve → note ${JSON.stringify(noteA)}; proposal ${JSON.stringify(propA)}`);
+    // B: reject in the panel.
+    await runEdit('Proposal target B.md', 'Beta two', 'Beta two, should be rejected');
+    const cardB = await waitFor('a card for the second proposal', async () => (await cards()).some(c => /Proposal target B/.test(c.title)), 15_000);
+    await click(/Proposal target B/, 'Reject');
+    await waitFor('the second proposal answered', async () => (await proposals('Proposal target B.md')).some(p => p.status !== 'pending'), 10_000);
+    const noteB = await note('Proposal target B.md');
+    const propB = await proposals('Proposal target B.md');
+    log(`10: Reject → note ${JSON.stringify(noteB)}; proposal ${JSON.stringify(propB)}`);
+    await toBottom();
+    await shootBoth('10-after-answers');
+    // C: with the panel closed, the proposal waits.
+    await browser.executeObsidian(({ app }, view: string) => {
+      for (const l of app.workspace.getLeavesOfType(view)) l.detach();
+    }, VIEW);
+    await browser.pause(800);
+    const hostClosed = await browser.executeObsidian(({ plugins }) => !(plugins.voiceAgent as any).reviewHost);
+    await runEdit('Proposal target C.md', 'Gamma two', 'Gamma two, panel closed');
+    await browser.pause(3000);
+    const noteC = await note('Proposal target C.md');
+    const propC = await proposals('Proposal target C.md');
+    const modal = await browser.execute(() => (document.querySelector('.modal-container .modal .modal-title')?.textContent ?? '').trim());
+    log(`10: panel closed (review host ${hostClosed ? 'gone' : 'STILL SET'}) → note ${JSON.stringify(noteC)}; proposal ${JSON.stringify(propC)}; a window opened: ${JSON.stringify(modal)}`);
+    await openPanel();
+    await browser.pause(800);
+    const cardsReopened = await cards();
+    log(`10: after reopening the panel: cards ${JSON.stringify(cardsReopened.map(c => c.title))}`);
+    verdict(
+      '10',
+      cardA && cardB && noteA.includes('Alpha two, approved from a task') && propA.some(p => p.status === 'applied') && !noteB.includes('rejected') && propB.some(p => p.status === 'rejected') && !noteC.includes('panel closed') && propC.some(p => p.status === 'pending') && !modal,
+      `With the panel open, the first task's proposal ${cardA ? 'appeared as a card' : 'did NOT appear as a card'} ("${cardsA.find(c => /Proposal target A/.test(c.title))?.title ?? ''}", buttons ${JSON.stringify(cardsA.find(c => /Proposal target A/.test(c.title))?.buttons ?? [])}); Approve ${noteA.includes('approved from a task') ? 'wrote the note' : 'did NOT write the note'} and the proposal reads status ${JSON.stringify(propA.map(p => p.status))}. The second ${cardB ? 'appeared' : 'did NOT appear'}; Reject left the note ${noteB.includes('rejected') ? 'CHANGED' : 'unchanged'} and the proposal reads ${JSON.stringify(propB.map(p => p.status))}. With the panel closed, the third left the note ${noteC.includes('panel closed') ? 'CHANGED' : 'unchanged'}, its proposal reads ${JSON.stringify(propC.map(p => p.status))}, and ${modal ? `a window "${modal}" opened` : 'no window opened'}.`,
+      { cardsA, noteA, propA, noteB, propB, noteC, propC, hostClosed, modal, cardsReopened: cardsReopened.map(c => c.title) },
+    );
+  });
+
   it('8: mobile emulation', async function () {
     this.timeout(240_000);
     // Obsidian's own mobile emulation. It is read at startup, so the app is reloaded if the call
@@ -949,7 +1065,27 @@ describe(`Typed message box (${LABEL})`, () => {
       return { send: hit('.va-composer__send'), plus: hit('.va-composer__plus'), input: hit('.va-composer__input') };
     }, ROOT);
     log(`8: reachability ${JSON.stringify(reach)}`);
+    const probe = () =>
+      browser.execute((root: string) => {
+        const send = document.querySelector(`${root} .va-composer__send`) as HTMLElement | null;
+        const svg = send?.querySelector('svg') as SVGElement | null;
+        const sb = svg?.getBoundingClientRect();
+        const cs = svg ? getComputedStyle(svg) : null;
+        const input = document.querySelector(`${root} .va-composer__input`) as HTMLTextAreaElement | null;
+        const ib = input?.getBoundingClientRect();
+        return {
+          sendIcon: svg ? { w: Math.round(sb!.width), h: Math.round(sb!.height), display: cs!.display, visibility: cs!.visibility, color: cs!.color, stroke: cs!.stroke, fill: cs!.fill, opacity: cs!.opacity, paths: svg.querySelectorAll('path, line, polyline, polygon, circle').length } : null,
+          sendBg: send ? getComputedStyle(send).backgroundColor : null,
+          sendDisabled: (send as HTMLButtonElement | null)?.disabled ?? null,
+          placeholder: input?.placeholder ?? null,
+          input: input ? { w: Math.round(ib!.width), h: Math.round(ib!.height), clientHeight: input.clientHeight, scrollHeight: input.scrollHeight, lineHeight: getComputedStyle(input).lineHeight, whiteSpace: getComputedStyle(input).whiteSpace } : null,
+        };
+      }, ROOT);
+    const emptyProbe = await probe();
+    log(`8: empty box: send icon ${JSON.stringify(emptyProbe.sendIcon)}, send background ${emptyProbe.sendBg}, disabled ${emptyProbe.sendDisabled}; placeholder ${JSON.stringify(emptyProbe.placeholder)}; input ${JSON.stringify(emptyProbe.input)}`);
     await shootBoth('8-mobile-panel');
+    await browser.execute((root: string) => document.querySelector(`${root} .va-composer`)?.setAttribute('data-e2e-composer', '1'), ROOT);
+    await shootBoth('8-mobile-composer-empty', `${ROOT} [data-e2e-composer="1"]`);
     await browser.saveScreenshot(path.join(OUT, '8-mobile-window-light.png')).catch(() => {});
     const rowsBefore = (await box()).rows.length;
     const mark = traceMark();
@@ -963,7 +1099,15 @@ describe(`Typed message box (${LABEL})`, () => {
     const sent = llm(mark).length;
     await setDefaultScript(null);
     log(`8: typed "line one", Enter, "line two": box ${JSON.stringify(after.value)}; rows ${rowsBefore} → ${after.rows.length}; model requests ${sent}`);
+    const typedProbe = await probe();
+    log(`8: typed box: send icon ${JSON.stringify(typedProbe.sendIcon)}, send background ${typedProbe.sendBg}, disabled ${typedProbe.sendDisabled}`);
     await shootBoth('8-mobile-newline', ROOT, ['light']);
+    await shootBoth('8-mobile-composer-typed', `${ROOT} [data-e2e-composer="1"]`);
+    const iconShown = (p: typeof emptyProbe) => !!p.sendIcon && p.sendIcon.w > 0 && p.sendIcon.h > 0 && p.sendIcon.display !== 'none' && p.sendIcon.visibility !== 'hidden' && Number(p.sendIcon.opacity) > 0;
+    const placeholderFits = !!emptyProbe.input && emptyProbe.input.scrollHeight <= emptyProbe.input.clientHeight + 1;
+    log(`8: send icon drawn: empty ${iconShown(emptyProbe)}, typed ${iconShown(typedProbe)}; placeholder fits without clipping: ${placeholderFits}`);
+    results['8-visual'] = { verdict: iconShown(emptyProbe) && iconShown(typedProbe) && placeholderFits ? 'PASS' : 'FAIL', summary: `Send icon drawn in the empty box: ${iconShown(emptyProbe)}; with text: ${iconShown(typedProbe)}. Placeholder ${JSON.stringify(emptyProbe.placeholder)} ${placeholderFits ? 'fits' : 'is CLIPPED'} (scrollHeight ${emptyProbe.input?.scrollHeight}, clientHeight ${emptyProbe.input?.clientHeight}).`, detail: { emptyProbe, typedProbe } };
+    log(`CHECK 8-visual ${(results['8-visual'] as any).verdict}: ${(results['8-visual'] as any).summary}`);
     const errors = (await consoleLines()).filter(l => / (error|uncaught|unhandled-rejection) /.test(l));
     log(`8: console errors after the mobile reload: ${errors.length}${errors.length ? ` ${JSON.stringify(errors.slice(0, 10))}` : ''}`);
     verdict(

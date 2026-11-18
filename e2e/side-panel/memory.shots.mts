@@ -282,11 +282,23 @@ describe('Shared memory overhaul (librarian, recall, entities)', function () {
       setting.open();
       setting.openTabById('voice-agent');
     });
+    await waitFor('the Voice Agent settings tab', async () =>
+      browser.execute(() => ((window as any).app?.setting?.activeTab?.containerEl?.querySelectorAll('.setting-item').length ?? 0) > 0),
+    30_000);
     await browser.pause(800);
-    const rowSel = (name: string) => `.modal.mod-settings .setting-item[data-e2e-row="${name}"]`;
+    const tabInfo = await browser.execute(() => {
+      const tab = (window as any).app?.setting?.activeTab;
+      const root: HTMLElement | undefined = tab?.containerEl;
+      const modal = root?.closest('.modal');
+      modal?.setAttribute('data-e2e-shot', 'settings');
+      return { id: tab?.id ?? null, modalClass: modal?.className ?? null, items: root?.querySelectorAll('.setting-item').length ?? 0, names: [...(root?.querySelectorAll('.setting-item-name') ?? [])].map(n => (n.textContent ?? '').trim()).filter(Boolean).slice(0, 200) };
+    });
+    log(`M6: settings tab ${tabInfo.id}, modal "${tabInfo.modalClass}", ${tabInfo.items} rows; row names ${JSON.stringify(tabInfo.names)}`);
+    const rowSel = (name: string) => `.setting-item[data-e2e-row="${name}"]`;
     const mark = async (name: string) =>
       browser.execute((name: string) => {
-        const row = [...document.querySelectorAll('.modal.mod-settings .setting-item')].find(r => r.querySelector('.setting-item-name')?.textContent?.trim() === name);
+        const root: ParentNode = (window as any).app?.setting?.activeTab?.containerEl ?? document;
+        const row = [...root.querySelectorAll('.setting-item')].find(r => r.querySelector('.setting-item-name')?.textContent?.trim() === name);
         if (!row) return false;
         row.setAttribute('data-e2e-row', name);
         row.scrollIntoView({ block: 'center' });
@@ -294,7 +306,8 @@ describe('Shared memory overhaul (librarian, recall, entities)', function () {
       }, name);
     const rowState = (name: string) =>
       browser.execute((name: string) => {
-        const row = [...document.querySelectorAll('.modal.mod-settings .setting-item')].find(r => r.querySelector('.setting-item-name')?.textContent?.trim() === name);
+        const root: ParentNode = (window as any).app?.setting?.activeTab?.containerEl ?? document;
+        const row = [...root.querySelectorAll('.setting-item')].find(r => r.querySelector('.setting-item-name')?.textContent?.trim() === name);
         if (!row) return null;
         const toggle = row.querySelector('.checkbox-container');
         const input = row.querySelector('input[type="text"], input:not([type])') as HTMLInputElement | null;
@@ -341,18 +354,24 @@ describe('Shared memory overhaul (librarian, recall, entities)', function () {
     log(`M6: saved memory settings ${JSON.stringify(saved)}`);
     await mark('Learn from calls and tasks');
     await browser.pause(300);
-    await shootBoth('m6-settings-memory', '.modal.mod-settings');
+    await shootBoth('m6-settings-memory', '[data-e2e-shot="settings"]');
     await mark('Use shared memory');
     await browser.pause(300);
-    await shootBoth('m6-settings-memory-top', '.modal.mod-settings');
+    await shootBoth('m6-settings-memory-top', '[data-e2e-shot="settings"]');
     await browser.keys([ESCAPE]);
     await browser.pause(400);
     verdict(
       'M6',
       !!opened && !!use?.toggle && !!learn && learn.toggle === true && !!emb && !!model && saved.embeddingEndpoint === 'Fake LLM' && saved.embeddingModel === 'fake-embed',
       `"Use shared memory" ${use?.toggle ? 'on' : 'NOT ON'} after a real click (memory ${opened ? 'opened' : 'DID NOT OPEN'}); "Learn from calls and tasks" ${learn ? (learn.toggle ? 'shown, on by default' : 'shown but OFF') : 'MISSING'}; "Embeddings for recall" ${emb ? `shown (placeholder "${emb.placeholder}")` : 'MISSING'}; "Embedding model" ${model ? `shown (placeholder "${model.placeholder}")` : 'MISSING'}. Typed "Fake LLM" and "fake-embed" were saved as ${JSON.stringify({ embeddingEndpoint: saved.embeddingEndpoint, embeddingModel: saved.embeddingModel })}.`,
-      { use, learn, emb, model, saved },
+      { use, learn, emb, model, saved, tabInfo },
     );
+    if (!saved.enabled || saved.embeddingEndpoint !== 'Fake LLM') {
+      // So M1 to M5 can still run: the same settings, set directly (recorded as a fallback).
+      await setSettings({ 'memory.enabled': true, 'memory.embeddingEndpoint': 'Fake LLM', 'memory.embeddingModel': 'fake-embed' });
+      await browser.executeObsidian(async ({ plugins }) => (plugins.voiceAgent as any).memory.open());
+      log('M6: FALLBACK: the settings tab did not set the memory up, so the test set memory.enabled, embeddingEndpoint "Fake LLM" and embeddingModel "fake-embed" directly and opened the memory');
+    }
   });
 
   it('M1: a call, the librarian files a fact with its source and writes the call summary', async function () {
