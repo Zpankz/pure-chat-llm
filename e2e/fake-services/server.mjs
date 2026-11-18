@@ -27,6 +27,28 @@ export const FAKE_MARKER = /<<FAKE:([A-Za-z0-9_-]+=*)>>/g;
 
 // The write reviewers' system prompts (old and reworked wording).
 const REVIEWER = /You review one proposed change|You check (?:one|whether one) proposed change/;
+// The shared memory's librarian (Voice Agent 55d273e and later).
+const LIBRARIAN = /You are the librarian of a shared memory/;
+
+// Fake embeddings: deterministic word vectors, 64 dimensions. Every word adds 1 to a dimension
+// chosen by its hash; the words of one scripted synonym group ("text", "typed", "message", "chat",
+// "input", "box", "field", "composer", "textbox") also add 1 to dimension 0, so "the chat input"
+// and "a typed message box" come out close. This is a test stand-in, not a language model.
+const EMBED_DIMS = 64;
+const EMBED_SYNONYMS = new Set(['text', 'typed', 'type', 'typing', 'message', 'chat', 'input', 'box', 'field', 'composer', 'textbox']);
+const EMBED_STOP = new Set(['a', 'an', 'the', 'in', 'on', 'of', 'to', 'for', 'and', 'or', 'is', 'it', 'i', 'my', 'me', 'please', 'so', 'with', 'that', 'this', 'be', 'at']);
+export function fakeEmbedding(text) {
+  const v = new Array(EMBED_DIMS).fill(0);
+  for (const w of String(text).toLowerCase().match(/[a-z0-9]+/g) ?? []) {
+    if (EMBED_STOP.has(w)) continue;
+    let h = 2166136261;
+    for (const ch of w) h = Math.imul(h ^ ch.charCodeAt(0), 16777619) >>> 0;
+    v[1 + (h % (EMBED_DIMS - 1))] += 1;
+    if (EMBED_SYNONYMS.has(w)) v[0] += 1;
+  }
+  const norm = Math.hypot(...v) || 1;
+  return v.map(x => Math.round((x / norm) * 1e6) / 1e6);
+}
 
 export function encodeScript(script) {
   return `<<FAKE:${Buffer.from(JSON.stringify(script)).toString('base64url')}>>`;
@@ -52,11 +74,11 @@ function textOf(content) {
  * @param fallback - A script set through `/__default-script`, used when the request carries none
  *   (so a typed panel message can stay free of script text). Scripted requests ignore it.
  */
-export function planReply(body, fallback = null) {
-  return planFor(body, fallback);
+export function planReply(body, fallback = null, librarian = null) {
+  return planFor(body, fallback, librarian);
 }
 
-function planFor(body, fallback) {
+function planFor(body, fallback, librarian) {
   const messages = Array.isArray(body.messages) ? body.messages : [];
   const system = messages.filter(m => m.role === 'system' || m.role === 'developer').map(m => textOf(m.content)).join('\n');
   if (REVIEWER.test(system)) {
@@ -74,6 +96,17 @@ function planFor(body, fallback) {
             : { verdict: 'approve', reason: 'Fake reviewer: no reject marker in the change.' },
         ),
       },
+    };
+  }
+  if (LIBRARIAN.test(system)) {
+    // The answer the test queued through /__librarian (the first whose `match` is found in the
+    // request), or an empty one.
+    const request = messages.filter(m => m.role === 'user').map(m => textOf(m.content)).join('\n');
+    const queued = librarian ? librarian.take(request) : null;
+    return {
+      kind: queued ? 'librarian' : 'librarian-empty',
+      script: queued?.id,
+      message: { role: 'assistant', content: JSON.stringify(queued ? queued.answer : { ops: [] }) },
     };
   }
   // The newest message carrying a script decides; count tool-call turns after it.
@@ -193,6 +226,14 @@ export function startFakeServices({ port = 8787, traceDir }) {
   const legacySessions = new Set();
   // A script for requests that carry none; set and cleared by the test through /__default-script.
   let defaultScript = null;
+  // Librarian answers queued by the test through /__librarian, taken in order.
+  const librarianQueue = [];
+  const librarian = {
+    take(request) {
+      const i = librarianQueue.findIndex(q => !q.match || request.includes(q.match));
+      return i < 0 ? null : librarianQueue.splice(i, 1)[0];
+    },
+  };
 
   const server = http.createServer((req, res) => {
     const cors = {
@@ -230,6 +271,19 @@ export function startFakeServices({ port = 8787, traceDir }) {
         json(200, { ok: true, script: defaultScript ? defaultScript.id ?? 'unnamed' : null });
         return;
       }
+      if (url.pathname === '/__librarian') {
+        if (body && body.clear) librarianQueue.length = 0;
+        if (body && body.answer) librarianQueue.push({ id: body.id ?? 'librarian', match: body.match ?? '', answer: body.answer });
+        trace({ service: 'control', librarian_queued: body?.id ?? null, match: body?.match ?? '', answer: body?.answer ?? null, cleared: !!body?.clear, queue: librarianQueue.map(q => q.id) });
+        json(200, { ok: true, queue: librarianQueue.map(q => q.id) });
+        return;
+      }
+      if (url.pathname.endsWith('/embeddings')) {
+        const inputs = Array.isArray(body.input) ? body.input : [body.input ?? ''];
+        trace({ service: 'embeddings', path: url.pathname, model: body.model, dimensions: body.dimensions, inputs: inputs.map(t => String(t).slice(0, 300)) });
+        json(200, { object: 'list', model: body.model, data: inputs.map((t, index) => ({ object: 'embedding', index, embedding: fakeEmbedding(t) })), usage: { prompt_tokens: 0, total_tokens: 0 } });
+        return;
+      }
       if (url.pathname.endsWith('/models')) {
         trace({ service: 'llm-models', origin: req.headers.origin ?? null });
         json(200, { object: 'list', data: [{ id: 'fake-model', object: 'model' }] });
@@ -238,7 +292,7 @@ export function startFakeServices({ port = 8787, traceDir }) {
       if (url.pathname.endsWith('/responses')) {
         // OpenAI Responses API (streamed), mapped onto the same scripts as chat completions.
         const messages = responsesToMessages(body);
-        const plan = planReply({ messages }, defaultScript);
+        const plan = planReply({ messages }, defaultScript, librarian);
         trace({
           service: 'llm',
           api: 'responses',
@@ -276,7 +330,7 @@ export function startFakeServices({ port = 8787, traceDir }) {
         return;
       }
       if (url.pathname.endsWith('/chat/completions')) {
-        const plan = planReply(body, defaultScript);
+        const plan = planReply(body, defaultScript, librarian);
         let closed = false;
         res.on('close', () => (closed = !res.writableFinished));
         trace({

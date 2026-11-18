@@ -24,9 +24,13 @@ jobs:
         include:
           # Earlier runs shot before (b4229f1, beta.4) and after (33684ab, beta.5).
           # Earlier: after-beta6 (4261b94) with side-panel.shots.mts; agent-fixes-9bebbee with agent-fixes.shots.mts.
-          - label: beta8-composer
-            ref: 890596e763c5fb7a8387aac3a8cbcf986af62132
+          # Earlier: beta8-composer (890596e) with composer.shots.mts.
+          - label: beta8-composer-55d273e
+            ref: 55d273e5f12f370d23a45f07ae9d36daf8ddea7e
             spec: e2e/side-panel/composer.shots.mts
+          - label: beta8-memory-55d273e
+            ref: 55d273e5f12f370d23a45f07ae9d36daf8ddea7e
+            spec: e2e/side-panel/memory.shots.mts
     steps:
       - uses: actions/checkout@v4
 
