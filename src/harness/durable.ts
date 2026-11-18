@@ -57,9 +57,13 @@ export interface DurableHost {
   tools: ToolSource;
   /** A worker's tools; the orchestrator's when left out. */
   workerTools?: ToolSource;
-  /** Instructions of the orchestrator (read when its conversation is created) and of each worker. */
+  /**
+   * Instructions of the orchestrator (read when its conversation is set up) and of each worker
+   * (read when the worker's conversation is created, with its task, so the shared memory can add
+   * what it knows about that task).
+   */
   orchestratorInstructions?: () => string;
-  workerInstructions?: () => string;
+  workerInstructions?: (task?: { id: string; title: string; brief: string }) => string;
   /** Longest task result `get_task_result` returns. */
   maxResultChars?: number;
   /** Minutes between check-ins on a running worker; 0 turns them off. Read for each round. */
@@ -155,10 +159,10 @@ export async function openDurable(
     const live: { harness?: Harness } = {};
     const workers = createWorkers(
       {
-        workerAgent: own => ({
+        workerAgent: (own, task) => ({
           model: layerRef('worker'),
           extensions: [workerTools, own],
-          ...(host.workerInstructions ? { instructions: host.workerInstructions() } : {}),
+          ...(host.workerInstructions ? { instructions: host.workerInstructions(task) } : {}),
         }),
         maxResultChars: host.maxResultChars,
         checkInMinutes: host.checkInMinutes,

@@ -6,6 +6,7 @@ import type { SubAgentBackend, SubAgentRunContext, SubAgentTask } from './types'
 import { VaultGraph } from '../graph/VaultGraph';
 import { ontologySummary } from '../graph/ontology';
 import { layerFetch, resolveLayer } from './layers';
+import { memoryWithModels } from '../memory/pluginModels';
 import {
   AbortHost,
   callWithSignal,
@@ -103,8 +104,9 @@ export class LocalSubAgentBackend implements SubAgentBackend {
         this.plugin.console?.error('Could not read the vault ontology', error);
       }
     }
-    // The shared memory: what earlier sessions learned, and how to add to it.
-    const memory = this.plugin.memory?.brief();
+    // The shared memory's standing part: how to use it, and the user's standing preferences,
+    // instructions and pinned facts. What it knows about the task comes with the brief.
+    const memory = this.plugin.memory?.standingBrief('worker');
     if (memory) parts.push(memory);
     return parts.join('\n\n');
   }
@@ -127,9 +129,13 @@ export class LocalSubAgentBackend implements SubAgentBackend {
       .filter(t => !ORCHESTRATOR_ONLY.has(t.function.name));
 
     if (task.messages.length === 0) {
+      // What the shared memory knows about this task's people, projects and notes.
+      const recalled =
+        (await memoryWithModels(this.plugin)?.context('worker', `${task.title}\n${task.prompt}`)) ??
+        '';
       task.messages.push(
         { role: 'system', content: this.systemPrompt() },
-        { role: 'user', content: task.prompt },
+        { role: 'user', content: recalled ? `${task.prompt}\n\n${recalled}` : task.prompt },
       );
     }
 

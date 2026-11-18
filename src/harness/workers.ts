@@ -82,8 +82,14 @@ export const DURABLE_ORCHESTRATOR_GUIDANCE = [
 
 /** What the worker side needs from the plugin. */
 export interface WorkerHost {
-  /** The worker conversation's agent: worker layer model, its tools extension, its instructions. */
-  workerAgent(workerAgentExtension: Extension): AgentChange;
+  /**
+   * The worker conversation's agent: worker layer model, its tools extension, its instructions.
+   * Given the task, so the instructions can carry what the shared memory knows about it.
+   */
+  workerAgent(
+    workerAgentExtension: Extension,
+    task?: { id: string; title: string; brief: string },
+  ): AgentChange;
   /** Longest result text a tool returns to the orchestrator. */
   maxResultChars?: number;
   /** Minutes between check-ins on a running worker; 0 or less turns them off. Read per round. */
@@ -356,7 +362,11 @@ export function createWorkers(host: WorkerHost, abortTask: (taskId: TaskId) => P
             const created = await tx.createConversation({
               ownership: { kind: 'task', taskId: runtime.taskId },
             });
-            await configure(tx, created.id, host.workerAgent(workerAgentExtension));
+            await configure(
+              tx,
+              created.id,
+              host.workerAgent(workerAgentExtension, { id, title, brief: task.input.brief }),
+            );
             child = created.id;
           }
           const doc = await tx.doc(WorkersDoc, runtime.conversationId);

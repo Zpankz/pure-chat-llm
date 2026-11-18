@@ -75,6 +75,7 @@ export const TOOL_LAYERS: Record<string, ToolLayer[]> = {
   // The shared memory: every agent reads and writes it (writes only through these tools).
   memory_recall: ALL,
   memory_remember: ALL,
+  memory_relate: ALL,
   memory_forget: ALL,
   memory_state: ALL,
   // Its own Cypher can run long on the main thread, so never while a voice waits (review M1).

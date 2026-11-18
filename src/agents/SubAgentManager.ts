@@ -3,6 +3,7 @@ import type PureChatLLM from '../main';
 import { linkTo } from './CallRecorder';
 import { LocalSubAgentBackend } from './LocalSubAgentBackend';
 import { resolveLayer } from './layers';
+import { memoryWithModels } from '../memory/pluginModels';
 import { AUTO_ROUTES } from './types';
 import type {
   NoticeMode,
@@ -47,6 +48,8 @@ export class SubAgentManager {
   private hooks: SubAgentHooks[] = [];
   private seq = 0;
   private lastProgress = new Map<string, number>();
+  /** When each task's live progress was last written to the shared memory. */
+  private liveAt = new Map<string, number>();
   private progressTimer: number | null = null;
   private progressSeconds = 0;
   backend: SubAgentBackend;
@@ -219,6 +222,7 @@ export class SubAgentManager {
     if (!task || !rt) return Promise.resolve('No orchestrator is listening; use your judgment.');
     task.status = 'waiting';
     task.question = question;
+    this.live(task, { status: 'waiting', question });
     this.log(task, { kind: 'advice', text: `Asked: ${question}` });
     this.emit(task, 'needs_advice', question);
     const timeoutMs = Math.max(10, this.settings.adviceTimeoutSeconds || 300) * 1000;
@@ -232,6 +236,7 @@ export class SubAgentManager {
         rt.advice = null;
         task.question = undefined;
         if (task.status === 'waiting') task.status = 'running';
+        this.live(task, { status: task.status, question: '' });
         this.log(task, { kind: 'advice', text: `Answer: ${answer}` });
         this.changed();
         resolve(answer);
@@ -249,7 +254,28 @@ export class SubAgentManager {
     const task = this.tasks.get(id);
     if (!task) return;
     this.log(task, { kind: 'note', text: note });
+    this.live(task, { progress: note });
     this.emit(task, 'progress', note);
+  }
+
+  /**
+   * A task's live state in the shared memory, so every layer sees how far it has got.
+   * @param task - Task.
+   * @param update - What changed.
+   */
+  private live(
+    task: SubAgentTask,
+    update: { status?: string; progress?: string; question?: string },
+  ): void {
+    const memory = this.plugin.memory;
+    if (!memory?.enabled) return;
+    // Step lines come often: write at most one every 20 seconds per task.
+    if (update.progress !== undefined && !update.status && update.question === undefined) {
+      const now = Date.now();
+      if (now - (this.liveAt.get(task.id) ?? 0) < 20_000) return;
+      this.liveAt.set(task.id, now);
+    }
+    memory.taskProgress(memory.taskKey(task.id), update);
   }
 
   /**
@@ -349,7 +375,10 @@ export class SubAgentManager {
 
     const ctx: SubAgentRunContext = {
       hooks: this.hooks,
-      emit: (kind, text) => this.emit(task, kind, text),
+      emit: (kind, text) => {
+        if (kind === 'progress') this.live(task, { progress: text });
+        this.emit(task, kind, text);
+      },
       log: step => this.log(task, step),
       isCancelled: () => rt.cancelled || rt.abort.signal.aborted,
       signal: rt.abort.signal,
@@ -412,6 +441,18 @@ export class SubAgentManager {
       status === 'done' ? 'finished' : status === 'failed' ? 'failed' : 'cancelled';
     this.emit(task, kind, status === 'done' ? (result ?? '') : (error ?? status));
     this.remember(task);
+    // The librarian files what it found, in the background, linked to the task.
+    if (status === 'done' && result?.trim()) {
+      const memory = memoryWithModels(this.plugin);
+      memory?.consolidateTask({
+        key: memory.taskKey(task.id),
+        title: task.title,
+        brief: task.prompt,
+        result,
+        status,
+        session: memory.session,
+      });
+    }
     void this.saveNote(task);
     this.pump();
   }

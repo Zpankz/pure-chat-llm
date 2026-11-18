@@ -10,6 +10,7 @@ import { isAbortError } from '../core/requestControl';
 import { callWithSignal, toolTimeoutMs, withToolTimeout } from '../tools/toolContract';
 import type { AbortHost } from '../tools/toolContract';
 import { layerFetch, layerProblem, logTiming, resolveLayer } from './layers';
+import { memoryWithModels } from '../memory/pluginModels';
 import type { NoticeMode, SubAgentEvent } from './types';
 
 /**
@@ -136,6 +137,8 @@ interface Input {
   at?: number;
   /** A task that failed: said to the user if the orchestrator doesn't say it itself. */
   failure?: string;
+  /** The user's request alone, for what the memory recalls for it. */
+  request?: string;
 }
 
 /** Longest one orchestrator turn may take in all before it is stopped (system review A1). */
@@ -240,12 +243,15 @@ export class OrchestratorAgent implements Orchestrator {
     const problem = layerProblem(this.plugin, resolveLayer(this.plugin, 'orchestrator'));
     if (problem) return `The orchestrator can't run: ${problem} Tell the user.`;
     const recent = this.voiceContext();
+    // The relay is a Request in the shared memory; tasks it starts link to it.
+    memoryWithModels(this.plugin)?.recordRequest(request, 'voice', !!options.typed);
     this.push({
       text: [
         relayLine('[Voice]', request, waiting || !!options.typed, options.typed),
         ...(recent.length ? ['Conversation since your last relay:', ...recent] : []),
       ].join('\n'),
       ...(options.images?.length ? { images: options.images } : {}),
+      request,
       fromUser: true,
       waiting: waiting || !!options.typed,
       at: Date.now(),
@@ -421,6 +427,14 @@ export class OrchestratorAgent implements Orchestrator {
       ...(notes.length ? ['Background since your last turn:', ...notes, ''] : []),
       ...batch.map(b => b.text),
     ].join('\n');
+    // What the shared memory recalls for the user's request, and what is happening now: in the
+    // user message, so the system prompt stays the same from turn to turn (M9).
+    const requests = batch.flatMap(b => (b.request ? [b.request] : []));
+    const recalled = requests.length
+      ? await (memoryWithModels(this.plugin)?.context('orchestrator', requests.join('\n')) ??
+          Promise.resolve(''))
+      : '';
+    const sent = recalled ? `${content}\n\n${recalled}` : content;
 
     this.trim();
     // Images go with this turn only: earlier ones are dropped so each turn doesn't resend them.
@@ -430,10 +444,10 @@ export class OrchestratorAgent implements Orchestrator {
       role: 'user',
       content: images.length
         ? [
-            { type: 'text', text: content },
+            { type: 'text', text: sent },
             ...images.map(url => ({ type: 'image_url' as const, image_url: { url } })),
           ]
-        : content,
+        : sent,
     });
     const calls = this.plugin.calls;
     calls?.logOrchestrator('input', content, fromUser);
@@ -624,6 +638,10 @@ export class OrchestratorAgent implements Orchestrator {
       // Keep the name only.
     }
     const started = name === 'delegate_task' ? /^Started (t\d+)/.exec(output)?.[1] : undefined;
+    if (started) {
+      const memory = this.plugin.memory;
+      memory?.linkTaskToRequest(memory.taskKey(started));
+    }
     const text = started ? `started task ${started}${detail}` : `${name}${detail}`;
     this.activity.push({ at: Date.now(), text });
     if (this.activity.length > 100) this.activity.shift();
@@ -654,7 +672,9 @@ export class OrchestratorAgent implements Orchestrator {
     const evaluator = s.layers.evaluator.enabled
       ? 'The evaluator is on: use request_evaluation on plans and results that matter.'
       : 'The evaluator is off.';
-    const memory = this.plugin.memory?.brief();
+    // Only the standing part of the memory: it changes when a preference, instruction or pinned
+    // fact does, not every turn, so the prompt can be cached (M9).
+    const memory = this.plugin.memory?.standingBrief('orchestrator');
     return `${ORCHESTRATOR_AGENT_GUIDANCE}\n${evaluator}\nWorkers run on ${resolveLayer(this.plugin, 'worker').label}.${
       memory ? `\n\n${memory}` : ''
     }`;

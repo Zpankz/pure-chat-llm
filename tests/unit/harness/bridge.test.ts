@@ -1,6 +1,6 @@
 import { strict as assert } from 'node:assert';
 import { test } from 'node:test';
-import { DurableOrchestrator } from '../../../src/harness/bridge';
+import { DurableOrchestrator, withoutMemoryBlock } from '../../../src/harness/bridge';
 import type { BridgeHost } from '../../../src/harness/bridge';
 import { openDurable } from '../../../src/harness/durable';
 import type { DurableSession } from '../../../src/harness/durable';
@@ -215,6 +215,31 @@ test('reset starts the orchestrator afresh', async () => {
     const second = userTexts(requests.orchestrator[1]);
     assert.ok(!second.some(t => t.includes('One')), 'the first relay is gone');
     assert.ok(second.some(t => t.includes('Two')));
+  } finally {
+    bridge.dispose();
+    await session.close();
+  }
+});
+
+test('a relay carries recalled memory to the model, but the log shows only the request', async () => {
+  const { send, requests } = layers({ orchestrator: [say('Done.')] });
+  const recorded: { request: string; typed: boolean }[] = [];
+  const { bridge, session, log } = await setup(send, {
+    memoryContext: async request => `[Memory] Recalled for this message:\n- about ${request}`,
+    recordRequest: (request, typed) => recorded.push({ request, typed }),
+  });
+  try {
+    bridge.relay('Look up pele', false);
+    await until(() => bridge.state === 'idle', 'the turn to end');
+    const sent = userTexts(requests.orchestrator[0])[0];
+    assert.match(
+      sent,
+      /Look up pele\n\n\[Memory\] Recalled for this message:\n- about Look up pele$/,
+    );
+    assert.deepEqual(recorded, [{ request: 'Look up pele', typed: false }]);
+    await until(() => log.some(l => l.kind === 'input'), 'the log');
+    assert.ok(log.filter(l => l.kind === 'input').every(l => !l.text.includes('[Memory]')));
+    assert.equal(withoutMemoryBlock(sent).includes('[Memory]'), false);
   } finally {
     bridge.dispose();
     await session.close();

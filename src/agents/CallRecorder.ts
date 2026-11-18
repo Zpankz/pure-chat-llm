@@ -1,6 +1,8 @@
 import { normalizePath, TFile } from 'obsidian';
 import type PureChatLLM from '../main';
 import { diagnostics } from '../diagnostics/DiagnosticsLog';
+import type { LibrarianLine } from '../memory/Librarian';
+import { memoryWithModels } from '../memory/pluginModels';
 import type { SubAgentTask } from './types';
 
 /**
@@ -175,6 +177,10 @@ export class CallRecorder {
   private usedFolders = new Set<string>();
   /** Serialises moves and writes so a move never races a save. */
   private chain: Promise<void> = Promise.resolve();
+  /** Looks for enough new lines for the librarian during a call. */
+  private memoryTimer: number | null = null;
+  /** Transcript lines the librarian has been given so far. */
+  private consolidatedLines = 0;
 
   constructor(private plugin: PureChatLLM) {}
 
@@ -198,11 +204,14 @@ export class CallRecorder {
     this.live = true;
     this.transcriptSource = transcript;
     // The call is a session in the shared memory: what is learned in it links back to it.
-    const memory = this.plugin.memory;
+    const memory = memoryWithModels(this.plugin);
+    this.consolidatedLines = 0;
     if (memory?.enabled) {
       const key = `call-${Date.now().toString(36)}`;
       memory.callSession = key;
       memory.quietly(g => g.startSession(key, 'call', `Voice call ${localStamp(Date.now())}`));
+      // During a long call, the librarian reads each stretch of new lines in the background.
+      this.memoryTimer = window.setInterval(() => this.consolidateTurns(), 30_000);
     }
     this.anchorSeq = 0;
     if (!this.enabled) {
@@ -265,12 +274,22 @@ export class CallRecorder {
     this.stopTimers();
     const record = this.current;
     this.live = false;
-    const memory = this.plugin.memory;
+    const memory = memoryWithModels(this.plugin);
     const session = memory?.callSession;
     if (memory && session) {
+      // The list of topics stands until the librarian's summary replaces it.
       const summary = callSummary(record);
       memory.quietly(g => g.endSession(session, summary));
       memory.callSession = null;
+      const transcript = this.transcriptSource?.() ?? [];
+      const all = this.librarianLines(transcript);
+      memory.consolidateCall(session, {
+        lines: all,
+        newFrom: this.consolidatedLines + 1,
+        context: this.callContext(record),
+        sourceFor: n => this.sourceFor(record, transcript, n),
+      });
+      if (all.length) this.consolidatedLines = all[all.length - 1].n;
     }
     if (!record) return;
     record.endedAt = Date.now();
@@ -344,6 +363,7 @@ export class CallRecorder {
       if (path !== current.path) this.move(current.path, path, p => (current.path = p));
       current.title = clean;
       current.kind = kind;
+      this.plugin.memory?.setTopic(clean, current.path);
       void this.saveCall();
       return `Topic 1 is now "${clean}". Carry on; do not mention this.`;
     }
@@ -357,6 +377,7 @@ export class CallRecorder {
       path: this.topicPath(record, id, clean),
     });
     record.topicSwitches.push({ at, id });
+    this.plugin.memory?.setTopic(clean, record.topics[id - 1].path);
     void this.saveCall();
     const from = parents.map(p => `${p} "${record.topics[p - 1].title}"`).join(' and ');
     return `Topic ${id} "${clean}" started, following ${from}.${
@@ -379,6 +400,7 @@ export class CallRecorder {
       return `Error: NotFound: no topic matches "${ref}".\nTry: one of ${titles}, or start a new topic.`;
     }
     record.topicSwitches.push({ at: this.openingAt(record), id: topic.id });
+    this.plugin.memory?.setTopic(topic.title, topic.path);
     void this.saveCall();
     return `Back on topic ${topic.id} "${topic.title}". Carry on; do not mention this.`;
   }
@@ -526,9 +548,86 @@ export class CallRecorder {
     }, 500);
   }
 
+  /** The transcript as the librarian reads it: numbered from 1, in the call's order. */
+  private librarianLines(lines: CallLine[]): LibrarianLine[] {
+    return lines.flatMap((l, i) =>
+      l.text.trim()
+        ? [
+            {
+              n: i + 1,
+              who:
+                l.role === 'user'
+                  ? ('You' as const)
+                  : l.role === 'tool'
+                    ? ('Tool' as const)
+                    : ('Agent' as const),
+              at: l.at,
+              text: l.text,
+            },
+          ]
+        : [],
+    );
+  }
+
+  /**
+   * Where a transcript line is in the call notes: its topic note (or the call note) and time,
+   * so a fact the librarian files links back to where it was said.
+   * @param record - The call, when it is saved as notes.
+   * @param lines - Its transcript.
+   * @param n - L-number.
+   */
+  private sourceFor(
+    record: CallRecord | null,
+    lines: CallLine[],
+    n: number | undefined,
+  ): string | undefined {
+    const line = n ? lines[n - 1] : undefined;
+    const time = clock(line?.at);
+    if (!record) return time ? `voice call, ${time}` : undefined;
+    const topic =
+      record.structure === 'topics' && line?.at ? this.topicAt(record, line.at) : undefined;
+    return `${linkTo(topic?.path ?? record.callPath)}${time ? ` ${time}` : ''}`;
+  }
+
+  /** What else happened in a call, for its summary: its topics and its tasks with their outcome. */
+  private callContext(record: CallRecord | null): string[] {
+    if (!record) return [];
+    const topics = record.topics.filter(t => t.kind !== 'opening').map(t => t.title);
+    return [
+      ...(topics.length ? [`Topics: ${topics.join(', ')}`] : []),
+      ...this.tasks(record).map(
+        t =>
+          `Task "${t.title}": ${t.status}${
+            t.result ? ` — ${t.result.replace(/\s+/g, ' ').slice(0, 300)}` : ''
+          }`,
+      ),
+    ];
+  }
+
+  /**
+   * During a call: once the user has said enough since the librarian's last pass, hands it the
+   * new lines (in the background; nothing waits for it).
+   */
+  private consolidateTurns(): void {
+    const memory = this.plugin.memory;
+    const session = memory?.callSession;
+    const every = memory?.settings.consolidateEveryTurns ?? 0;
+    if (!memory || !session || !this.live || every <= 0) return;
+    const transcript = this.transcriptSource?.() ?? [];
+    const all = this.librarianLines(transcript);
+    const fresh = all.filter(l => l.n > this.consolidatedLines);
+    if (fresh.filter(l => l.who === 'You').length < every) return;
+    const record = this.current;
+    const lines = transcript.slice();
+    memory.consolidateTurns(session, fresh, n => this.sourceFor(record, lines, n));
+    this.consolidatedLines = all.length ? all[all.length - 1].n : 0;
+  }
+
   private stopTimers(): void {
     if (this.autosave) window.clearInterval(this.autosave);
     this.autosave = null;
+    if (this.memoryTimer) window.clearInterval(this.memoryTimer);
+    this.memoryTimer = null;
     if (this.orchestratorTimer) window.clearTimeout(this.orchestratorTimer);
     this.orchestratorTimer = null;
   }

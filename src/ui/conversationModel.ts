@@ -34,6 +34,7 @@ const META: Record<string, ToolMeta> = {
   read_skill_file: { label: 'Read a skill file', icon: 'sparkles', category: 'skill' },
   memory_recall: { label: 'Recalled from memory', icon: 'brain', category: 'memory' },
   memory_remember: { label: 'Saved to memory', icon: 'brain', category: 'memory' },
+  memory_relate: { label: 'Linked in memory', icon: 'brain', category: 'memory' },
   memory_forget: { label: 'Retired a memory', icon: 'brain', category: 'memory' },
   memory_state: { label: 'Shared state', icon: 'brain', category: 'memory' },
   memory_query: { label: 'Queried memory', icon: 'brain', category: 'memory' },

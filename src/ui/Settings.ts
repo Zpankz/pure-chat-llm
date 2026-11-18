@@ -165,6 +165,52 @@ export class PureChatLLMSettingTab extends PluginSettingTab {
                 await this.plugin.saveSettings();
               }),
             ),
+      )
+      .addSetting(
+        setting =>
+          void setting
+            .setName('Learn from calls and tasks')
+            .setDesc(
+              'After each call and background task, and every few turns of a long call, the worker model reads what was said or found and saves new facts, confirms ones it already knew and closes outdated ones, each linked to where it came from. It also writes a short summary of each call.',
+            )
+            .addToggle(toggle =>
+              toggle.setValue(m.consolidate).onChange(async value => {
+                m.consolidate = value;
+                await this.plugin.saveSettings();
+              }),
+            ),
+      )
+      .addSetting(
+        setting =>
+          void setting
+            .setName('Embeddings for recall')
+            .setDesc(
+              'Lets recall find facts by meaning, not only by shared words. Leave empty to use the first endpoint with a key that offers embeddings, type an endpoint name to choose one, or type off for word search only.',
+            )
+            .addText(text =>
+              text
+                .setPlaceholder('Automatic')
+                .setValue(m.embeddingEndpoint)
+                .onChange(async value => {
+                  m.embeddingEndpoint = value.trim();
+                  await this.plugin.saveSettings();
+                }),
+            ),
+      )
+      .addSetting(
+        setting =>
+          void setting
+            .setName('Embedding model')
+            .setDesc('Only needed for an endpoint without a known embedding model.')
+            .addText(text =>
+              text
+                .setPlaceholder('Default for the endpoint')
+                .setValue(m.embeddingModel)
+                .onChange(async value => {
+                  m.embeddingModel = value.trim();
+                  await this.plugin.saveSettings();
+                }),
+            ),
       );
   }
 

@@ -6,6 +6,7 @@ import { ToolRegistry } from '../tools';
 import { diagnostics, requestDetail } from '../diagnostics/DiagnosticsLog';
 import { ActiveContextTool } from '../tools/ActiveContext';
 import { MEMORY_TOOLS } from '../tools/Memory';
+import { memoryWithModels } from '../memory/pluginModels';
 import { BacklinksTool } from '../tools/Backlinks';
 import { GraphCliTool, TraverseGraphTool, VaultOntologyTool } from '../tools/TraverseGraph';
 import { CreateNoteTool } from '../tools/CreateNote';
@@ -476,10 +477,11 @@ export class PureChatLLMChat {
       ?.map(t => this.toolregistry.getTool(t)?.getDefinition())
       .filter(t => t !== undefined);
 
-    // Agent chats share the memory the voice agent, orchestrator and workers keep.
-    const memory = tools?.some(t => t.function.name.startsWith('memory_'))
-      ? this.plugin.memory?.brief()
-      : '';
+    // Agent chats share the memory the voice agent, orchestrator and workers keep: its standing
+    // part in the system prompt (it changes only when a preference or instruction does), and what
+    // it recalls for this turn with the last message.
+    const usesMemory = !!tools?.some(t => t.function.name.startsWith('memory_'));
+    const memory = usesMemory ? this.plugin.memory?.standingBrief('chat') : '';
     if (memory) {
       const first = messages[0];
       if (first?.role === 'system' && typeof first.content === 'string') {
@@ -488,6 +490,7 @@ export class PureChatLLMChat {
         messages.unshift({ role: 'system', content: memory });
       }
     }
+    if (memory) await this.addMemoryContext(messages, activeFile);
 
     // return the whole object sent to the API
     return {
@@ -495,6 +498,44 @@ export class PureChatLLMChat {
       messages,
       tools,
     };
+  }
+
+  /**
+   * Adds what the shared memory recalls for the newest user message to it (not to the note), with
+   * this note as one of the things the turn is about. Never fails the turn.
+   * @param messages - Messages to send, changed in place.
+   * @param activeFile - The chat's note.
+   */
+  private async addMemoryContext(
+    messages: ChatRequestOptions['messages'],
+    activeFile: TFile,
+  ): Promise<void> {
+    let index = -1;
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i].role === 'user') {
+        index = i;
+        break;
+      }
+    }
+    if (index < 0) return;
+    const last = messages[index];
+    const text =
+      typeof last.content === 'string'
+        ? last.content
+        : Array.isArray(last.content)
+          ? last.content.map(p => (p.type === 'text' ? p.text : '')).join('\n')
+          : '';
+    if (!text.trim()) return;
+    const recalled = await memoryWithModels(this.plugin)?.context('chat', text.slice(-4000), {
+      about: activeFile?.path ? [`[[${activeFile.path}]]`] : [],
+    });
+    if (!recalled) return;
+    messages[index] =
+      typeof last.content === 'string'
+        ? { ...last, content: `${last.content}\n\n${recalled}` }
+        : Array.isArray(last.content)
+          ? { ...last, content: [...last.content, { type: 'text', text: recalled }] }
+          : last;
   }
 
   /**

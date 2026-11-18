@@ -25,6 +25,7 @@ import {
 import { DEFAULT_SETTINGS, EmptyApiKey } from './assets/constants';
 import { DEFAULT_DIAGNOSTICS, diagnostics } from './diagnostics/DiagnosticsLog';
 import { DEFAULT_MEMORY, MemoryService } from './memory/MemoryService';
+import { memoryWithModels } from './memory/pluginModels';
 import { mergeVoiceSettings } from './realtime/voiceCatalog';
 import { DEFAULT_MCP_SERVER, McpManager } from './mcp/McpManager';
 import { SubAgentManager } from './agents/SubAgentManager';
@@ -195,6 +196,8 @@ export default class PureChatLLM extends Plugin {
       if (this.memory.enabled) {
         void this.memory.open().catch(error => this.console?.error?.('Memory', error));
       }
+      // The librarian and recall use the worker model and an embeddings endpoint.
+      memoryWithModels(this);
     });
     this.registerEvent(
       this.app.vault.on('modify', file => void this.memory.onFileChanged(file.path)),
@@ -1059,7 +1062,11 @@ export default class PureChatLLM extends Plugin {
 
   onunload() {
     void diagnostics.stop();
-    void this.memory?.close();
+    // Give a running librarian pass a moment to save what it learned, then close.
+    const memory = this.memory;
+    void Promise.race([memory?.idle(), new Promise(r => window.setTimeout(r, 3000))]).then(() =>
+      memory?.close(),
+    );
     this.mcp?.dispose();
     this.classicOrchestrator?.dispose();
     this.calls?.dispose();

@@ -23,6 +23,7 @@ import {
 import { DurableOrchestrator } from './bridge';
 import { openDurable } from './durable';
 import { DURABLE_ORCHESTRATOR_GUIDANCE } from './workers';
+import { memoryWithModels } from '../memory/pluginModels';
 import type { DurableSession } from './durable';
 import type { LayerSend } from './layerProvider';
 import type { ToolSource } from './toolsExtension';
@@ -123,6 +124,10 @@ export class DurableEngine {
       timing: (label, ms) => logTiming(plugin, label, ms),
       spokenError,
       error: (message, error) => plugin.console?.error?.(message, error),
+      memoryContext: request =>
+        memoryWithModels(plugin)?.context('orchestrator', request) ?? Promise.resolve(''),
+      recordRequest: (request, typed) =>
+        void memoryWithModels(plugin)?.recordRequest(request, 'voice', typed),
     });
   }
 
@@ -158,21 +163,32 @@ export class DurableEngine {
             send: pluginLayerSend(this.plugin),
             tools: pluginToolSource(this.plugin, 'orchestrator'),
             workerTools: pluginToolSource(this.plugin, 'worker'),
+            // The standing part of the memory only; each relay carries what is recalled for it.
             orchestratorInstructions: () => {
-              const memory = this.plugin.memory?.brief();
+              const memory = this.plugin.memory?.standingBrief('orchestrator');
               return memory
                 ? `${DURABLE_ORCHESTRATOR_GUIDANCE}\n\n${memory}`
                 : DURABLE_ORCHESTRATOR_GUIDANCE;
             },
-            workerInstructions: () => new LocalSubAgentBackend(this.plugin).systemPrompt(),
+            // Read when each worker's conversation is made: the standing brief, and what the
+            // memory knows about its task (by words, since this can't wait for an embedding).
+            workerInstructions: task => {
+              const base = new LocalSubAgentBackend(this.plugin).systemPrompt();
+              const recalled = task
+                ? this.plugin.memory?.contextSync('worker', `${task.title}\n${task.brief}`)
+                : '';
+              return recalled ? `${base}\n\n${recalled}` : base;
+            },
             maxResultChars: this.plugin.settings.voice.maxToolOutputChars || 6000,
             onTask: event => {
               this.tasks.record(event);
-              const memory = this.plugin.memory;
-              memory?.quietly(g =>
+              const memory = memoryWithModels(this.plugin);
+              if (!memory) return;
+              const key = `durable-${event.conversation}-${event.id}`;
+              memory.quietly(g =>
                 g.recordTask(
                   {
-                    key: `durable-${event.conversation}-${event.id}`,
+                    key,
                     title: event.title,
                     status: event.status,
                     result: event.text,
@@ -181,6 +197,19 @@ export class DurableEngine {
                   'worker',
                 ),
               );
+              // A task starts on a relay: link it to the request (the first report of its start
+              // comes from delegate_task, without a task id).
+              if (event.status === 'running' && event.taskId === undefined)
+                memory.linkTaskToRequest(key);
+              // What it found is filed by the librarian, linked to the task (M6).
+              if (event.status === 'done' && event.text)
+                memory.consolidateTask({
+                  key,
+                  title: event.title,
+                  result: event.text,
+                  status: event.status,
+                  session: memory.session,
+                });
             },
             checkInMinutes: () => this.plugin.settings.orchestrator.checkInMinutes,
             mobile: Platform.isMobile,

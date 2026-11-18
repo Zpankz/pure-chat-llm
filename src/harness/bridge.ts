@@ -42,10 +42,29 @@ export interface BridgeHost {
   /** Words for a failure the voice can say. */
   spokenError(message: string): string;
   error?(message: string, error: unknown): void;
+  /**
+   * What the shared memory recalls for a request and what is happening now, as a block for the
+   * relay's message ('' for none). Built for each relay, so the durable orchestrator never works
+   * from a brief made when the engine opened (M5).
+   */
+  memoryContext?(request: string): Promise<string>;
+  /** Records a relay in the shared memory. */
+  recordRequest?(request: string, typed: boolean): void;
 }
 
 const VOICE_PREFIX = '[Voice]';
 const MAX_ACTIVITY = 100;
+/** Where a relay's memory block starts; the call notes leave it out. */
+const MEMORY_MARK = '\n\n[Memory]';
+
+/**
+ * A relay's text without its memory block, for the log.
+ * @param text - Message text.
+ */
+export function withoutMemoryBlock(text: string): string {
+  const at = text.indexOf(MEMORY_MARK);
+  return at < 0 ? text : text.slice(0, at);
+}
 
 /** The text of one model message, for logs. */
 function messageText(content: unknown): string {
@@ -91,6 +110,8 @@ export class DurableOrchestrator implements Orchestrator {
   /** Tool call IDs to names, to label results in the log. */
   private callNames = new Map<string, string>();
   private disposed = false;
+  /** Relays are submitted in the order they came, even while their memory block is built. */
+  private submitting: Promise<unknown> = Promise.resolve();
 
   constructor(private host: BridgeHost) {}
 
@@ -173,7 +194,7 @@ export class DurableOrchestrator implements Orchestrator {
       this.seen = entry.id;
       for (const message of entry.model ?? []) {
         if (message.role === 'user') {
-          const text = messageText(message.content).trim();
+          const text = withoutMemoryBlock(messageText(message.content)).trim();
           if (text) this.host.log?.('input', text, text.startsWith(VOICE_PREFIX));
         } else if (message.role === 'assistant') {
           const text = messageText(message.content).trim();
@@ -271,11 +292,12 @@ export class DurableOrchestrator implements Orchestrator {
       relayLine(VOICE_PREFIX, request, waiting || !!options.typed, options.typed),
       ...(recent.length ? ['Conversation since your last relay:', ...recent] : []),
     ].join('\n');
+    this.host.recordRequest?.(request, !!options.typed);
     this.relayAt ??= Date.now();
     this.pending++;
     this.state = 'thinking';
     this.changed();
-    void this.send(content).finally(() => {
+    void this.send(content, request).finally(() => {
       this.pending--;
       if (!this.pending) this.state = 'idle';
       this.changed();
@@ -283,13 +305,37 @@ export class DurableOrchestrator implements Orchestrator {
     return 'Passed to the orchestrator. Tell the user briefly that you are on it; the answer comes back on its own.';
   }
 
-  /** Submits a relay and makes sure the user hears an answer to it. */
-  private async send(content: string): Promise<void> {
+  /**
+   * Submits a relay and makes sure the user hears an answer to it.
+   * @param content - The relay's message.
+   * @param request - The user's request alone, for the memory block.
+   */
+  private async send(content: string, request?: string): Promise<void> {
     const spokenBefore = this.spoken;
     try {
       const root = await this.root();
-      // A relay that arrives during a run joins it after the current tool round.
-      const submission = await root.submit({ type: 'input', content, whenBusy: 'steer' }, CTX);
+      const host = this.host;
+      const submitted = this.submitting.then(async () => {
+        let recalled = '';
+        if (request && host.memoryContext) {
+          try {
+            recalled = await host.memoryContext(request);
+          } catch {
+            recalled = '';
+          }
+        }
+        // A relay that arrives during a run joins it after the current tool round.
+        return root.submit(
+          {
+            type: 'input',
+            content: recalled ? `${content}\n\n${recalled}` : content,
+            whenBusy: 'steer',
+          },
+          CTX,
+        );
+      });
+      this.submitting = submitted.catch(() => undefined);
+      const submission = await submitted;
       const settled = await submission.wait(CTX);
       if (settled.status === 'done' && settled.type === 'input') {
         this.lastError = '';
