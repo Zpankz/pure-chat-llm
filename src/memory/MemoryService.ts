@@ -168,6 +168,11 @@ export class MemoryService {
       this.lastText = text;
       this.graph = graph;
       if (this.settings.autoRecord) graph.startSession(this.appSession, 'app', 'Obsidian session');
+      try {
+        graph.closeStaleTasks(this.appSession);
+      } catch (error) {
+        diagnostics.record('memory', 'close-stale-failed', { error: String(error) });
+      }
       this.scheduleSave();
       return graph;
     })().catch(error => {

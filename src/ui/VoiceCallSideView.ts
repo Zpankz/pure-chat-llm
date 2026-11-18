@@ -502,6 +502,11 @@ export class VoiceCallSideView extends ItemView {
     agents.setProgressInterval(this.plugin.settings.orchestrator.progressUpdateSeconds);
     if (layered) {
       const orchestrator = this.plugin.orchestrator;
+      // The call keeps this orchestrator until it ends, whatever the engine setting does.
+      this.plugin.callOrchestrator = orchestrator;
+      this.stopAgentWatch.push(() => {
+        if (this.plugin.callOrchestrator === orchestrator) this.plugin.callOrchestrator = null;
+      });
       orchestrator.setTranscriptSource(() =>
         this.transcript
           .filter(l => l.final && (l.role === 'user' || l.role === 'assistant'))

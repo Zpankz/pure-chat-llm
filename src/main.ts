@@ -112,12 +112,20 @@ export default class PureChatLLM extends Plugin {
    * chosen in settings. A call keeps the one it started with.
    */
   get orchestrator(): Orchestrator {
+    if (this.callOrchestrator) return this.callOrchestrator;
     return this.durable?.enabled ? this.durable.orchestrator : this.classicOrchestrator;
   }
+  /**
+   * The orchestrator a live call started with. Changing the engine mid-call takes effect on the
+   * next call, so one call never splits between two orchestrators (review W6).
+   */
+  callOrchestrator: Orchestrator | null = null;
   /** The background tasks of the engine in use, for the voice tools, the panel and call notes. */
   get taskList(): TaskList {
     // The durable orchestrator only runs behind a layered voice; otherwise tasks are Classic.
-    const durable = this.durable?.enabled && this.settings.orchestrator.voiceRole === 'layered';
+    const durable = this.callOrchestrator
+      ? this.callOrchestrator === this.durable?.orchestrator
+      : this.durable?.enabled && this.settings.orchestrator.voiceRole === 'layered';
     return durable ? this.durable.tasks : this.agents;
   }
   /** True when this load took its settings from the old `pure-chat-llm` plugin folder. */

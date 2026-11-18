@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { CreateNoteTool } from '../../../src/tools/CreateNote';
+import { guardPath } from '../../../src/tools/EditReview';
 import { isToolError } from '../../../src/tools/toolContract';
 import { toolHarness } from '../harness';
 import { lastJson, nextModal, takeModals, writeSettings } from './helpers';
@@ -94,4 +95,14 @@ test('missing arguments are tool errors', async () => {
   const h = toolHarness();
   assert.ok(isToolError(await h.run(CreateNoteTool, { path: '', content: 'x' })));
   assert.ok(isToolError(await h.run(CreateNoteTool, { path: 'a', content: 3 as never })));
+});
+
+test('agents may not write in the config folder, with relative parts, or to memory.json', () => {
+  assert.match(guardPath('.obsidian/snippets/x.css', '.obsidian'), /app's own folder/);
+  assert.match(guardPath('Notes/../.obsidian/a.md', '.obsidian'), /relative part/);
+  assert.match(
+    guardPath('Voice Agent/Memory/memory.json', '.obsidian', 'Voice Agent/Memory/memory.json'),
+    /memory tools/,
+  );
+  assert.equal(guardPath('Notes/Altitude.md', '.obsidian', 'Voice Agent/Memory/memory.json'), '');
 });

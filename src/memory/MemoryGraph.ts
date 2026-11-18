@@ -275,6 +275,27 @@ export class MemoryGraph {
    * @param task.session - Session it ran in.
    * @param agent - Who runs it.
    */
+  /**
+   * Classic tasks live only while the app runs, so one still open from an earlier app session
+   * was cut off by a reload or quit: mark it interrupted, or every brief lists it forever (M4).
+   * Durable tasks survive restarts and are left alone.
+   * @param appSession - This app session's key; its own tasks are kept open.
+   */
+  closeStaleTasks(appSession: string): number {
+    const rows = this.engine.must(
+      `MATCH (t:Task) WHERE t.endedAt IS NULL AND t.key STARTS WITH 'app-'
+       AND NOT t.key STARTS WITH $mine RETURN t.key AS key`,
+      { mine: `${appSession}-` },
+    ).rows;
+    if (!rows.length) return 0;
+    this.write(
+      `MATCH (t:Task) WHERE t.endedAt IS NULL AND t.key STARTS WITH 'app-'
+       AND NOT t.key STARTS WITH $mine SET t.status = 'interrupted', t.endedAt = $at`,
+      { mine: `${appSession}-`, at: this.now() },
+    );
+    return rows.length;
+  }
+
   recordTask(
     task: { key: string; title: string; status: string; result?: string; session?: string },
     agent: AgentName = 'worker',
@@ -632,7 +653,7 @@ export class MemoryGraph {
     ).rows;
     if (open.length) {
       lines.push(
-        'Unfinished tasks from earlier:',
+        'Open tasks:',
         ...open.map(t => `- ${String(t.title)} (${String(t.status)}) [${String(t.key)}]`),
       );
     }

@@ -92,23 +92,23 @@ test('note chat: the modal decides, and confirm alone is not enough', async () =
 
   const pending = tool.execute({
     action: 'update',
-    key: 'agentMode',
-    value: 'false',
+    key: 'defaultmaxTokens',
+    value: '2048',
     confirm: true,
   });
   await flush();
   assert.equal(openedModals.length, 1);
-  assert.equal(c.plugin.settings.agentMode, true, 'nothing changes before the user answers');
+  assert.equal(c.plugin.settings.defaultmaxTokens, 4096, 'nothing changes before the user answers');
   (openedModals[0] as SettingsConfirmationModal).finish(false);
   const declined = await pending;
   assert.ok(isToolError(declined), declined);
-  assert.equal(c.plugin.settings.agentMode, true);
+  assert.equal(c.plugin.settings.defaultmaxTokens, 4096);
 
-  const approved = tool.execute({ action: 'update', key: 'agentMode', value: 'false' });
+  const approved = tool.execute({ action: 'update', key: 'defaultmaxTokens', value: '2048' });
   await flush();
   (openedModals[1] as SettingsConfirmationModal).finish(true);
-  assert.equal(await approved, 'Changed "agentMode" from true to false.');
-  assert.equal(c.plugin.settings.agentMode, false);
+  assert.equal(await approved, 'Changed "defaultmaxTokens" from 4096 to 2048.');
+  assert.equal(c.plugin.settings.defaultmaxTokens, 2048);
   assert.equal(c.saves, 1);
 });
 
@@ -143,4 +143,16 @@ test('update refuses secrets, groups, wrong types, bad endpoints and background 
   assert.ok(isToolError(out), out);
   assert.equal(openedModals.length, 0);
   assert.equal(worker.saves, 0);
+});
+
+test('safety settings change only in the settings window', async () => {
+  const c = actionChat({
+    settings: { ...settings(), orchestrator: { writes: { delete: 'review' }, engine: 'classic' } },
+  });
+  const tool = c.tool(PluginSettingsTool);
+  for (const key of ['orchestrator.writes.delete', 'agentMode', 'orchestrator.engine']) {
+    const out = await tool.execute({ action: 'update', key, value: 'allow', confirm: true });
+    assert.ok(isToolError(out), key);
+    assert.match(out, /safety setting/);
+  }
 });

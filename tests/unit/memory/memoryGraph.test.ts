@@ -317,3 +317,17 @@ test('agent queries get a row limit and a bounded range()', () => {
   assert.match(unboundedReason('UNWIND range(1, 3e6) AS i RETURN count(i)'), /limited/);
   assert.equal(unboundedReason('UNWIND range(1, 100) AS i RETURN i'), '');
 });
+
+test('tasks cut off by an earlier quit are closed, this session’s stay open', () => {
+  const g = new MemoryGraph();
+  g.recordTask({ key: 'app-old-t1', title: 'Look up oxygen cascade', status: 'running' });
+  g.recordTask({ key: 'app-new-t1', title: 'Current work', status: 'running' });
+  g.recordTask({ key: 'durable-1-t1', title: 'Durable work', status: 'running' });
+  assert.equal(g.closeStaleTasks('app-new'), 1);
+  const brief = g.brief();
+  assert.doesNotMatch(brief, /oxygen cascade/);
+  assert.match(brief, /Open tasks:/);
+  assert.match(brief, /Current work/);
+  assert.match(brief, /Durable work/);
+  g.dispose();
+});

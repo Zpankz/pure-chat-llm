@@ -167,6 +167,25 @@ async function withNoteLock<T>(
 }
 
 /**
+ * Why an agent may not write at this path, or '' when it may. The app's config folder holds
+ * plugins and settings, and the memory file changes only through the memory tools (T-08, M14).
+ * @param path - Normalised vault path.
+ * @param configDir - The vault's config folder (usually .obsidian).
+ * @param memoryPath - The shared memory file, when memory is on.
+ */
+export function guardPath(path: string, configDir: string, memoryPath?: string): string {
+  const parts = path.split('/');
+  if (parts.some(p => p === '..' || p === '.'))
+    return `"${path}" has a relative part; give the path from the vault's top.`;
+  const top = parts[0].toLowerCase();
+  if (top === configDir.toLowerCase() || top === '.obsidian' || top === '.trash')
+    return `"${path}" is in the app's own folder, which agents may not change.`;
+  if (memoryPath && path.toLowerCase() === memoryPath.toLowerCase())
+    return `"${path}" is the shared memory file; change memory with the memory tools.`;
+  return '';
+}
+
+/**
  * Routes one write and makes it.
  * @param chat - Chat the tool runs in.
  * @param request - The change.
@@ -182,6 +201,8 @@ async function decideAndWrite(chat: PureChatLLMChat, request: WriteRequest): Pro
 
   const signal = request.signal;
   if (signal?.aborted) return fail('denied', cancelledError(path));
+  const guarded = guardPath(path, app.vault.configDir, plugin.memory?.path);
+  if (guarded) return fail('denied', toolError('InvalidPath', guarded));
   if (existing && !(existing instanceof TFile)) {
     return fail('denied', toolError('InvalidPath', `"${path}" is a folder, not a note.`));
   }

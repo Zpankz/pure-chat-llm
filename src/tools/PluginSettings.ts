@@ -10,6 +10,13 @@ const SECRET_KEY =
   /api_?key|secret|password|bearer|access_?token|refresh_?token|^token$|^headers$|^oauth$/i;
 /** Settings that hold secrets or server lists; they change only in the settings window. */
 const SETTINGS_WINDOW_ONLY = new Set(['endpoints', 'mcpServers']);
+/**
+ * Safety settings: the write gate, which tool groups and engine run, code mode's download and
+ * its checksum, and diagnostics. A model could otherwise loosen them after reading a note that
+ * told it to, so they change only in the settings window (review C7).
+ */
+const SAFETY_KEY =
+  /^(orchestrator\.writes(\.|$)|orchestrator\.(engine|voiceRole)$|codeMode\.(engine|djs)|enabledToolClassifications(\.|$)|agentMode$|diagnostics(\.|$))/;
 const UNSAFE_SEGMENT = new Set(['__proto__', 'prototype', 'constructor']);
 const HIDDEN = '[hidden]';
 
@@ -78,7 +85,7 @@ export class PluginSettingsTool extends Tool<PluginSettingsArgs> {
     'Reads or changes one Voice Agent plugin setting, such as the default max tokens or the voice provider. ' +
     'Use "read" to look (with a key, or without one for all settings), and "update" only when the user asks to change a setting. ' +
     "An update needs the user's yes: in a note chat a confirmation window asks them; in a voice call, first say the setting, its current value and the new value, ask, and only after they say yes call again with confirm: true. " +
-    'API keys, tokens, endpoints and MCP servers are hidden and can only be changed in the settings window. Free.';
+    'API keys, tokens, endpoints and MCP servers are hidden, and they and the safety settings (write rules, tool groups, agent mode, the engine, code mode downloads, diagnostics) can only be changed in the settings window. Free.';
   readonly parameters = pluginSettingsParameters;
 
   /** Always offered; layers decide who gets it. */
@@ -183,6 +190,13 @@ export class PluginSettingsTool extends Tool<PluginSettingsArgs> {
       return toolError(
         'NotAllowed',
         `"${key}" holds API keys, tokens or server details, so it can only be changed in the plugin's settings window.`,
+        ['Ask the user to change it in Settings, Voice Agent.'],
+      );
+    }
+    if (SAFETY_KEY.test(key)) {
+      return toolError(
+        'NotAllowed',
+        `"${key}" is a safety setting, so it can only be changed in the plugin's settings window.`,
         ['Ask the user to change it in Settings, Voice Agent.'],
       );
     }
