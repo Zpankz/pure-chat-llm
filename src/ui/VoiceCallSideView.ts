@@ -113,6 +113,8 @@ export class VoiceCallSideView extends ItemView {
   private drawnIn: HTMLElement | null = null;
   /** Owns what the Markdown renderer adds to the transcript; replaced on a full redraw. */
   private lineOwner: Component | null = null;
+  /** Owns the background agents list's Markdown for its current redraw. */
+  private tasksOwner: Component | null = null;
   /** Background agents whose steps the user opened. */
   private openSteps = new Set<string>();
 
@@ -653,6 +655,9 @@ export class VoiceCallSideView extends ItemView {
     const el = this.tasksEl;
     if (!el) return;
     el.empty();
+    // The cards' Markdown belongs to this redraw, and goes with it (U5).
+    if (this.tasksOwner) this.removeChild(this.tasksOwner);
+    const owner = (this.tasksOwner = this.addChild(new Component()));
     const source = this.plugin.taskList;
     const tasks = source?.list().slice(0, 8) ?? [];
     if (!tasks.length) return;
@@ -664,7 +669,7 @@ export class VoiceCallSideView extends ItemView {
     head.createSpan({ cls: 'va-pill', text: live ? `${live} running` : `${tasks.length}` });
     for (const task of tasks) {
       const notePath = task.notePath;
-      const card = drawTaskCard(this.app, this, el, task, {
+      const card = drawTaskCard(this.app, owner, el, task, {
         open: notePath
           ? () => void this.app.workspace.openLinkText(notePath, '', 'tab')
           : undefined,

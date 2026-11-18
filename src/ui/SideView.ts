@@ -1,5 +1,6 @@
 import {
   App,
+  Component,
   Editor,
   EditorRange,
   ExtraButtonComponent,
@@ -48,6 +49,11 @@ import { isToolError } from '../tools/toolContract';
  */
 export class PureChatLLMSideView extends ItemView {
   ischat = false;
+  /** Owns the Markdown of the current redraw. */
+  private renderOwner: Component | null = null;
+  private updateTimer: number | null = null;
+  /** An edit came in while the panel was hidden. */
+  private stale = false;
   isExpanded = false;
   icon: string = PURE_CHAT_LLM_ICON_NAME;
   console: BrowserConsole = new BrowserConsole(this.plugin.settings.debug, 'PureChatLLMSideView');
@@ -97,8 +103,15 @@ export class PureChatLLMSideView extends ItemView {
 
     this.registerEvent(
       this.app.workspace.on('editor-change', (editor: Editor, view: MarkdownView) => {
-        // if the user is typing in the editor, update the view
-        if (!this.plugin.isresponding) this.update(editor, view);
+        // While typing, redraw at most every 250 ms, and not while the panel is hidden (U3).
+        if (!this.plugin.isresponding) this.scheduleUpdate(editor, view);
+      }),
+    );
+    this.registerEvent(
+      this.app.workspace.on('layout-change', () => {
+        if (!this.stale || !this.containerEl.isShown()) return;
+        const view = this.app.workspace.getActiveViewOfType(MarkdownView);
+        if (view?.editor) this.update(view.editor, view);
       }),
     );
     this.registerEvent(
@@ -210,7 +223,25 @@ export class PureChatLLMSideView extends ItemView {
    * @param editor
    * @param view
    */
+  scheduleUpdate(editor: Editor, view: MarkdownView) {
+    if (!this.containerEl.isShown()) {
+      this.stale = true;
+      return;
+    }
+    if (this.updateTimer !== null) window.clearTimeout(this.updateTimer);
+    this.updateTimer = window.setTimeout(() => {
+      this.updateTimer = null;
+      this.update(editor, view);
+    }, 250);
+  }
+
+  /**
+   * Redraws the overview from the editor's text now.
+   * @param editor - Editor.
+   * @param view - Its view.
+   */
   update(editor: Editor, view: MarkdownView) {
+    this.stale = false;
     //MetadataCache
     //resolveSubpath
     const editorValue = editor.getValue();
@@ -221,6 +252,10 @@ export class PureChatLLMSideView extends ItemView {
     );
     this.ischat = chat.validChat;
     const container = this.contentEl;
+    // Each redraw owns its rendered Markdown, so embeds and code blocks from the last one are
+    // unloaded rather than piling up on the view (U3).
+    if (this.renderOwner) this.removeChild(this.renderOwner);
+    this.renderOwner = this.addChild(new Component());
     container.empty();
     if (!chat.validChat || !editorValue) {
       this.defaultContent();
@@ -355,6 +390,7 @@ export class PureChatLLMSideView extends ItemView {
     view: MarkdownView,
   ) {
     container.addClass('va-conversation', 'va-overview');
+    const owner = this.renderOwner ?? this;
     const sourcePath = view.file?.path ?? '';
     const speaker = (role: string) =>
       role === 'user' ? 'user' : role === 'assistant' || role === 'tool' ? 'agent' : 'system';
@@ -383,7 +419,7 @@ export class PureChatLLMSideView extends ItemView {
           const failed = isToolError(message.content);
           drawToolCard(
             this.app,
-            this,
+            owner,
             contain,
             {
               id: `m${index}`,
@@ -403,11 +439,11 @@ export class PureChatLLMSideView extends ItemView {
           details.createEl('summary', {
             text: `${toTitleCase(message.role)} prompt · ${message.content.length} characters`,
           });
-          renderMarkdown(this.app, this, preview, details.createDiv(), sourcePath);
+          renderMarkdown(this.app, owner, preview, details.createDiv(), sourcePath);
         } else if (preview) {
           const bubble = contain.createDiv({ cls: `va-bubble va-bubble--${who}` });
           bubble.onClickEvent(select);
-          renderMarkdown(this.app, this, preview, bubble, sourcePath);
+          renderMarkdown(this.app, owner, preview, bubble, sourcePath);
         } else if (message.role === 'assistant') {
           contain.createDiv({ cls: 'va-muted va-small', text: 'Called tools' });
         }
@@ -554,7 +590,8 @@ export class PureChatLLMSideView extends ItemView {
    *
    */
   async onClose() {
-    // Nothing to clean up.
+    if (this.updateTimer !== null) window.clearTimeout(this.updateTimer);
+    this.updateTimer = null;
   }
 }
 
@@ -639,7 +676,7 @@ export class ModelAndProviderChooser extends FuzzySuggestModal<ModelAndProvider>
       // On opening, fall back once to a provider that has a key; never loop (U6).
       const keyed = this.firstrun ? endpoints.find(e => e.apiKey !== EmptyApiKey) : undefined;
       if (!keyed) {
-        new AskForAPI(this.app, this.plugin).open();
+        new AskForAPI(this.app, this.plugin, endpointIndex).open();
         return;
       }
       endpoint = keyed;
