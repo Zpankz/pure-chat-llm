@@ -38,7 +38,14 @@ import { voiceUnsupportedReason } from '../realtime/support';
 import type { NoticeMode, SubAgentEvent } from '../agents/types';
 import { TOPIC_GUIDANCE } from '../tools/TopicTool';
 import { shouldInterrupt } from '../agents/relevance';
-import { applyVoiceEvent, continuesTurn, type TranscriptLine } from './conversationModel';
+import {
+  applyVoiceEvent,
+  continuesTurn,
+  pushLine,
+  settleSpeech,
+  type TranscriptLine,
+} from './conversationModel';
+import type { OrchestratorToolEvent } from '../agents/OrchestratorAgent';
 import {
   drawStatus,
   drawTaskCard,
@@ -97,6 +104,8 @@ export class VoiceCallSideView extends ItemView {
   };
   private remoteAudioElement: HTMLAudioElement | null = null;
   private tasksEl: HTMLElement | null = null;
+  /** The orchestrator's state while the layered setup is on. */
+  private orchEl: HTMLElement | null = null;
   private stopAgentWatch: Array<() => void> = [];
   /** What is drawn in the transcript pane, so a change redraws only its own line. */
   private drawn = new Map<TranscriptLine, { el: HTMLElement; rev: number; continued: boolean }>();
@@ -162,6 +171,8 @@ export class VoiceCallSideView extends ItemView {
     this.renderStatus(contentEl);
     this.renderControls(contentEl);
     this.createRemoteAudioElement(contentEl);
+    this.orchEl = contentEl.createDiv({ cls: 'va-orch' });
+    this.renderOrchestrator();
     this.transcriptEl = contentEl.createDiv({ cls: 'va-conversation voice-call-transcript' });
     this.renderTranscript();
     this.tasksEl = contentEl.createDiv({ cls: 'voice-call-tasks' });
@@ -504,7 +515,10 @@ export class VoiceCallSideView extends ItemView {
               ),
         ),
         () => orchestrator.setTranscriptSource(null),
+        orchestrator.onTool?.(event => this.onOrchestratorTool(event)) ?? (() => {}),
+        orchestrator.onChange(() => this.renderOrchestrator()),
       );
+      this.renderOrchestrator();
       return;
     }
     // Tell the model about anything that happened while no call was open.
@@ -557,7 +571,7 @@ export class VoiceCallSideView extends ItemView {
         finalMode = 'interrupt';
       }
     }
-    this.transcript.push({
+    pushLine(this.transcript, {
       role: 'tool',
       text: `${label}${finalMode === 'interrupt' ? ' (cutting in)' : ''}`,
       final: true,
@@ -566,6 +580,7 @@ export class VoiceCallSideView extends ItemView {
       urgent: finalMode === 'interrupt',
       detail,
       rev: 0,
+      ...(label === 'Orchestrator' ? { by: 'orchestrator' as const } : {}),
     });
     this.renderTranscript();
     this.voiceCall?.notify(
@@ -574,6 +589,44 @@ export class VoiceCallSideView extends ItemView {
         : text,
       finalMode,
     );
+  }
+
+  /**
+   * Shows one of the orchestrator's tool calls as a card under its own header.
+   * @param event - Start or end of the call.
+   */
+  private onOrchestratorTool(event: OrchestratorToolEvent): void {
+    const line = applyVoiceEvent(this.transcript, { type: 'tool', ...event }, Date.now());
+    if (!line) return;
+    line.by = 'orchestrator';
+    this.renderTranscript();
+  }
+
+  /** The orchestrator's state: its model, whether it is working, and its last error. */
+  private renderOrchestrator(): void {
+    const el = this.orchEl;
+    if (!el) return;
+    el.empty();
+    const orchestrator = this.plugin.orchestrator;
+    if (!orchestrator?.active) {
+      el.hide();
+      return;
+    }
+    el.show();
+    const thinking = orchestrator.state === 'thinking';
+    el.toggleClass('is-thinking', thinking);
+    el.toggleClass('is-failed', !thinking && !!orchestrator.lastError);
+    setIcon(el.createSpan({ cls: 'va-orch__icon' }), 'workflow');
+    el.createSpan({ cls: 'va-orch__name', text: `Orchestrator · ${orchestrator.label}` });
+    if (thinking) {
+      el.createSpan({ cls: 'va-orch__state', text: 'working' });
+      el.createSpan({ cls: 'va-spinner' });
+    } else if (orchestrator.lastError) {
+      el.createSpan({ cls: 'va-orch__state', text: 'failed' });
+      el.createDiv({ cls: 'va-orch__error', text: orchestrator.lastError });
+    } else {
+      el.createSpan({ cls: 'va-orch__state', text: 'ready' });
+    }
   }
 
   /** Stops listening to sub-agent events. */
@@ -819,8 +872,11 @@ export class VoiceCallSideView extends ItemView {
       return row;
     }
     const who = line.role === 'user' ? 'user' : 'agent';
+    if (line.by === 'orchestrator') row.addClass('va-by-orchestrator');
     row.addClass('va-row', `va-row--${who}`);
     if (continued) row.addClass('is-continued');
+    else if (line.by === 'orchestrator')
+      drawTurnHeader(row, 'orchestrator', 'Orchestrator', line.at);
     else drawTurnHeader(row, who, who === 'user' ? 'You' : 'Voice Agent', line.at);
     if (line.kind === 'tool' && line.tool) {
       drawToolCard(this.app, owner, row, line.tool, path);
@@ -895,6 +951,8 @@ export class VoiceCallSideView extends ItemView {
    */
   private onCallStateChange(state: CallState): void {
     this.callState = state;
+    if (state.status !== 'connected' && state.status !== 'connecting')
+      settleSpeech(this.transcript);
     // A call that drops on its own is saved too.
     if (state.status === 'disconnected' || state.status === 'error') void this.saveCallNotes();
     this.renderView();

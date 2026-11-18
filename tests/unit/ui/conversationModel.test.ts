@@ -6,6 +6,7 @@ import {
   clipPreview,
   continuesTurn,
   formatDuration,
+  settleSpeech,
   toolMeta,
   type TranscriptLine,
 } from '../../../src/ui/conversationModel';
@@ -137,4 +138,36 @@ test('previews clip at a line break when one is near', () => {
   const text = `${'a'.repeat(80)}\n${'b'.repeat(80)}`;
   assert.equal(clipPreview(text, 100), `${'a'.repeat(80)}\n…`);
   assert.equal(clipPreview('x'.repeat(200), 100), `${'x'.repeat(100)}\n…`);
+});
+
+test('only the newest line can still be live: anything after a line settles it', () => {
+  const lines: TranscriptLine[] = [];
+  // GPT-Live never sends final transcripts.
+  applyVoiceEvent(lines, { type: 'transcript', role: 'user', text: 'Hi', final: false }, 1);
+  applyVoiceEvent(lines, { type: 'transcript', role: 'assistant', text: 'Hello', final: false }, 2);
+  assert.equal(lines[0].final, true);
+  assert.equal(lines[1].final, false);
+  applyVoiceEvent(lines, { type: 'tool', name: 'relay_to_orchestrator', phase: 'start' }, 3);
+  assert.equal(lines[1].final, true);
+  applyVoiceEvent(lines, { type: 'transcript', role: 'user', text: 'Thanks', final: false }, 4);
+  assert.deepEqual(
+    lines.map(l => l.final),
+    [true, true, true, false],
+  );
+  settleSpeech(lines);
+  assert.ok(lines.every(l => l.final));
+});
+
+test('the orchestrator has its own turns, apart from the voice', () => {
+  const voice: TranscriptLine = { role: 'assistant', text: 'a', final: true, kind: 'speech' };
+  const orch: TranscriptLine = {
+    role: 'tool',
+    text: 'b',
+    final: true,
+    kind: 'tool',
+    by: 'orchestrator',
+  };
+  assert.equal(continuesTurn(voice, orch), false);
+  assert.equal(continuesTurn(orch, { ...orch }), true);
+  assert.equal(continuesTurn(orch, voice), false);
 });

@@ -78,12 +78,19 @@ export function renderMarkdown(
  */
 export function drawTurnHeader(
   parent: HTMLElement,
-  who: 'user' | 'agent' | 'system',
+  who: 'user' | 'agent' | 'orchestrator' | 'system',
   name: string,
   at?: number,
 ): HTMLElement {
   const head = parent.createDiv({ cls: 'va-turn__head' });
-  const icon = who === 'user' ? 'user-round' : who === 'agent' ? 'audio-lines' : 'settings-2';
+  const icon =
+    who === 'user'
+      ? 'user-round'
+      : who === 'agent'
+        ? 'audio-lines'
+        : who === 'orchestrator'
+          ? 'workflow'
+          : 'settings-2';
   setIcon(head.createSpan({ cls: 'va-avatar' }), icon);
   head.createSpan({ cls: 'va-turn__name', text: name });
   if (at) {

@@ -482,7 +482,14 @@ export class SubAgentManager {
   }
 
   private changed(): void {
-    for (const listener of this.changeListeners) listener();
+    // A view that fails to draw must never stop a task from starting or finishing.
+    for (const listener of this.changeListeners) {
+      try {
+        listener();
+      } catch (error) {
+        console.error('[voice-agent] task list listener failed', error);
+      }
+    }
   }
 
   /** Writes the task's transcript note when a task folder is set. */

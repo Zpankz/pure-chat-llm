@@ -166,6 +166,8 @@ export interface TranscriptLine {
   urgent?: boolean;
   /** What an update said, shown under its title. */
   detail?: string;
+  /** Said or done by the orchestrator rather than the voice. */
+  by?: 'orchestrator';
   rev?: number;
 }
 
@@ -174,6 +176,32 @@ function toolText(tool: ToolCallView): string {
   if (tool.status === 'running') return `Running ${tool.name}…`;
   if (tool.status === 'failed') return `${tool.name} failed: ${tool.error ?? 'error'}`;
   return `${tool.name} finished`;
+}
+
+/**
+ * Marks every line still being heard as final. Some providers (GPT-Live) never send a final
+ * transcript, so a line counts as finished once anything comes after it; only the newest line
+ * can still be live.
+ * @param lines - Transcript (changed in place).
+ */
+export function settleSpeech(lines: TranscriptLine[]): void {
+  for (const line of lines) {
+    if (!line.final) {
+      line.final = true;
+      line.rev = (line.rev ?? 0) + 1;
+    }
+  }
+}
+
+/**
+ * Appends a line, settling what came before it.
+ * @param lines - Transcript.
+ * @param line - New line.
+ */
+export function pushLine(lines: TranscriptLine[], line: TranscriptLine): TranscriptLine {
+  settleSpeech(lines);
+  lines.push(line);
+  return line;
 }
 
 /**
@@ -206,8 +234,7 @@ export function applyVoiceEvent(
       kind: 'speech',
       rev: 0,
     };
-    lines.push(line);
-    return line;
+    return pushLine(lines, line);
   }
   if (event.type === 'tool') {
     if (event.phase === 'start') {
@@ -227,8 +254,7 @@ export function applyVoiceEvent(
         tool,
         rev: 0,
       };
-      lines.push(line);
-      return line;
+      return pushLine(lines, line);
     }
     // The end: the running call with this id, or else the last running call of this name.
     let line: TranscriptLine | undefined;
@@ -244,8 +270,15 @@ export function applyVoiceEvent(
         status: 'running',
         startedAt: now,
       };
-      line = { role: 'tool', text: '', final: true, at: now, kind: 'tool', tool, rev: 0 };
-      lines.push(line);
+      line = pushLine(lines, {
+        role: 'tool',
+        text: '',
+        final: true,
+        at: now,
+        kind: 'tool',
+        tool,
+        rev: 0,
+      });
     }
     const tool = line.tool as ToolCallView;
     const failed = !!event.error || (event.result !== undefined && isToolError(event.result));
@@ -266,8 +299,7 @@ export function applyVoiceEvent(
       kind: 'status',
       rev: 0,
     };
-    lines.push(line);
-    return line;
+    return pushLine(lines, line);
   }
   return null;
 }
@@ -280,7 +312,13 @@ export function applyVoiceEvent(
 export function continuesTurn(prev: TranscriptLine | undefined, line: TranscriptLine): boolean {
   if (!prev) return false;
   const speaker = (l: TranscriptLine) =>
-    l.kind === 'status' ? 'status' : l.role === 'user' ? 'user' : 'agent';
+    l.kind === 'status'
+      ? 'status'
+      : l.role === 'user'
+        ? 'user'
+        : l.by === 'orchestrator'
+          ? 'orchestrator'
+          : 'agent';
   return speaker(prev) === speaker(line) && speaker(line) !== 'status';
 }
 

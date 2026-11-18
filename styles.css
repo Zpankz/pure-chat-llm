@@ -1502,3 +1502,66 @@ pre.va-result {
 .is-mobile .va-bubble {
   max-width: 94%;
 }
+
+/* Orchestrator: its state above the conversation, and its own turns. */
+.va-orch {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border: var(--border-width) solid var(--background-modifier-border);
+  border-radius: var(--radius-m);
+  background: var(--background-secondary);
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+}
+
+.va-orch__icon {
+  display: inline-flex;
+  color: var(--color-orange, var(--text-warning));
+}
+
+.va-orch__icon svg {
+  width: 14px;
+  height: 14px;
+}
+
+.va-orch__name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-normal);
+  font-weight: var(--font-medium);
+}
+
+.va-orch__state {
+  padding: 0 7px;
+  border-radius: var(--radius-xl, 999px);
+  background: var(--background-modifier-hover);
+}
+
+.va-orch.is-thinking .va-orch__state {
+  color: var(--color-orange, var(--text-warning));
+}
+
+.va-orch.is-failed {
+  border-color: color-mix(in srgb, var(--text-error) 45%, var(--background-modifier-border));
+}
+
+.va-orch.is-failed .va-orch__state,
+.va-orch__error {
+  color: var(--text-error);
+}
+
+.va-orch__error {
+  flex-basis: 100%;
+  font-size: var(--font-smallest);
+}
+
+.va-by-orchestrator .va-avatar {
+  background: color-mix(in srgb, var(--color-orange, var(--text-warning)) 20%, transparent);
+  color: var(--color-orange, var(--text-warning));
+}

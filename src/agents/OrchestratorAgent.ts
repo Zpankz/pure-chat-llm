@@ -58,6 +58,18 @@ export const ORCHESTRATOR_READ_TOOLS = [
 /** Kinds that only become notes for the next turn. */
 const NOTE_ONLY = new Set(['started', 'progress', 'cancelled', 'checkpoint']);
 
+/** One of the orchestrator's tool calls, for the call panel's cards. */
+export interface OrchestratorToolEvent {
+  phase: 'start' | 'end';
+  /** Pairs a start with its end. */
+  id: string;
+  name: string;
+  args?: Record<string, unknown>;
+  result?: string;
+  error?: string;
+  ms?: number;
+}
+
 /** `answersUser`: this is the first answer to something the user asked, which they are waiting for. */
 export type SayListener = (text: string, urgency: NoticeMode, answersUser: boolean) => void;
 
@@ -74,6 +86,8 @@ export interface Orchestrator {
   lastError: string;
   onSay(listener: SayListener): () => void;
   onChange(listener: () => void): () => void;
+  /** Hears each tool call the orchestrator makes (not `tell_user`, which is spoken). */
+  onTool?(listener: (event: OrchestratorToolEvent) => void): () => void;
   setTranscriptSource(source: (() => string[]) | null): void;
   relay(request: string, waiting?: boolean): string;
   say(text: string, urgency: NoticeMode): string;
@@ -105,6 +119,8 @@ export class OrchestratorAgent implements Orchestrator {
   private undelivered: { text: string; urgency: NoticeMode }[] = [];
   private listeners = new Set<SayListener>();
   private changeListeners = new Set<() => void>();
+  private toolListeners = new Set<(event: OrchestratorToolEvent) => void>();
+  private toolSeq = 0;
   private running = false;
   private spokeThisTurn = false;
   private transcriptSource: (() => string[]) | null = null;
@@ -156,6 +172,22 @@ export class OrchestratorAgent implements Orchestrator {
   onChange(listener: () => void): () => void {
     this.changeListeners.add(listener);
     return () => this.changeListeners.delete(listener);
+  }
+
+  /** @param listener - Hears each tool call the orchestrator makes. */
+  onTool(listener: (event: OrchestratorToolEvent) => void): () => void {
+    this.toolListeners.add(listener);
+    return () => this.toolListeners.delete(listener);
+  }
+
+  private emitTool(event: OrchestratorToolEvent): void {
+    for (const l of this.toolListeners) {
+      try {
+        l(event);
+      } catch (error) {
+        console.error('[voice-agent] orchestrator tool listener failed', error);
+      }
+    }
   }
 
   /**
@@ -392,7 +424,28 @@ export class OrchestratorAgent implements Orchestrator {
             'tool',
             `${call.function.name} ${call.function.arguments || '{}'}`,
           );
+          const shown = call.function.name !== 'tell_user';
+          const id = `orch-${++this.toolSeq}`;
+          const started = Date.now();
+          if (shown) {
+            let args: Record<string, unknown> | undefined;
+            try {
+              args = JSON.parse(call.function.arguments || '{}') as Record<string, unknown>;
+            } catch {
+              args = undefined;
+            }
+            this.emitTool({ phase: 'start', id, name: call.function.name, args });
+          }
           const output = await this.runCall(chat, call, allowed);
+          if (shown) {
+            this.emitTool({
+              phase: 'end',
+              id,
+              name: call.function.name,
+              result: output.slice(0, 4000),
+              ms: Date.now() - started,
+            });
+          }
           calls?.logOrchestrator('result', output);
           this.record(call, output);
           this.messages.push({ role: 'tool', content: output, tool_call_id: call.id });
@@ -537,7 +590,13 @@ export class OrchestratorAgent implements Orchestrator {
   }
 
   private changed(): void {
-    for (const l of this.changeListeners) l();
+    for (const l of this.changeListeners) {
+      try {
+        l();
+      } catch (error) {
+        console.error('[voice-agent] orchestrator change listener failed', error);
+      }
+    }
   }
 }
 

@@ -6,7 +6,7 @@
 // the voice's activity feed and the call notes, so a run that resumes after a reload is logged
 // and spoken just the same.
 import type { NoticeMode } from '../agents/types';
-import type { Orchestrator, SayListener } from '../agents/OrchestratorAgent';
+import type { Orchestrator, OrchestratorToolEvent, SayListener } from '../agents/OrchestratorAgent';
 import type { DurableSession } from './durable';
 import { CTX } from './pi';
 import type { Conversation, ConversationId, EntryRecord } from './pi';
@@ -108,6 +108,23 @@ export class DurableOrchestrator implements Orchestrator {
     return () => this.changeListeners.delete(listener);
   }
 
+  private toolListeners = new Set<(event: OrchestratorToolEvent) => void>();
+
+  onTool(listener: (event: OrchestratorToolEvent) => void): () => void {
+    this.toolListeners.add(listener);
+    return () => this.toolListeners.delete(listener);
+  }
+
+  private emitTool(event: OrchestratorToolEvent): void {
+    for (const l of this.toolListeners) {
+      try {
+        l(event);
+      } catch (error) {
+        console.error('[voice-agent] orchestrator tool listener failed', error);
+      }
+    }
+  }
+
   setTranscriptSource(source: (() => string[]) | null): void {
     this.transcriptSource = source;
     this.transcriptSent = 0;
@@ -162,6 +179,14 @@ export class DurableOrchestrator implements Orchestrator {
             this.callNames.set(part.id, part.name);
             this.host.log?.('tool', `${part.name} ${JSON.stringify(part.arguments ?? {})}`);
             if (part.name !== 'tell_user') {
+              this.emitTool({
+                phase: 'start',
+                id: part.id,
+                name: part.name,
+                args: (part.arguments ?? {}) as Record<string, unknown>,
+              });
+            }
+            if (part.name !== 'tell_user') {
               const line = `${part.name}${callDetail(part.arguments)}`;
               this.record(
                 part.name === 'delegate_task'
@@ -174,7 +199,16 @@ export class DurableOrchestrator implements Orchestrator {
         } else if (message.role === 'toolResult') {
           const name = this.callNames.get(message.toolCallId) ?? message.toolName;
           this.callNames.delete(message.toolCallId);
-          if (name !== 'tell_user') this.host.log?.('result', messageText(message.content));
+          if (name !== 'tell_user') {
+            const result = messageText(message.content);
+            this.host.log?.('result', result);
+            this.emitTool({
+              phase: 'end',
+              id: message.toolCallId,
+              name,
+              result: result.slice(0, 4000),
+            });
+          }
         }
       }
     }
