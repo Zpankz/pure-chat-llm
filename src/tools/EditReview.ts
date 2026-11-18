@@ -178,7 +178,7 @@ export function guardPath(path: string, configDir: string, memoryPath?: string):
   if (parts.some(p => p === '..' || p === '.'))
     return `"${path}" has a relative part; give the path from the vault's top.`;
   const top = parts[0].toLowerCase();
-  if (top === configDir.toLowerCase() || top === '.obsidian' || top === '.trash')
+  if (top === configDir.toLowerCase() || top === '.trash')
     return `"${path}" is in the app's own folder, which agents may not change.`;
   if (memoryPath && path.toLowerCase() === memoryPath.toLowerCase())
     return `"${path}" is the shared memory file; change memory with the memory tools.`;
