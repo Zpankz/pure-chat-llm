@@ -88,6 +88,51 @@ export function toolMeta(name: string): ToolMeta {
   return { label: humanize(name), icon: 'wrench', category: 'other' };
 }
 
+/** Past-tense verbs that open a label, with their running and plain forms (U9). */
+const VERB_FORMS: Record<string, [string, string]> = {
+  Used: ['Using', 'use'],
+  Read: ['Reading', 'read'],
+  Recalled: ['Recalling', 'recall'],
+  Saved: ['Saving', 'save'],
+  Retired: ['Retiring', 'retire'],
+  Queried: ['Querying', 'query'],
+  Looked: ['Looking', 'look'],
+  Searched: ['Searching', 'search'],
+  Listed: ['Listing', 'list'],
+  Walked: ['Walking', 'walk'],
+  Found: ['Finding', 'find'],
+  Created: ['Creating', 'create'],
+  Wrote: ['Writing', 'write'],
+  Edited: ['Editing', 'edit'],
+  Deleted: ['Deleting', 'delete'],
+  Started: ['Starting', 'start'],
+  Passed: ['Passing', 'pass'],
+  Messaged: ['Messaging', 'message'],
+  Asked: ['Asking', 'ask'],
+  Told: ['Telling', 'tell'],
+  Checked: ['Checking', 'check'],
+  Got: ['Getting', 'get'],
+  Stopped: ['Stopping', 'stop'],
+  Reported: ['Reporting', 'report'],
+  Ran: ['Running', 'run'],
+};
+
+/**
+ * A label worded for the call's state: "Searching the vault" while it runs, "Searched the vault"
+ * when done and "Couldn't search the vault" when it failed. Labels that start with no known
+ * verb stay as they are.
+ * @param label - The past-tense label.
+ * @param status - The call's state.
+ */
+export function labelFor(label: string, status: 'running' | 'done' | 'failed'): string {
+  if (status === 'done') return label;
+  const space = label.indexOf(' ');
+  const forms = space > 0 ? VERB_FORMS[label.slice(0, space)] : undefined;
+  if (!forms) return label;
+  const rest = label.slice(space);
+  return status === 'running' ? `${forms[0]}${rest}` : `Couldn't ${forms[1]}${rest}`;
+}
+
 /** Argument names worth showing first, in order. */
 const PREVIEW_KEYS = [
   'name',

@@ -794,8 +794,8 @@ export class PureChatLLMChat {
    * @throws {Error} If the API request fails or the response is invalid.
    */
   getAllModels(): Promise<string[]> {
-    const { name: endpointName, endpoint } =
-      this.plugin.settings.endpoints[this.plugin.settings.endpoint];
+    // The chat's own provider, so browsing another provider's models leaves the default alone.
+    const { name: endpointName, endpoint } = this.endpoint;
     const cached = this.plugin.settings.ModelsOnEndpoint[endpointName];
     if (cached?.length) return Promise.resolve(cached);
     this.console.log(`Fetching models from ${endpointName} API...`);

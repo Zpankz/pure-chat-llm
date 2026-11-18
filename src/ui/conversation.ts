@@ -7,6 +7,7 @@ import {
   argPreview,
   clipPreview,
   formatDuration,
+  labelFor,
   toolMeta,
   type ToolCallView,
 } from './conversationModel';
@@ -147,7 +148,8 @@ export function drawToolCard(
     head.createSpan({ cls: 'va-tool__label', text: 'Skill' });
     head.createSpan({ cls: 'va-chip', text: arg });
   } else {
-    head.createSpan({ cls: 'va-tool__label', text: meta.label });
+    const label = show.label ? meta.label : labelFor(meta.label, tool.status);
+    head.createSpan({ cls: 'va-tool__label', text: label });
     if (arg) head.createSpan({ cls: 'va-tool__arg', text: arg, attr: { title: arg } });
   }
   if (tool.status === 'running') drawElapsed(head, tool.startedAt).addClass('va-tool__time');

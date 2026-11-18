@@ -6,6 +6,7 @@ import {
   clipPreview,
   continuesTurn,
   formatDuration,
+  labelFor,
   liveLine,
   pushLine,
   settleSpeech,
@@ -221,4 +222,12 @@ test('the orchestrator has its own turns, apart from the voice', () => {
   assert.equal(continuesTurn(voice, orch), false);
   assert.equal(continuesTurn(orch, { ...orch }), true);
   assert.equal(continuesTurn(orch, voice), false);
+});
+
+test('tool card labels follow the call state', () => {
+  assert.equal(labelFor('Searched the vault', 'running'), 'Searching the vault');
+  assert.equal(labelFor('Searched the vault', 'done'), 'Searched the vault');
+  assert.equal(labelFor('Searched the vault', 'failed'), "Couldn't search the vault");
+  assert.equal(labelFor('Started a background agent', 'running'), 'Starting a background agent');
+  assert.equal(labelFor('Semantic search', 'running'), 'Semantic search');
 });

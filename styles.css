@@ -202,7 +202,9 @@ sup {
 
 .status-error {
   padding: 0.5em;
-  background-color: var(--background-modifier-error);
+  /* A light tint, so the red text stays readable in both themes (U8). */
+  background-color: color-mix(in srgb, var(--text-error) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--text-error) 40%, transparent);
   border-radius: var(--radius-s);
   color: var(--text-error);
   font-size: 0.9em;

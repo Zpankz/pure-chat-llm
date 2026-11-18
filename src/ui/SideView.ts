@@ -633,16 +633,23 @@ export class ModelAndProviderChooser extends FuzzySuggestModal<ModelAndProvider>
    * @param endpointIndex
    */
   updatemodelist(endpointIndex: number): void {
-    this.currentmodel = this.plugin.settings.endpoints[endpointIndex].name;
-    this.plugin.settings.endpoint = endpointIndex;
-    const endpoint = this.plugin.settings.endpoints[this.plugin.settings.endpoint];
+    const { endpoints } = this.plugin.settings;
+    let endpoint = endpoints[endpointIndex];
     if (endpoint.apiKey === EmptyApiKey) {
-      if (this.firstrun) return this.updatemodelist(0);
-      new AskForAPI(this.app, this.plugin).open();
-      return;
+      // On opening, fall back once to a provider that has a key; never loop (U6).
+      const keyed = this.firstrun ? endpoints.find(e => e.apiKey !== EmptyApiKey) : undefined;
+      if (!keyed) {
+        new AskForAPI(this.app, this.plugin).open();
+        return;
+      }
+      endpoint = keyed;
     }
+    this.currentmodel = endpoint.name;
+    // Browse this provider without making it the default provider for every chat (U6).
+    const chat = new PureChatLLMChat(this.plugin);
+    chat.endpoint = endpoint;
     this.plugin.modellist = [];
-    void new PureChatLLMChat(this.plugin).getAllModels().then(models => {
+    void chat.getAllModels().then(models => {
       this.plugin.modellist = models;
       this.plugin.settings.ModelsOnEndpoint[endpoint.name] = models;
       void this.plugin.saveSettings();
