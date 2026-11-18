@@ -49,7 +49,8 @@ export const config: WebdriverIO.Config = {
       browserVersion: process.env.OBSIDIAN_VERSION ?? 'latest',
       'wdio:obsidianOptions': {
         installerVersion: process.env.OBSIDIAN_INSTALLER ?? 'latest',
-        plugins: [root],
+        // E2E_WITH_PURE_CHAT=1 also installs the community Pure Chat LLM, to check both load together.
+        plugins: process.env.E2E_WITH_PURE_CHAT === '1' ? [root, { id: 'pure-chat-llm' }] : [root],
         vault,
       },
     },

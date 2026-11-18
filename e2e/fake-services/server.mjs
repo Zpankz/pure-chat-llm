@@ -85,6 +85,15 @@ export function planReply(body) {
       message: { role: 'assistant', content: 'FAKE MODEL: no script in this conversation, so nothing to do.' },
     };
   }
+  if (script.fail) {
+    // A model error: every request of this script gets an HTTP error reply.
+    return {
+      kind: 'error',
+      script: script.id,
+      status: script.fail.status ?? 400,
+      message: { error: { message: script.fail.message ?? `FAKE MODEL: scenario ${script.id} fails on purpose.`, type: 'invalid_request_error' } },
+    };
+  }
   const done = messages.slice(at + 1).filter(m => m.role === 'assistant' && m.tool_calls?.length).length;
   const rounds = script.rounds ?? [];
   if (done < rounds.length) {
@@ -109,6 +118,25 @@ export function planReply(body) {
     drop: !!script.drop,
     message: { role: 'assistant', content: script.final ?? `FAKE MODEL: scenario ${script.id} finished.` },
   };
+}
+
+/** Maps a Responses request body back to chat messages so the same scripts drive it. */
+export function responsesToMessages(body) {
+  const messages = [];
+  if (body.instructions) messages.push({ role: 'system', content: String(body.instructions) });
+  for (const item of Array.isArray(body.input) ? body.input : []) {
+    if (item.type === 'function_call') {
+      const last = messages[messages.length - 1];
+      const call = { id: item.call_id, type: 'function', function: { name: item.name, arguments: item.arguments ?? '{}' } };
+      if (last?.role === 'assistant' && Array.isArray(last.tool_calls)) last.tool_calls.push(call);
+      else messages.push({ role: 'assistant', content: null, tool_calls: [call] });
+    } else if (item.type === 'function_call_output') {
+      messages.push({ role: 'tool', tool_call_id: item.call_id, content: textOf(item.output) });
+    } else if (item.role) {
+      messages.push({ role: item.role, content: textOf(item.content) });
+    }
+  }
+  return messages;
 }
 
 const MCP_TOOLS = [
@@ -176,6 +204,45 @@ export function startFakeServices({ port = 8787, traceDir }) {
         json(200, { object: 'list', data: [{ id: 'fake-model', object: 'model' }] });
         return;
       }
+      if (url.pathname.endsWith('/responses')) {
+        // OpenAI Responses API (streamed), mapped onto the same scripts as chat completions.
+        const messages = responsesToMessages(body);
+        const plan = planReply({ messages });
+        trace({
+          service: 'llm',
+          api: 'responses',
+          host: req.headers.host ?? null,
+          path: url.pathname,
+          kind: plan.kind,
+          script: plan.script,
+          round: plan.round,
+          model: body.model,
+          stream: !!body.stream,
+          tools_offered: (body.tools ?? []).map(t => t.name ?? t.function?.name),
+          tools: body.tools ?? [],
+          messages,
+          reply: plan.message,
+          delay_ms: plan.delayMs || undefined,
+        });
+        const answer = () => {
+          if (plan.kind === 'error') {
+            json(plan.status, plan.message);
+            return;
+          }
+          const items = plan.message.tool_calls
+            ? plan.message.tool_calls.map(c => ({ type: 'function_call', id: `fc_${c.id}`, call_id: c.id, name: c.function.name, arguments: c.function.arguments }))
+            : [{ type: 'message', id: 'msg_fake', role: 'assistant', content: [{ type: 'output_text', text: plan.message.content ?? '' }] }];
+          res.writeHead(200, { ...cors, 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache' });
+          const send = ev => res.write(`event: ${ev.type}\ndata: ${JSON.stringify(ev)}\n\n`);
+          send({ type: 'response.created', response: { id: 'resp_fake', model: body.model, status: 'in_progress' } });
+          for (const item of items) send({ type: 'response.output_item.done', item });
+          send({ type: 'response.completed', response: { id: 'resp_fake', model: body.model, status: 'completed', output: items } });
+          res.end();
+        };
+        if (plan.delayMs) setTimeout(() => !res.destroyed && answer(), plan.delayMs);
+        else answer();
+        return;
+      }
       if (url.pathname.endsWith('/chat/completions')) {
         const plan = planReply(body);
         let closed = false;
@@ -194,6 +261,10 @@ export function startFakeServices({ port = 8787, traceDir }) {
           dropped: plan.drop || undefined,
         });
         const answer = () => {
+          if (plan.kind === 'error') {
+            json(plan.status, plan.message);
+            return;
+          }
           if (body.stream) {
             res.writeHead(200, { ...cors, 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache' });
             const chunk = delta => res.write(`data: ${JSON.stringify({ id: 'fake', object: 'chat.completion.chunk', model: body.model, choices: [{ index: 0, delta, finish_reason: null }] })}\n\n`);
@@ -257,6 +328,11 @@ export function startFakeServices({ port = 8787, traceDir }) {
       json(404, { error: 'fake services: unknown path' });
     });
   });
+  // A second loopback address, so a test can use an endpoint the plugin does not treat as local
+  // (it skips the API key check for localhost and 127.0.0.1).
+  const alt = http.createServer((req, res) => server.emit('request', req, res));
+  alt.on('error', () => {});
+  alt.listen(port, '127.0.0.2');
   return new Promise(resolve => server.listen(port, '127.0.0.1', () => resolve({ server, traceFile, url: `http://127.0.0.1:${port}` })));
 }
 
