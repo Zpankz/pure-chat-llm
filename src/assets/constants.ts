@@ -284,7 +284,9 @@ export const DEFAULT_SETTINGS: PureChatLLMSettings = {
       failed: 'auto',
       cancelled: 'auto',
     },
-    writes: { create: 'allow', edit: 'peer', delete: 'peer' },
+    // Edits and deletions wait for the user's approval, in the conversation panel when it is open.
+    writes: { create: 'allow', edit: 'review', delete: 'review' },
+    writesAskDefault: true,
     reviewerModels: '',
     backupEdits: true,
   },

@@ -258,6 +258,11 @@ export interface OrchestratorSettings {
   /** What happens when a sub-agent creates, edits or deletes a note. */
   writes: Record<'create' | 'edit' | 'delete', SubAgentWritePolicy>;
   /**
+   * Set once background edits and deletions default to asking the user (beta.8): installs that
+   * still had the old "reviewers decide" default are moved to "ask me" once.
+   */
+  writesAskDefault?: boolean;
+  /**
    * Models for the two independent reviewers, comma separated, each optionally `model@Endpoint
    * name`. Empty uses the worker layer for both. Different models make the verdicts more
    * independent.

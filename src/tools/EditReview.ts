@@ -863,6 +863,62 @@ export async function reviewProposal(
   host?: ReviewHost | null,
   inlineOnly = false,
 ): Promise<WriteOutcome> {
+  // One card per proposal: it may be offered when queued and again when the panel reopens.
+  const key = normalizePath(proposalPath);
+  if (inlineOnly && cardShown.has(key)) {
+    return {
+      ok: false,
+      applied: false,
+      action: 'edit',
+      path: proposalPath,
+      review: 'user',
+      error: toolError('NotPending', 'This proposal is already shown.'),
+    };
+  }
+  if (inlineOnly) cardShown.add(key);
+  try {
+    return await answerProposal(app, proposalPath, host, inlineOnly);
+  } finally {
+    cardShown.delete(key);
+  }
+}
+
+/** Proposals now shown as a card in the panel. */
+const cardShown = new Set<string>();
+
+/**
+ * Pending proposals, newest first, for the panel to show again when it opens.
+ * @param app - App.
+ * @param folder - The task folder.
+ * @param limit - Most to return.
+ */
+export function pendingProposals(app: App, folder: string, limit = 10): string[] {
+  const dir = normalizePath(`${folder.trim() || 'Agent tasks'}/Proposals`);
+  return app.vault
+    .getMarkdownFiles()
+    .filter(f => f.path.startsWith(`${dir}/`))
+    .filter(f => {
+      const fm = app.metadataCache.getFileCache(f)?.frontmatter;
+      return !!fm?.[PROPOSAL_KEY] && fm.status === 'pending';
+    })
+    .sort((a, b) => b.stat.mtime - a.stat.mtime)
+    .slice(0, limit)
+    .map(f => f.path);
+}
+
+/**
+ * Asks the user about one proposal and applies it if approved.
+ * @param app - App.
+ * @param proposalPath - Proposal note.
+ * @param host - The panel, to show it as a card.
+ * @param inlineOnly - Never open a window; leave it pending when there is no panel.
+ */
+async function answerProposal(
+  app: App,
+  proposalPath: string,
+  host?: ReviewHost | null,
+  inlineOnly = false,
+): Promise<WriteOutcome> {
   const file = app.vault.getAbstractFileByPath(normalizePath(proposalPath));
   const base = { ok: false, applied: false, path: proposalPath, review: 'user' as const };
   if (!(file instanceof TFile)) {

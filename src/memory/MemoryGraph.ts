@@ -1497,7 +1497,8 @@ export class MemoryGraph {
       if (hit.type === 'fact' && hit.fact) add(this.factLine(hit.fact), hit.key);
       else
         add(
-          `- ${hit.type === 'task' ? 'Task' : 'Session'} "${clipLine(hit.title ?? '', 60)}" (${localTime(hit.at)}): ${clipLine(hit.text, 240)} [${hit.key}]`,
+          // A task's result may quote pages or files: shown as quoted text, never as an ask.
+          `- ${hit.type === 'task' ? 'Task' : 'Session'} "${clipLine(hit.title ?? '', 60)}" (${localTime(hit.at)}) said: «${clipLine(hit.text, 240).replace(/[«»]/g, '"')}» [${hit.key}]`,
           hit.key,
         );
     }

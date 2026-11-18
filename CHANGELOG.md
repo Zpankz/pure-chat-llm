@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.0-beta.8] - 2026-11-18
+
+Everything in beta.7, plus a typed message box, approving edits in the conversation, native rendering and a much better memory:
+
+- **Typed message box** under the conversation in the Voice Agent panel, talking to the same orchestrator as a call, with or without one. `[[` and `@` offer notes (`@` attaches the note), `/` offers stop, new, clear and your skills. The + menu adds the current note, selected text, any note or file, a skill, a tool, a photo or the camera. Images are saved to the vault and sent to the model. The send button becomes stop while the orchestrator works.
+- **Approve edits in the conversation.** An agent's edit or deletion shows as a card with the lines changed, a preview, and Approve, Reject and Open in window. Background tasks now ask you by default (installs still on the old "reviewers decide" default are moved once; you can change it back in settings). Their changes wait as proposals when the panel is closed and come back as cards when it opens.
+- **Native rendering** in answers: mermaid and pele diagrams (drawn with pele), LaTeX (`$…$`, `$$…$$`, `\(…\)`, `\[…\]`), tables, images, embedded notes and PDFs. A narrow panel shows a PDF as a link and shrinks long equations.
+- **Memory (from the beta.7 audit):** a librarian on the worker model files what each call, task and long stretch of a call taught, confirming what it knew, correcting or closing what changed, each fact linked to where it came from, and writes a real summary of each call. Each request to the orchestrator, each worker brief and each note-chat turn gets a few relevant facts; the fixed instructions change only when your standing preferences do, so prompt caching works. One entity per name whatever its kind, near-copies confirm instead of duplicating, and observations fade after about a month. Recall finds paraphrases with embeddings from a provider you have a key for, and searches task results and call summaries. The topic, task progress and each request are shared with every agent. A task's result can add facts but never a preference or instruction, and recalled task results are quoted, not passed on as instructions. New settings: Learn from calls and tasks, Embeddings for recall, Embedding model. Times in memory are local.
+- Stopping a turn no longer reports a timeout or logs an error.
+
 ## [2.0.0-beta.7] - 2026-11-18
 
 Everything in beta.6, plus fixes for the orchestrator and background agents not starting, and for the caret:

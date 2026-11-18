@@ -1009,8 +1009,19 @@ export default class PureChatLLM extends Plugin {
         this.settings.endpoints.push(endpoint),
     );
     // MCP sign-in tokens live in secret storage; older versions saved them in this file.
+    // Hani asked to approve agents' edits in the conversation: move the old "reviewers decide"
+    // default for background edits and deletions to "ask me", once.
+    const o = this.settings.orchestrator;
+    let askDefaultMoved = false;
+    if (!o.writesAskDefault) {
+      for (const action of ['edit', 'delete'] as const) {
+        if (o.writes[action] === 'peer') o.writes[action] = 'review';
+      }
+      o.writesAskDefault = true;
+      askDefaultMoved = true;
+    }
     const moved = hydrateMcpTokens(this.app, this.settings.mcpServers);
-    if (moved || this.migratedLegacySettings) await this.saveSettings();
+    if (moved || askDefaultMoved || this.migratedLegacySettings) await this.saveSettings();
     if (this.migratedLegacySettings) {
       this.migratedLegacySettings = false;
       new Notice(

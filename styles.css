@@ -1996,6 +1996,30 @@ pre.va-result {
   }
 }
 
+/* A PDF opens from a link in a narrow panel; wider panels show the viewer. */
+.va-md .va-pdf-link {
+  display: none;
+  align-items: center;
+  gap: 4px;
+  margin: 0.3em 0;
+}
+
+.va-pdf-link__icon {
+  display: inline-flex;
+  --icon-size: 14px;
+}
+
+@container (max-width: 480px) {
+  .va-md .va-pdf-link {
+    display: inline-flex;
+  }
+
+  .va-md .internal-embed.pdf-embed,
+  .va-md .internal-embed[src$='.pdf'] {
+    display: none;
+  }
+}
+
 .va-diagram {
   --pele-bg: transparent;
   --pele-fg: var(--text-normal);

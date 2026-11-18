@@ -83,7 +83,9 @@ export function writePolicy(
   action: WriteAction,
 ): SubAgentWritePolicy {
   if (chat?.role !== 'subagent') return 'review';
-  return plugin.settings.orchestrator?.writes?.[action] ?? (action === 'create' ? 'allow' : 'peer');
+  return (
+    plugin.settings.orchestrator?.writes?.[action] ?? (action === 'create' ? 'allow' : 'review')
+  );
 }
 
 /**

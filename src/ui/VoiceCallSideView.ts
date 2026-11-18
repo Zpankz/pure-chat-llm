@@ -47,7 +47,7 @@ import {
   type TranscriptLine,
 } from './conversationModel';
 import type { Orchestrator, OrchestratorToolEvent } from '../agents/OrchestratorAgent';
-import type { InlineReview } from '../tools/EditReview';
+import { pendingProposals, reviewProposal, type InlineReview } from '../tools/EditReview';
 import { Composer } from './Composer';
 import { buildRequest, displayMessage, type ContextItem } from './composerModel';
 import {
@@ -131,6 +131,8 @@ export class VoiceCallSideView extends ItemView {
   private callWatching = false;
   /** The user has typed to the orchestrator, so its state shows even outside a call. */
   private typedUsed = false;
+  /** Review cards still shown, to settle when the panel closes. */
+  private reviews = new Set<InlineReview>();
   /** A chat used only to list the tools agents can call. */
   private toolChat: PureChatLLMChat | null = null;
 
@@ -200,6 +202,21 @@ export class VoiceCallSideView extends ItemView {
     this.plugin.reviewHost = host;
     this.register(() => {
       if (this.plugin.reviewHost === host) this.plugin.reviewHost = null;
+      // Cards closed with the panel: a proposal stays pending for next time, a direct edit is
+      // cancelled rather than left waiting for an answer nobody can give.
+      for (const review of this.reviews) {
+        if (review.status === 'pending') review.decide({ approved: false, cancelled: true });
+      }
+      this.reviews.clear();
+    });
+    // Background tasks' changes still waiting for an answer show again as cards.
+    this.app.workspace.onLayoutReady(() => {
+      const folder = this.plugin.settings.orchestrator?.taskFolder ?? '';
+      for (const path of pendingProposals(this.app, folder).reverse()) {
+        void reviewProposal(this.app, path, host, true).catch(error =>
+          console.error('[voice-agent] proposal card failed', error),
+        );
+      }
     });
     this.renderView();
   }
@@ -372,7 +389,9 @@ export class VoiceCallSideView extends ItemView {
       by: 'orchestrator',
       rev: 0,
     });
+    this.reviews.add(review);
     review.onChange = () => {
+      if (review.status !== 'pending') this.reviews.delete(review);
       line.text = `Proposed ${review.action} of [[${review.path}]]: ${review.status}`;
       line.rev = (line.rev ?? 0) + 1;
       this.renderTranscript();

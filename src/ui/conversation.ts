@@ -71,9 +71,31 @@ export function renderMarkdown(
   sourcePath: string,
 ): void {
   el.addClass('markdown-rendered', 'va-md');
-  void MarkdownRenderer.render(app, prepareMarkdown(text), el, sourcePath, component).then(() =>
-    drawDiagrams(el, component),
-  );
+  void MarkdownRenderer.render(app, prepareMarkdown(text), el, sourcePath, component).then(() => {
+    drawDiagrams(el, component);
+    addPdfLinks(el);
+  });
+}
+
+/**
+ * Puts an "open" link before each embedded PDF. A narrow panel shows the link instead of the
+ * viewer, whose page can't shrink to fit (the stylesheet switches between them by width).
+ * @param el - Rendered Markdown.
+ */
+function addPdfLinks(el: HTMLElement): void {
+  for (const embed of Array.from(el.querySelectorAll<HTMLElement>('.internal-embed[src]'))) {
+    const src = embed.getAttribute('src') ?? '';
+    if (!/\.pdf(#.*)?$/i.test(src)) continue;
+    const link = document.createElement('a');
+    link.className = 'internal-link va-pdf-link';
+    link.dataset.href = src;
+    link.href = src;
+    const icon = document.createElement('span');
+    icon.className = 'va-pdf-link__icon';
+    setIcon(icon, 'file-text');
+    link.append(icon, src.split('/').pop()?.replace(/#.*$/, '') ?? src);
+    embed.before(link);
+  }
 }
 
 /**
