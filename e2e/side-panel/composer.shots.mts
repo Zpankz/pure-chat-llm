@@ -183,6 +183,15 @@ async function box() {
   }, ROOT);
 }
 
+/** Scrolls the conversation to its end, so a picture shows the newest rows. */
+async function toBottom() {
+  await browser.execute((root: string) => {
+    const rows = document.querySelectorAll(`${root} .va-conversation .va-row`);
+    rows[rows.length - 1]?.scrollIntoView({ block: 'end' });
+  }, ROOT);
+  await browser.pause(200);
+}
+
 async function focusBox() {
   await (await browser.$(`${ROOT} .va-composer__input`)).click();
   await browser.pause(150);
@@ -697,6 +706,7 @@ describe(`Typed message box (${LABEL})`, () => {
     const during = await box();
     const stateDuring = await browser.executeObsidian(({ plugins }) => String((plugins.voiceAgent as any).orchestrator.state));
     log(`6: while working: orchestrator ${stateDuring}, send button stop=${during.sendStop} disabled=${during.sendDisabled} label "${during.sendLabel}"`);
+    await toBottom();
     await shootBoth('6-busy-stop');
     await (await browser.$(`${ROOT} .va-composer__send`)).click();
     await waitFor('the stopped status line', async () => (await box()).rows.some(row => /va-row--status/.test(row.cls) && /Stopped the orchestrator/.test(row.text)), 8000);
@@ -704,6 +714,7 @@ describe(`Typed message box (${LABEL})`, () => {
     const stopped = await box();
     const stateAfter = await browser.executeObsidian(({ plugins }) => String((plugins.voiceAgent as any).orchestrator.state));
     log(`6: after stop: orchestrator ${stateAfter}, send stop=${stopped.sendStop} disabled=${stopped.sendDisabled}; last rows ${JSON.stringify(stopped.rows.slice(-3))}`);
+    await toBottom();
     await shootBoth('6-stopped');
     // Wait past the fake model's delay: the late answer must not appear.
     await browser.pause(27_000);
